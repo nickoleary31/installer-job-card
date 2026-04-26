@@ -416,25 +416,108 @@ function PhotoUploadFeedback({ count, names }: { count: number; names: string[] 
   return <p className="mt-2 text-sm text-gray-700">{line}</p>;
 }
 
-type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string };
+type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string; uploadedAt?: string };
 
 type CombinedPhotoPreview =
   | { kind: "remote"; key: string; publicUrl: string; filename: string }
   | { kind: "local"; key: string; file: File };
 
+/** Stable comparison for matching user File.name to draft/server metadata filenames (handles Unicode normalization). */
+function normalizePhotoFilename(name: string): string {
+  try {
+    return name.normalize("NFC").trim().toLowerCase();
+  } catch {
+    return name.trim().toLowerCase();
+  }
+}
+
+function normalizePublicUrlForDedupe(url: string): string {
+  const u = url.trim();
+  if (!u) return "";
+  try {
+    const parsed = new URL(u);
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return u.toLowerCase();
+  }
+}
+
 function dedupeKeyForRemoteThumb(r: RemoteThumb): string {
   const sp = (r.storagePath || "").trim();
   if (sp) return `sp:${sp}`;
-  const u = (r.publicUrl || "").trim();
+  const u = normalizePublicUrlForDedupe((r.publicUrl || "").trim());
   if (u) return `url:${u}`;
-  return `fn:${(r.filename || "").trim().toLowerCase()}`;
+  return `fn:${normalizePhotoFilename(r.filename || "")}`;
+}
+
+/** One row per logical photo: strict path/URL dedupe, then collapse same-filename rows when they share one public URL. */
+function dedupeRemoteThumbsForDisplay(remotes: RemoteThumb[]): RemoteThumb[] {
+  const withUrl = remotes.filter((r) => (r.publicUrl || "").trim());
+  const pickNewer = (a: RemoteThumb, b: RemoteThumb): RemoteThumb => {
+    const ta = Date.parse(a.uploadedAt || "") || 0;
+    const tb = Date.parse(b.uploadedAt || "") || 0;
+    if (tb !== ta) return tb >= ta ? b : a;
+    const pa = (a.storagePath || "").length;
+    const pb = (b.storagePath || "").length;
+    return pb >= pa ? b : a;
+  };
+
+  const byStrictKey = new Map<string, RemoteThumb>();
+  for (const r of withUrl) {
+    const k = dedupeKeyForRemoteThumb(r);
+    const prev = byStrictKey.get(k);
+    byStrictKey.set(k, prev ? pickNewer(prev, r) : r);
+  }
+  const strict = [...byStrictKey.values()];
+
+  const byFilename = new Map<string, RemoteThumb[]>();
+  const noFilename: RemoteThumb[] = [];
+  for (const r of strict) {
+    const fn = normalizePhotoFilename(r.filename || "");
+    if (!fn) {
+      noFilename.push(r);
+      continue;
+    }
+    const g = byFilename.get(fn) ?? [];
+    g.push(r);
+    byFilename.set(fn, g);
+  }
+
+  const collapsed: RemoteThumb[] = [...noFilename];
+  for (const group of byFilename.values()) {
+    if (group.length === 1) {
+      collapsed.push(group[0]);
+      continue;
+    }
+    const urls = new Set(group.map((g) => normalizePublicUrlForDedupe(g.publicUrl.trim())));
+    if (urls.size === 1) {
+      collapsed.push(group.reduce((a, b) => pickNewer(a, b)));
+    } else {
+      collapsed.push(...group);
+    }
+  }
+
+  const out: RemoteThumb[] = [];
+  const seen = new Set<string>();
+  for (const r of collapsed) {
+    const k = dedupeKeyForRemoteThumb(r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+}
+
+function localFileDedupeKey(file: File): string {
+  return `${normalizePhotoFilename(file.name)}|${file.size}|${file.lastModified}`;
 }
 
 function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]): CombinedPhotoPreview[] {
+  const remotes = dedupeRemoteThumbsForDisplay(remotePhotos);
   const seen = new Set<string>();
   const entries: CombinedPhotoPreview[] = [];
 
-  for (const r of remotePhotos) {
+  for (const r of remotes) {
     const url = (r.publicUrl || "").trim();
     if (!url) continue;
     const key = dedupeKeyForRemoteThumb(r);
@@ -443,17 +526,20 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
     entries.push({ kind: "remote", key, publicUrl: url, filename: r.filename });
   }
 
-  const remoteFilenameLower = new Set(
-    remotePhotos
-      .filter((r) => (r.publicUrl || "").trim())
-      .map((r) => (r.filename || "").trim().toLowerCase())
-      .filter(Boolean),
+  const remoteFilenameNorm = new Set(
+    remotes.filter((r) => (r.publicUrl || "").trim()).map((r) => normalizePhotoFilename(r.filename || "")),
   );
 
+  const seenLocal = new Set<string>();
   for (const file of files) {
-    const fnLower = file.name.trim().toLowerCase();
-    if (remoteFilenameLower.has(fnLower)) continue;
-    const fk = `fn:${fnLower}`;
+    const lk = localFileDedupeKey(file);
+    if (seenLocal.has(lk)) continue;
+    seenLocal.add(lk);
+
+    const fnNorm = normalizePhotoFilename(file.name);
+    if (fnNorm && remoteFilenameNorm.has(fnNorm)) continue;
+
+    const fk = `local:${lk}`;
     if (seen.has(fk)) continue;
     seen.add(fk);
     entries.push({ kind: "local", key: fk, file });
@@ -591,12 +677,22 @@ export function NewSubmissionForm() {
   const remoteThumbsForVacField = (key: keyof VacPhotoFileNames): RemoteThumb[] =>
     photoMetadataByField[key]
       .filter((p) => p.publicUrl?.trim())
-      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename, storagePath: p.storagePath }));
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
 
   const remoteThumbsForVehicleField = (key: VehiclePictureKey): RemoteThumb[] =>
     photoMetadataByField[key]
       .filter((p) => p.publicUrl?.trim())
-      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename, storagePath: p.storagePath }));
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
 
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
   const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
@@ -986,6 +1082,7 @@ export function NewSubmissionForm() {
       }
       setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
       setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
+      setVacPhotoFiles((p) => ({ ...p, [key]: [] }));
       for (const m of prevMeta) {
         if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
           void deleteJobCardPhotoObject(m.storagePath);
@@ -1015,6 +1112,9 @@ export function NewSubmissionForm() {
     setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
     setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
     setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    if (uploadResult.ok) {
+      setVacPhotoFiles((p) => ({ ...p, [key]: [] }));
+    }
     clearFieldHighlight(`photo-${String(key)}`);
   };
 
@@ -1067,6 +1167,7 @@ export function NewSubmissionForm() {
     }
     setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
     setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
+    setVehiclePictureFiles((p) => ({ ...p, [key]: [] }));
     for (const m of prevMeta) {
       if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
         void deleteJobCardPhotoObject(m.storagePath);
