@@ -1,9 +1,12 @@
 "use client";
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   type CoreJobFields,
   type Vac4DescriptionKey,
   type JobCardSubmissionPayload,
+  type UploadedPhotoMetadata,
   type Vac4OrderedPhotoKey,
   type VacPhotoFileNames,
   DEFAULT_JOB_CARD_EMAIL_TO,
@@ -12,11 +15,70 @@ import {
   formatEmailBodyFromPayload,
   formatEmailSubject,
 } from "@/lib/job-card-submission";
+import { supabase } from "@/lib/supabase/client";
 
 const MAX_PHOTOS_PER_FIELD = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const UPLOAD_ERR_MAX_COUNT = "Max 5 photos allowed";
 const UPLOAD_ERR_FILE_SIZE = "File too large (10MB max)";
+const UPLOAD_ERR_FILE_TYPE = "Only JPEG and PNG files are allowed";
+const UPLOAD_ERR_UPLOAD_FAILED = "Upload failed";
+const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
+const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
+const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-payload-v1";
+const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
+
+function generateSubmissionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+type StoredJobCardDraft = {
+  submissionId: string;
+  id?: string;
+  customer: string;
+  unitNumber: string;
+  savedAt: string;
+  data: {
+    coreJob: CoreJobFields;
+    hardwareSelection: { primary: string; hasAdditional: string; additional: string[] };
+    vac4: Record<string, string | undefined>;
+    photoUploads?: UploadedPhotoMetadata[];
+    photoSummary: {
+      vac4PhotoFileNames: VacPhotoFileNames;
+      vac4PhotoUrls: VacPhotoFileNames;
+      vac4PhotoCounts: Record<string, number>;
+      vehiclePhotoFileNames: VehiclePictureFileNames;
+      vehiclePhotoUrls: VehiclePictureFileNames;
+      vehiclePhotoCounts: Record<string, number>;
+      photoUploads?: UploadedPhotoMetadata[];
+    };
+  };
+};
+
+function readMigratedDraftsFromStorage(): StoredJobCardDraft[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(JOB_CARD_DRAFTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as StoredJobCardDraft[];
+    if (!Array.isArray(parsed)) return [];
+    const migrated = parsed.map((draft) => {
+      const submissionId = draft.submissionId || draft.id || generateSubmissionId();
+      return { ...draft, submissionId };
+    });
+    const migrationDone = window.localStorage.getItem(JOB_CARD_DRAFTS_MIGRATION_KEY) === "1";
+    if (!migrationDone) {
+      window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(migrated));
+      window.localStorage.setItem(JOB_CARD_DRAFTS_MIGRATION_KEY, "1");
+    }
+    return migrated;
+  } catch {
+    return [];
+  }
+}
 
 const hardwareTypes = [
   "VAC4",
@@ -45,8 +107,26 @@ const emptyVacPhotoFileNames = (): VacPhotoFileNames => ({
 });
 
 type VacPhotoFilesState = { [K in keyof VacPhotoFileNames]: File[] };
+type VacPhotoUrlsState = { [K in keyof VacPhotoFileNames]: string[] };
 
 const emptyVacPhotoFiles = (): VacPhotoFilesState => ({
+  vacMounting: [],
+  wirePath: [],
+  redWire: [],
+  blackWire: [],
+  blueWire: [],
+  brownWire: [],
+  sensorHubMounting: [],
+  speedSense: [],
+  loadSense: [],
+  gps: [],
+  externalIndicator: [],
+  purpleWire: [],
+  relayAccess: [],
+  impactSensor: [],
+});
+
+const emptyVacPhotoUrls = (): VacPhotoUrlsState => ({
   vacMounting: [],
   wirePath: [],
   redWire: [],
@@ -82,9 +162,81 @@ const emptyVacPhotoErrors = (): VacPhotoErrorsState => ({
   impactSensor: null,
 });
 
+type VehiclePictureKey = "vehicleFront" | "vehicleSide" | "vehicleRear";
+type VehiclePictureFileNames = { [K in VehiclePictureKey]: string[] };
+type VehiclePictureFilesState = { [K in VehiclePictureKey]: File[] };
+type VehiclePictureUrlsState = { [K in VehiclePictureKey]: string[] };
+type VehiclePictureErrorsState = { [K in VehiclePictureKey]: string | null };
+type UploadFieldName = keyof VacPhotoFileNames | VehiclePictureKey;
+type PhotoMetadataByFieldState = { [K in UploadFieldName]: UploadedPhotoMetadata[] };
+
+const emptyVehiclePictureFileNames = (): VehiclePictureFileNames => ({
+  vehicleFront: [],
+  vehicleSide: [],
+  vehicleRear: [],
+});
+
+const emptyVehiclePictureFiles = (): VehiclePictureFilesState => ({
+  vehicleFront: [],
+  vehicleSide: [],
+  vehicleRear: [],
+});
+
+const emptyVehiclePictureUrls = (): VehiclePictureUrlsState => ({
+  vehicleFront: [],
+  vehicleSide: [],
+  vehicleRear: [],
+});
+
+const emptyVehiclePictureErrors = (): VehiclePictureErrorsState => ({
+  vehicleFront: null,
+  vehicleSide: null,
+  vehicleRear: null,
+});
+
+const emptyPhotoMetadataByField = (): PhotoMetadataByFieldState => ({
+  vacMounting: [],
+  wirePath: [],
+  redWire: [],
+  blackWire: [],
+  blueWire: [],
+  brownWire: [],
+  sensorHubMounting: [],
+  speedSense: [],
+  loadSense: [],
+  gps: [],
+  externalIndicator: [],
+  purpleWire: [],
+  relayAccess: [],
+  impactSensor: [],
+  vehicleFront: [],
+  vehicleSide: [],
+  vehicleRear: [],
+});
+
+const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
+  vacMounting: "VAC mounting",
+  wirePath: "Wire path",
+  redWire: "Red wire",
+  blackWire: "Black wire",
+  blueWire: "Blue wire",
+  brownWire: "Brown wire",
+  sensorHubMounting: "Sensor hub mounting",
+  speedSense: "Speed sense",
+  loadSense: "Load sense",
+  gps: "GPS",
+  externalIndicator: "External indicator",
+  purpleWire: "Purple wire",
+  relayAccess: "Relay access control",
+  impactSensor: "Impact sensor mounting",
+  vehicleFront: "Vehicle front picture",
+  vehicleSide: "Vehicle side picture",
+  vehicleRear: "Vehicle rear picture",
+};
+
 const VAC_PHOTO_KEYS = Object.keys(emptyVacPhotoFileNames()) as (keyof VacPhotoFileNames)[];
 
-function VAC4Section({ children }: { children: any }) {
+function VAC4Section({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
@@ -242,6 +394,31 @@ function PhotoUploadFeedback({ count, names }: { count: number; names: string[] 
   return <p className="mt-2 text-sm text-gray-700">{line}</p>;
 }
 
+function PhotoThumbnailGrid({ files }: { files: File[] }) {
+  const previewUrls = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
+  useEffect(
+    () => () => {
+      previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    },
+    [previewUrls],
+  );
+
+  if (files.length === 0 || previewUrls.length === 0) return null;
+
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {files.map((file, index) => (
+        <div key={`${file.name}-${index}`} className="rounded-lg border border-gray-200 bg-white p-2">
+          <img src={previewUrls[index]} alt={file.name} className="h-20 w-full rounded-md object-cover" />
+          <p className="mt-1 truncate text-xs text-gray-700" title={file.name}>
+            {file.name}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PhotoUploadedBadge({ show }: { show: boolean }) {
   if (!show) return null;
   return (
@@ -256,7 +433,9 @@ function PhotoFieldError({ message }: { message: string | null }) {
   return <p className="mt-1 text-sm font-medium text-red-600">{message}</p>;
 }
 
-export default function Page() {
+export function NewSubmissionForm() {
+  const router = useRouter();
+  const [submissionId, setSubmissionId] = useState<string>(() => generateSubmissionId());
   const [step, setStep] = useState<"form" | "review">("form");
   const [coreJob, setCoreJob] = useState<CoreJobFields>({
     customer: "",
@@ -269,7 +448,8 @@ export default function Page() {
     equipmentSerial: "",
     installerName: "",
   });
-  const [, setSubmissionCompletedAt] = useState<number | null>(null);
+  const [submissionCompletedAt, setSubmissionCompletedAt] = useState<number | null>(null);
+  const [submissionStatus, setSubmissionStatus] = useState<"Draft" | "Submitted">("Draft");
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
   const [emailSubmissionPreview, setEmailSubmissionPreview] = useState<{
     to: string;
@@ -294,6 +474,7 @@ export default function Page() {
   const [vac4HourMeter, setVac4HourMeter] = useState("");
   const [sensorHubInstalled, setSensorHubInstalled] = useState("");
   const [liftSenseInstalled, setLiftSenseInstalled] = useState("");
+  const [operatorPresenceInstalled, setOperatorPresenceInstalled] = useState("");
   const [speedSenseInstalled, setSpeedSenseInstalled] = useState("");
   const [loadSenseInstalled, setLoadSenseInstalled] = useState("");
   const [gpsInstalled, setGpsInstalled] = useState("");
@@ -309,9 +490,20 @@ export default function Page() {
   const [relayAccessDescription, setRelayAccessDescription] = useState("");
   const [impactSensorDescription, setImpactSensorDescription] = useState("");
   const [vacPhotoFiles, setVacPhotoFiles] = useState<VacPhotoFilesState>(() => emptyVacPhotoFiles());
+  const [vacPhotoUrls, setVacPhotoUrls] = useState<VacPhotoUrlsState>(() => emptyVacPhotoUrls());
+  const [photoMetadataByField, setPhotoMetadataByField] = useState<PhotoMetadataByFieldState>(() =>
+    emptyPhotoMetadataByField(),
+  );
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
+  const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
+  const [vehiclePictureUrls, setVehiclePictureUrls] = useState<VehiclePictureUrlsState>(() => emptyVehiclePictureUrls());
+  const [vehiclePictureErrors, setVehiclePictureErrors] = useState<VehiclePictureErrorsState>(() => emptyVehiclePictureErrors());
+  const vacPhotoUrlsRef = useRef<VacPhotoUrlsState>(emptyVacPhotoUrls());
+  const vehiclePictureUrlsRef = useRef<VehiclePictureUrlsState>(emptyVehiclePictureUrls());
+  const photoMetadataByFieldRef = useRef<PhotoMetadataByFieldState>(emptyPhotoMetadataByField());
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
+  const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
 
   const availableAdditional = hardwareTypes.filter((h) => h !== primary);
   const inputClassName =
@@ -331,22 +523,19 @@ export default function Page() {
     "inline-flex min-h-[52px] items-center justify-center gap-2 rounded-xl border-2 border-blue-600 bg-white px-5 py-3.5 text-base font-semibold text-blue-600 shadow-sm hover:bg-blue-50 active:bg-blue-100 sm:min-w-[160px]";
   const checkboxRowClassName =
     "flex min-h-[52px] cursor-pointer items-center gap-3 rounded-2xl border-2 border-gray-100 bg-gray-50/80 px-4 py-3 text-base font-medium text-gray-900 active:bg-gray-100";
+  const isCombustionDrive = vac4DriveType === "Internal Combustion";
   const blueWireHelperText =
     vac4DriveType === "Electric"
       ? "Motion"
-      : vac4DriveType === "Internal Combustion"
+      : isCombustionDrive
         ? "In-gear"
         : "Motion / In-gear";
   const brownWireHelperText =
     vac4DriveType === "Electric" && liftSenseInstalled === "Yes"
       ? "Lift"
-      : vac4DriveType === "Internal Combustion"
+      : isCombustionDrive
         ? "Engine-on"
         : "Lift / Engine-on";
-
-  const isElectricUi = vac4DriveType === "Electric";
-  const isIcUi = vac4DriveType === "Internal Combustion";
-  const blueWireRequiredUi = isIcUi || (isElectricUi && liftSenseInstalled === "Yes");
 
   const toggleAdditional = (type: string) => {
     if (additional.includes(type)) {
@@ -384,26 +573,93 @@ export default function Page() {
     }),
     [vacPhotoFiles],
   );
+  const vehiclePictureFileNames = useMemo((): VehiclePictureFileNames => {
+    const out = emptyVehiclePictureFileNames();
+    out.vehicleFront = vehiclePictureFiles.vehicleFront.map((f) => f.name);
+    out.vehicleSide = vehiclePictureFiles.vehicleSide.map((f) => f.name);
+    out.vehicleRear = vehiclePictureFiles.vehicleRear.map((f) => f.name);
+    return out;
+  }, [vehiclePictureFiles]);
+  const vehiclePictureCounts = useMemo(
+    () => ({
+      vehicleFront: vehiclePictureFiles.vehicleFront.length,
+      vehicleSide: vehiclePictureFiles.vehicleSide.length,
+      vehicleRear: vehiclePictureFiles.vehicleRear.length,
+    }),
+    [vehiclePictureFiles],
+  );
+
+  const setVacPhotoUrlsSafe = (updater: (current: VacPhotoUrlsState) => VacPhotoUrlsState) => {
+    setVacPhotoUrls((current) => {
+      const next = updater(current);
+      vacPhotoUrlsRef.current = next;
+      return next;
+    });
+  };
+
+  const setVehiclePictureUrlsSafe = (updater: (current: VehiclePictureUrlsState) => VehiclePictureUrlsState) => {
+    setVehiclePictureUrls((current) => {
+      const next = updater(current);
+      vehiclePictureUrlsRef.current = next;
+      return next;
+    });
+  };
+
+  const setPhotoMetadataByFieldSafe = (updater: (current: PhotoMetadataByFieldState) => PhotoMetadataByFieldState) => {
+    setPhotoMetadataByField((current) => {
+      const next = updater(current);
+      photoMetadataByFieldRef.current = next;
+      return next;
+    });
+  };
+
+  const getPhotoPersistenceSnapshot = () => {
+    const metadataByField = photoMetadataByFieldRef.current;
+    const uploads = (Object.values(metadataByField) as UploadedPhotoMetadata[][]).flat();
+    const nextVacUrls = emptyVacPhotoUrls();
+    for (const key of VAC_PHOTO_KEYS) {
+      nextVacUrls[key] = metadataByField[key].map((p) => p.publicUrl).filter(Boolean);
+    }
+    const nextVehicleUrls = emptyVehiclePictureUrls();
+    nextVehicleUrls.vehicleFront = metadataByField.vehicleFront.map((p) => p.publicUrl).filter(Boolean);
+    nextVehicleUrls.vehicleSide = metadataByField.vehicleSide.map((p) => p.publicUrl).filter(Boolean);
+    nextVehicleUrls.vehicleRear = metadataByField.vehicleRear.map((p) => p.publicUrl).filter(Boolean);
+    vacPhotoUrlsRef.current = nextVacUrls;
+    vehiclePictureUrlsRef.current = nextVehicleUrls;
+    setVacPhotoUrls(nextVacUrls);
+    setVehiclePictureUrls(nextVehicleUrls);
+    return { photoUploads: uploads, vacPhotoUrls: nextVacUrls, vehiclePhotoUrls: nextVehicleUrls };
+  };
 
   const requiredCoreValues = [
     coreJob.customer,
     coreJob.location,
     coreJob.workOrder,
     coreJob.serviceAppointment,
-    coreJob.unitNumber,
-    coreJob.equipmentSerial,
     coreJob.installerName,
   ];
   const requiredCoreFilledCount = requiredCoreValues.filter((v) => v.trim()).length;
+  const hasCoreOrVehicleInfo = [
+    coreJob.customer,
+    coreJob.location,
+    coreJob.workOrder,
+    coreJob.serviceAppointment,
+    coreJob.installerName,
+    coreJob.equipmentMake,
+    coreJob.equipmentModel,
+    coreJob.equipmentSerial,
+    coreJob.unitNumber,
+  ].some((v) => v.trim());
   const coreSectionStatus: SectionStepStatus =
     requiredCoreFilledCount === 0
       ? "Not Started"
-      : requiredCoreFilledCount === 7
+      : requiredCoreFilledCount === 5
         ? "Complete"
         : "In Progress";
 
   const hardwareSectionStatus: SectionStepStatus =
     !primary ? "Not Started" : hasAdditional === "Yes" || hasAdditional === "No" ? "Complete" : "In Progress";
+  const hasAnsweredAdditionalHardwareQuestion = hasAdditional === "Yes" || hasAdditional === "No";
 
   const hardwareStatusSections = [...new Set(selectedSections)];
 
@@ -413,8 +669,10 @@ export default function Page() {
     if (!coreJob.location.trim()) issues.push("core-location");
     if (!coreJob.workOrder.trim()) issues.push("core-workOrder");
     if (!coreJob.serviceAppointment.trim()) issues.push("core-serviceAppointment");
-    if (!coreJob.unitNumber.trim()) issues.push("core-unitNumber");
-    if (!coreJob.equipmentSerial.trim()) issues.push("core-equipmentSerial");
+    if (!coreJob.unitNumber.trim()) issues.push("vehicle-unitNumber");
+    if (!coreJob.equipmentSerial.trim()) issues.push("vehicle-equipmentSerial");
+    if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
+    if (vehiclePictureCounts.vehicleSide < 1) issues.push("photo-vehicleSide");
     if (!coreJob.installerName.trim()) issues.push("core-installerName");
     if (!primary) issues.push("hw-primary");
     if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
@@ -423,7 +681,7 @@ export default function Page() {
 
     const isElectricDrive = vac4DriveType === "Electric";
     const isInternalCombustionDrive = vac4DriveType === "Internal Combustion";
-    const isBlueWireRequired = isInternalCombustionDrive || (isElectricDrive && liftSenseInstalled === "Yes");
+    const isBlueWireRequired = true;
     const isBrownWireRequired = isInternalCombustionDrive || (isElectricDrive && liftSenseInstalled === "Yes");
 
     if (!vac4VehicleType) issues.push("vac4-vehicleType");
@@ -436,6 +694,7 @@ export default function Page() {
     if (!vac4ClientApproval.trim()) issues.push("vac4-clientApproval");
     if (!vac4HourMeter.trim()) issues.push("vac4-hourMeter");
     if (isElectricDrive && !liftSenseInstalled) issues.push("vac4-liftSense");
+    if (!operatorPresenceInstalled) issues.push("vac4-operatorPresence");
 
     if (sensorHubInstalled === "Yes") {
       if (pc.sensorHubMounting < 1) issues.push("photo-sensorHubMounting");
@@ -461,6 +720,10 @@ export default function Page() {
     if (isBlueWireRequired) {
       if (pc.blueWire < 1) issues.push("photo-blueWire");
       if (!blueWireDescription.trim()) issues.push("vac4-blueWireDescription");
+    }
+    if (operatorPresenceInstalled === "Yes") {
+      if (pc.purpleWire < 1) issues.push("photo-purpleWire");
+      if (!purpleWireDescription.trim()) issues.push("vac4-purpleWireDescription");
     }
     if (isBrownWireRequired) {
       if (pc.brownWire < 1) issues.push("photo-brownWire");
@@ -491,7 +754,49 @@ export default function Page() {
     });
   };
 
-  const applyVacPhotoUpload = (key: keyof VacPhotoFileNames, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
+  const uploadPhotosToStorage = async (group: "vac4" | "vehicle", fieldName: UploadFieldName, files: File[]) => {
+    const uploadedUrls: string[] = [];
+    const uploadedPhotos: UploadedPhotoMetadata[] = [];
+    let ok = true;
+    for (const file of files) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const stampedName = `${Date.now()}-${safeName}`;
+      const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
+      const { error: uploadError } = await supabase.storage.from("job-card-photos").upload(objectPath, file, {
+        upsert: true,
+        contentType: file.type || undefined,
+      });
+      if (uploadError) {
+        console.error("Supabase upload failed:", {
+          error: uploadError.message,
+          submissionId,
+          group,
+          fieldName,
+          filename: file.name,
+          path: objectPath,
+        });
+        ok = false;
+        continue;
+      }
+      const { data } = supabase.storage.from("job-card-photos").getPublicUrl(objectPath);
+      const publicUrl = data?.publicUrl || "";
+      if (publicUrl) {
+        uploadedUrls.push(publicUrl);
+        uploadedPhotos.push({
+          fieldName,
+          group,
+          label: PHOTO_FIELD_LABELS[fieldName],
+          filename: file.name,
+          storagePath: objectPath,
+          publicUrl,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return { ok, uploadedUrls, uploadedPhotos };
+  };
+
+  const applyVacPhotoUpload = async (key: keyof VacPhotoFileNames, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
     const picked = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
 
@@ -503,6 +808,8 @@ export default function Page() {
 
     if (picked.length === 0) {
       setVacPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setVacPhotoUrlsSafe((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: [] }));
       setVacPhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(`photo-${String(key)}`);
       return;
@@ -510,26 +817,70 @@ export default function Page() {
 
     if (mode === "single") {
       setVacPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
-      setVacPhotoErrors((er) => ({ ...er, [key]: null }));
+      const uploadResult = await uploadPhotosToStorage("vac4", key, [picked[0]]);
+      setVacPhotoUrlsSafe((p) => ({ ...p, [key]: uploadResult.uploadedUrls }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: uploadResult.uploadedPhotos }));
+      setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
       clearFieldHighlight(`photo-${String(key)}`);
       return;
     }
 
-    let mergedOk: File[] | null = null;
-    setVacPhotoFiles((p) => {
-      const merged = [...p[key], ...picked];
-      if (merged.length > MAX_PHOTOS_PER_FIELD) {
-        return p;
-      }
-      mergedOk = merged;
-      return { ...p, [key]: merged };
-    });
-    if (mergedOk) {
-      setVacPhotoErrors((er) => ({ ...er, [key]: null }));
-      clearFieldHighlight(`photo-${String(key)}`);
-    } else {
+    const merged = [...vacPhotoFiles[key], ...picked];
+    if (merged.length > MAX_PHOTOS_PER_FIELD) {
       setVacPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
+      return;
     }
+
+    setVacPhotoFiles((p) => ({ ...p, [key]: merged }));
+    const uploadResult = await uploadPhotosToStorage("vac4", key, picked);
+    setVacPhotoUrlsSafe((p) => ({ ...p, [key]: [...p[key], ...uploadResult.uploadedUrls] }));
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: [...p[key], ...uploadResult.uploadedPhotos] }));
+    setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    clearFieldHighlight(`photo-${String(key)}`);
+  };
+
+  const applyVehiclePhotoUpload = async (key: VehiclePictureKey, e: ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+
+    if (picked.length === 0) {
+      setVehiclePictureFiles((p) => ({ ...p, [key]: [] }));
+      setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: [] }));
+      setVehiclePictureErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(`photo-${key}`);
+      return;
+    }
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType) {
+      setVehiclePictureErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setVehiclePictureErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    if (picked.length > MAX_PHOTOS_PER_FIELD) {
+      setVehiclePictureErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
+      return;
+    }
+
+    setVehiclePictureFiles((p) => ({ ...p, [key]: picked }));
+    const uploadResult = await uploadPhotosToStorage("vehicle", key, picked);
+    setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: uploadResult.uploadedUrls }));
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: uploadResult.uploadedPhotos }));
+    setVehiclePictureErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    clearFieldHighlight(`photo-${key}`);
   };
 
   const handleReviewClick = () => {
@@ -550,17 +901,21 @@ export default function Page() {
     setStep("review");
   };
 
-  const buildSubmissionPayload = (): JobCardSubmissionPayload => ({
-    submissionTimestamp: new Date().toISOString(),
-    status: "Submitted",
-    coreJobInfo: { ...coreJob },
-    hardwareSelection: {
-      primary,
-      hasAdditional,
-      additional: [...additional],
-    },
-    selectedSections: [...selectedSections],
-    vac4: {
+  const buildSubmissionPayload = (): JobCardSubmissionPayload => {
+    const photoSnapshot = getPhotoPersistenceSnapshot();
+    return {
+      submissionId,
+      submissionTimestamp: new Date().toISOString(),
+      status: "Submitted",
+      coreJobInfo: { ...coreJob },
+      hardwareSelection: {
+        primary,
+        hasAdditional,
+        additional: [...additional],
+      },
+      selectedSections: [...selectedSections],
+      photoUploads: [...photoSnapshot.photoUploads],
+      vac4: {
       vehicleType: vac4VehicleType,
       otherVehicleType: vac4OtherVehicleType,
       driveType: vac4DriveType,
@@ -570,6 +925,7 @@ export default function Page() {
       hourMeter: vac4HourMeter,
       sensorHubInstalled,
       liftSenseInstalled,
+      operatorPresenceInstalled,
       speedSenseInstalled,
       loadSenseInstalled,
       gpsInstalled,
@@ -598,14 +954,15 @@ export default function Page() {
         externalIndicator: pc.externalIndicator,
       },
       photoFileNames: { ...vacPhotoFileNames },
-    },
-  });
+      photoUrls: { ...photoSnapshot.vacPhotoUrls },
+      },
+    };
+  };
 
   const handleFinalSubmit = () => {
     const payload = buildSubmissionPayload();
     console.log("[Job card submission]", payload);
-    setSubmissionCompletedAt(Date.now());
-    setSubmitSuccessMessage("Job card prepared for email submission.");
+    setSubmitSuccessMessage(null);
     setPendingEmailPayload(payload);
     setEmailSendStatus("idle");
     setEmailSendErrorMessage(null);
@@ -645,6 +1002,37 @@ export default function Page() {
         return;
       }
       setEmailSendStatus("success");
+      setSubmissionStatus("Submitted");
+      setSubmissionCompletedAt(Date.now());
+      setSubmitSuccessMessage("Job card submitted successfully.");
+      const submittedPayload = pendingEmailPayload;
+      try {
+        const createdAt = new Date().toISOString();
+        const { error: insertError } = await supabase.from("job_card_submissions").insert({
+          submission_id: submittedPayload.submissionId,
+          customer: submittedPayload.coreJobInfo.customer.trim() || "—",
+          unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
+          payload: submittedPayload,
+          created_at: createdAt,
+        });
+        if (insertError) throw insertError;
+        const { error: deleteDraftError } = await supabase
+          .from("job_card_drafts")
+          .delete()
+          .eq("submission_id", submittedPayload.submissionId);
+        if (deleteDraftError) throw deleteDraftError;
+      } catch (e) {
+        console.error("Supabase post-submit sync failed:", e);
+      }
+      try {
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+        const drafts = readMigratedDraftsFromStorage();
+        const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
+        window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore localStorage cleanup errors
+      }
     } catch (e) {
       setEmailSendStatus("error");
       setEmailSendErrorMessage(e instanceof Error ? e.message : "Network error");
@@ -655,6 +1043,201 @@ export default function Page() {
     setReviewHighlights(new Set());
     setReviewBlockMessage(null);
     setStep("form");
+  };
+
+  const restoreFromDraftData = (draft: StoredJobCardDraft["data"], restoredSubmissionId: string) => {
+    setSubmissionId(restoredSubmissionId);
+    setCoreJob((prev) => ({ ...prev, ...draft.coreJob }));
+    setPrimary(draft.hardwareSelection?.primary || "");
+    setHasAdditional(draft.hardwareSelection?.hasAdditional || "");
+    setAdditional(Array.isArray(draft.hardwareSelection?.additional) ? draft.hardwareSelection.additional : []);
+    setVac4VehicleType(String(draft.vac4?.vehicleType || ""));
+    setVac4OtherVehicleType(String(draft.vac4?.otherVehicleType || ""));
+    setVac4DriveType(String(draft.vac4?.driveType || ""));
+    setVac4VehicleVoltage(String(draft.vac4?.vehicleVoltage || ""));
+    setVac4VehicleVoltageOther(String(draft.vac4?.vehicleVoltageOther || ""));
+    setVac4ClientApproval(String(draft.vac4?.clientApproval || ""));
+    setVac4HourMeter(String(draft.vac4?.hourMeter || ""));
+    setSensorHubInstalled(String(draft.vac4?.sensorHubInstalled || ""));
+    setLiftSenseInstalled(String(draft.vac4?.liftSenseInstalled || ""));
+    setOperatorPresenceInstalled(String(draft.vac4?.operatorPresenceInstalled || ""));
+    setSpeedSenseInstalled(String(draft.vac4?.speedSenseInstalled || ""));
+    setLoadSenseInstalled(String(draft.vac4?.loadSenseInstalled || ""));
+    setGpsInstalled(String(draft.vac4?.gpsInstalled || ""));
+    setExternalIndicatorInstalled(String(draft.vac4?.externalIndicatorInstalled || ""));
+    setSpeedSenseDescription(String(draft.vac4?.speedSenseDescription || ""));
+    setSpeedSensePulseCount(String(draft.vac4?.speedSensePulseCount || ""));
+    setLoadSenseThresholds(String(draft.vac4?.loadSenseThresholds || ""));
+    setRedWireDescription(String(draft.vac4?.redWireDescription || ""));
+    setBlackWireDescription(String(draft.vac4?.blackWireDescription || ""));
+    setBlueWireDescription(String(draft.vac4?.blueWireDescription || ""));
+    setBrownWireDescription(String(draft.vac4?.brownWireDescription || ""));
+    setPurpleWireDescription(String(draft.vac4?.purpleWireDescription || ""));
+    setRelayAccessDescription(String(draft.vac4?.relayAccessDescription || ""));
+    setImpactSensorDescription(String(draft.vac4?.impactSensorDescription || ""));
+    // Files cannot be restored from localStorage; reset upload state after restore.
+    setVacPhotoFiles(emptyVacPhotoFiles());
+    const restoredVacPhotoUrls = draft.photoSummary?.vac4PhotoUrls || emptyVacPhotoUrls();
+    vacPhotoUrlsRef.current = restoredVacPhotoUrls;
+    setVacPhotoUrls(restoredVacPhotoUrls);
+    const restoredUploads = draft.photoUploads || draft.photoSummary?.photoUploads || [];
+    const restoredMetadataByField = emptyPhotoMetadataByField();
+    for (const photo of restoredUploads) {
+      const key = photo.fieldName as UploadFieldName;
+      if (key in restoredMetadataByField) {
+        restoredMetadataByField[key].push(photo);
+      }
+    }
+    photoMetadataByFieldRef.current = restoredMetadataByField;
+    setPhotoMetadataByField(restoredMetadataByField);
+    setVacPhotoErrors(emptyVacPhotoErrors());
+    setVehiclePictureFiles(emptyVehiclePictureFiles());
+    const restoredVehiclePhotoUrls = draft.photoSummary?.vehiclePhotoUrls || emptyVehiclePictureUrls();
+    vehiclePictureUrlsRef.current = restoredVehiclePhotoUrls;
+    setVehiclePictureUrls(restoredVehiclePhotoUrls);
+    setVehiclePictureErrors(emptyVehiclePictureErrors());
+    setReviewHighlights(new Set());
+    setReviewBlockMessage(null);
+    setStep("form");
+    setDraftNoticeMessage("Draft restored. Please re-upload photos before submitting.");
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const resumePayloadRaw = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+    if (resumePayloadRaw) {
+      try {
+        const parsed = JSON.parse(resumePayloadRaw) as {
+          submissionId?: string;
+          data?: StoredJobCardDraft["data"];
+        };
+        const resumePayload = parsed?.data;
+        if (resumePayload) {
+          const restoredId = parsed.submissionId || generateSubmissionId();
+          setTimeout(() => restoreFromDraftData(resumePayload, restoredId), 0);
+        }
+      } catch {
+        // ignore parse errors and continue with legacy resume id path
+      }
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      return;
+    }
+
+    const resumeDraftId = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+    if (!resumeDraftId) return;
+    try {
+      const drafts = readMigratedDraftsFromStorage();
+      const match = drafts.find((d) => (d.submissionId || d.id) === resumeDraftId);
+      if (match) {
+        const restoredId = match.submissionId || match.id || generateSubmissionId();
+        setTimeout(() => restoreFromDraftData(match.data, restoredId), 0);
+      }
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+    } catch {
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+    }
+  }, []);
+
+  const saveDraftLocally = (nextDraft: StoredJobCardDraft) => {
+    const currentDrafts = readMigratedDraftsFromStorage();
+    const existingIndex = currentDrafts.findIndex((d) => (d.submissionId || d.id) === submissionId);
+    const nextDrafts =
+      existingIndex >= 0
+        ? currentDrafts.map((d, idx) => (idx === existingIndex ? nextDraft : d))
+        : [nextDraft, ...currentDrafts];
+    window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(nextDrafts));
+  };
+
+  const handleSaveDraft = async () => {
+    const photoSnapshot = getPhotoPersistenceSnapshot();
+    const draftData: StoredJobCardDraft["data"] = {
+      coreJob,
+      hardwareSelection: { primary, hasAdditional, additional },
+      vac4: {
+        vehicleType: vac4VehicleType,
+        otherVehicleType: vac4OtherVehicleType,
+        driveType: vac4DriveType,
+        vehicleVoltage: vac4VehicleVoltage,
+        vehicleVoltageOther: vac4VehicleVoltageOther,
+        clientApproval: vac4ClientApproval,
+        hourMeter: vac4HourMeter,
+        sensorHubInstalled,
+        liftSenseInstalled,
+        operatorPresenceInstalled,
+        speedSenseInstalled,
+        loadSenseInstalled,
+        gpsInstalled,
+        externalIndicatorInstalled,
+        speedSenseDescription,
+        speedSensePulseCount,
+        loadSenseThresholds,
+        redWireDescription,
+        blackWireDescription,
+        blueWireDescription,
+        brownWireDescription,
+        purpleWireDescription,
+        relayAccessDescription,
+        impactSensorDescription,
+      },
+      photoUploads: photoSnapshot.photoUploads,
+      photoSummary: {
+        vac4PhotoFileNames: vacPhotoFileNames,
+        vac4PhotoUrls: photoSnapshot.vacPhotoUrls,
+        vac4PhotoCounts: pc,
+        vehiclePhotoFileNames: vehiclePictureFileNames,
+        vehiclePhotoUrls: photoSnapshot.vehiclePhotoUrls,
+        vehiclePhotoCounts: vehiclePictureCounts,
+        photoUploads: photoSnapshot.photoUploads,
+      },
+    };
+    const updatedAt = new Date().toISOString();
+    const nextDraft: StoredJobCardDraft = {
+      submissionId,
+      customer: coreJob.customer.trim() || "—",
+      unitNumber: coreJob.unitNumber.trim() || "—",
+      savedAt: updatedAt,
+      data: draftData,
+    };
+
+    try {
+      const { error } = await supabase.from("job_card_drafts").upsert(
+        {
+          submission_id: submissionId,
+          customer: nextDraft.customer,
+          unit_number: nextDraft.unitNumber,
+          payload: draftData,
+          updated_at: updatedAt,
+        },
+        { onConflict: "submission_id" },
+      );
+      if (error) throw error;
+      try {
+        saveDraftLocally(nextDraft);
+      } catch {
+        // ignore local cache sync errors when cloud save succeeds
+      }
+      setDraftNoticeMessage("Draft saved to cloud.");
+    } catch {
+      try {
+        saveDraftLocally(nextDraft);
+        setDraftNoticeMessage("Draft saved locally.");
+      } catch {
+        setDraftNoticeMessage("Unable to save draft locally.");
+      }
+    }
+  };
+
+  const handleExitToHome = () => {
+    router.push("/");
+  };
+
+  const handleSaveDraftAndExit = async () => {
+    if (hasCoreOrVehicleInfo) {
+      await handleSaveDraft();
+    }
+    router.push("/");
   };
 
   const hl = (key: string) => reviewHighlights.has(key);
@@ -672,6 +1255,7 @@ export default function Page() {
     else if (required && complete) extra = " border-emerald-500 border-dashed";
     return `${photoPickClassName}${extra}`;
   };
+  const isJobCardSubmitted = submissionStatus === "Submitted" && emailSendStatus === "success";
 
   return (
     <div className="min-h-screen bg-slate-50 pb-32 sm:pb-36 md:pb-10">
@@ -690,25 +1274,18 @@ export default function Page() {
           </div>
         </header>
 
+        {draftNoticeMessage && (
+          <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-900" role="status">
+            {draftNoticeMessage}
+          </div>
+        )}
+
         {submitSuccessMessage && (
           <div
-            className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+            className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm"
             role="status"
           >
             <p className="text-sm font-semibold text-emerald-950 sm:text-base">{submitSuccessMessage}</p>
-            <button
-              type="button"
-              className="shrink-0 self-start rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 sm:self-auto"
-              onClick={() => {
-                setSubmitSuccessMessage(null);
-                setEmailSubmissionPreview(null);
-                setPendingEmailPayload(null);
-                setEmailSendStatus("idle");
-                setEmailSendErrorMessage(null);
-              }}
-            >
-              Dismiss
-            </button>
           </div>
         )}
 
@@ -738,14 +1315,16 @@ export default function Page() {
               </div>
             </div>
             <div className="mt-4 flex flex-col gap-3">
-              <button
-                type="button"
-                className={btnPrimaryClassName}
-                disabled={emailSendStatus === "sending" || !pendingEmailPayload}
-                onClick={handleConfirmSendEmail}
-              >
-                {emailSendStatus === "sending" ? "Sending…" : "Confirm & Send Email"}
-              </button>
+              {!isJobCardSubmitted && (
+                <button
+                  type="button"
+                  className={btnPrimaryClassName}
+                  disabled={emailSendStatus === "sending" || !pendingEmailPayload}
+                  onClick={handleConfirmSendEmail}
+                >
+                  {emailSendStatus === "sending" ? "Sending…" : "Confirm & Send Email"}
+                </button>
+              )}
               {emailSendStatus === "success" && (
                 <p className="text-sm font-semibold text-emerald-800" role="status">
                   Email sent successfully.
@@ -756,11 +1335,37 @@ export default function Page() {
                   {emailSendErrorMessage}
                 </p>
               )}
+              {isJobCardSubmitted && (
+                <>
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                    <p className="font-semibold">Submission status: Submitted</p>
+                    <p className="mt-1">
+                      Submitted at:{" "}
+                      {submissionCompletedAt ? new Date(submissionCompletedAt).toLocaleString() : "Just now"}
+                    </p>
+                  </div>
+                  <div className="mt-2 flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap">
+                    <Link
+                      href="/"
+                      className={`${btnSecondaryClassName} w-full flex-1 text-center sm:min-w-[160px]`}
+                    >
+                      Return to Home
+                    </Link>
+                    <button
+                      type="button"
+                      className={`${btnSecondaryClassName} w-full flex-1 sm:min-w-[160px]`}
+                      onClick={() => window.location.assign("/new-submission")}
+                    >
+                      Start New Job Card
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </section>
         )}
 
-        {step === "form" ? (
+        {!isJobCardSubmitted && !emailSubmissionPreview && (step === "form" ? (
         <>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           <SectionStatusCard title="Core Job Info" tone="blue" icon={IconClipboard} status={coreSectionStatus} />
@@ -797,7 +1402,7 @@ export default function Page() {
               </label>
               <input
                 className={fieldInputClass("core-customer")}
-                placeholder="Enter customer name"
+                placeholder="exp: Acme Logistics"
                 value={coreJob.customer}
                 onChange={(e) => setCoreField("customer", e.target.value)}
               />
@@ -811,7 +1416,7 @@ export default function Page() {
               </label>
               <input
                 className={fieldInputClass("core-location")}
-                placeholder="Enter location"
+                placeholder="exp: Atlanta, GA"
                 value={coreJob.location}
                 onChange={(e) => setCoreField("location", e.target.value)}
               />
@@ -825,7 +1430,7 @@ export default function Page() {
               </label>
               <input
                 className={fieldInputClass("core-workOrder")}
-                placeholder="Enter work order #"
+                placeholder="exp: WO-12345"
                 value={coreJob.workOrder}
                 onChange={(e) => setCoreField("workOrder", e.target.value)}
               />
@@ -839,59 +1444,11 @@ export default function Page() {
               </label>
               <input
                 className={fieldInputClass("core-serviceAppointment")}
-                placeholder="Enter service appointment #"
+                placeholder="exp: SA-98765"
                 value={coreJob.serviceAppointment}
                 onChange={(e) => setCoreField("serviceAppointment", e.target.value)}
               />
               {requiredHint("core-serviceAppointment")}
-            </div>
-
-            <div id="field-core-unitNumber">
-              <label className={fieldLabelClass("core-unitNumber")}>
-                Unit Number
-                <RequiredMark />
-              </label>
-              <input
-                className={fieldInputClass("core-unitNumber")}
-                placeholder="Enter unit number"
-                value={coreJob.unitNumber}
-                onChange={(e) => setCoreField("unitNumber", e.target.value)}
-              />
-              {requiredHint("core-unitNumber")}
-            </div>
-
-            <div>
-              <label className={labelClassName}>Equipment Make</label>
-              <input
-                className={inputClassName}
-                placeholder="Enter equipment make"
-                value={coreJob.equipmentMake}
-                onChange={(e) => setCoreField("equipmentMake", e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className={labelClassName}>Equipment Model</label>
-              <input
-                className={inputClassName}
-                placeholder="Enter equipment model"
-                value={coreJob.equipmentModel}
-                onChange={(e) => setCoreField("equipmentModel", e.target.value)}
-              />
-            </div>
-
-            <div id="field-core-equipmentSerial">
-              <label className={fieldLabelClass("core-equipmentSerial")}>
-                Equipment Serial #
-                <RequiredMark />
-              </label>
-              <input
-                className={fieldInputClass("core-equipmentSerial")}
-                placeholder="Enter equipment serial #"
-                value={coreJob.equipmentSerial}
-                onChange={(e) => setCoreField("equipmentSerial", e.target.value)}
-              />
-              {requiredHint("core-equipmentSerial")}
             </div>
 
             <div id="field-core-installerName">
@@ -901,11 +1458,279 @@ export default function Page() {
               </label>
               <input
                 className={fieldInputClass("core-installerName")}
-                placeholder="Enter installer name"
+                placeholder="exp: John Smith"
                 value={coreJob.installerName}
                 onChange={(e) => setCoreField("installerName", e.target.value)}
               />
               {requiredHint("core-installerName")}
+            </div>
+          </div>
+        </section>
+
+        {/* Vehicle Information */}
+        <section className={cardClassName}>
+          <FormSectionHeader title="Vehicle Information" tone="purple" />
+
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-x-6 md:gap-y-5">
+            <div>
+              <label className={labelClassName}>Make</label>
+              <input
+                className={inputClassName}
+                placeholder="exp: Toyota"
+                value={coreJob.equipmentMake}
+                onChange={(e) => setCoreField("equipmentMake", e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className={labelClassName}>Model</label>
+              <input
+                className={inputClassName}
+                placeholder="exp: 8FBE20U"
+                value={coreJob.equipmentModel}
+                onChange={(e) => setCoreField("equipmentModel", e.target.value)}
+              />
+            </div>
+
+            <div id="field-vehicle-serialNumber">
+              <label className={fieldLabelClass("vehicle-equipmentSerial")}>
+                Serial #
+                <RequiredMark />
+              </label>
+              <input
+                className={fieldInputClass("vehicle-equipmentSerial")}
+                placeholder="exp: SN123456"
+                value={coreJob.equipmentSerial}
+                onChange={(e) => setCoreField("equipmentSerial", e.target.value)}
+              />
+              {requiredHint("vehicle-equipmentSerial")}
+            </div>
+
+            <div id="field-vehicle-unitNumber">
+              <label className={fieldLabelClass("vehicle-unitNumber")}>
+                Unit #
+                <RequiredMark />
+              </label>
+              <input
+                className={fieldInputClass("vehicle-unitNumber")}
+                placeholder="exp: UNIT-42"
+                value={coreJob.unitNumber}
+                onChange={(e) => setCoreField("unitNumber", e.target.value)}
+              />
+              {requiredHint("vehicle-unitNumber")}
+            </div>
+
+            <div id="field-vac4-vehicleType">
+              <label className={fieldLabelClass("vac4-vehicleType")}>
+                Vehicle Type
+                <RequiredMark />
+              </label>
+              <select
+                className={fieldSelectClass("vac4-vehicleType")}
+                value={vac4VehicleType}
+                onChange={(e) => {
+                  setVac4VehicleType(e.target.value);
+                  clearFieldHighlight("vac4-vehicleType");
+                }}
+              >
+                <option value="" className="text-gray-400">
+                  Select vehicle type
+                </option>
+                <option>Forklift Rider</option>
+                <option>Forklift Stand-up</option>
+                <option>Man Lift</option>
+                <option>Order Picker</option>
+                <option>Pallet Jack Rider</option>
+                <option>Pallet Jack Walkie</option>
+                <option>Reach Truck</option>
+                <option>Stacker Rider</option>
+                <option>Stacker Walkie</option>
+                <option>Sweeper/Scrubber</option>
+                <option>Tugger/Tow Tractor</option>
+                <option>Turret Truck</option>
+                <option>Other</option>
+              </select>
+              {requiredHint("vac4-vehicleType")}
+            </div>
+
+            <div id="field-vac4-driveType">
+              <label className={fieldLabelClass("vac4-driveType")}>
+                Drive Type
+                <RequiredMark />
+              </label>
+              <select
+                className={fieldSelectClass("vac4-driveType")}
+                value={vac4DriveType}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setVac4DriveType(v);
+                  clearFieldHighlight("vac4-driveType");
+                  if (v !== "Electric") {
+                    setVac4VehicleVoltage("");
+                    setVac4VehicleVoltageOther("");
+                  }
+                }}
+              >
+                <option value="" className="text-gray-400">
+                  Select drive type
+                </option>
+                <option>Electric</option>
+                <option>Internal Combustion</option>
+                <option>Other</option>
+              </select>
+              {requiredHint("vac4-driveType")}
+            </div>
+
+            {vac4DriveType === "Electric" && (
+              <div className="space-y-5 md:col-span-2">
+                <div id="field-vac4-vehicleVoltage">
+                  <label className={fieldLabelClass("vac4-vehicleVoltage")}>
+                    Voltage
+                    <RequiredMark />
+                  </label>
+                  <select
+                    className={fieldSelectClass("vac4-vehicleVoltage")}
+                    value={vac4VehicleVoltage}
+                    onChange={(e) => {
+                      setVac4VehicleVoltage(e.target.value);
+                      clearFieldHighlight("vac4-vehicleVoltage");
+                      if (e.target.value !== "Other") {
+                        setVac4VehicleVoltageOther("");
+                      }
+                    }}
+                  >
+                    <option value="" className="text-gray-400">
+                      Select voltage
+                    </option>
+                    <option value="12">12</option>
+                    <option value="24">24</option>
+                    <option value="36">36</option>
+                    <option value="48">48</option>
+                    <option value="60">60</option>
+                    <option value="80">80</option>
+                    <option value="Other">Other</option>
+                  </select>
+                  {requiredHint("vac4-vehicleVoltage")}
+                </div>
+                {vac4VehicleVoltage === "Other" && (
+                  <div id="field-vac4-vehicleVoltageOther">
+                    <label className={fieldLabelClass("vac4-vehicleVoltageOther")}>
+                      Other Voltage
+                      <RequiredMark />
+                    </label>
+                    <input
+                      className={fieldInputClass("vac4-vehicleVoltageOther")}
+                      placeholder="exp: 72"
+                      value={vac4VehicleVoltageOther}
+                      onChange={(e) => {
+                        setVac4VehicleVoltageOther(e.target.value);
+                        clearFieldHighlight("vac4-vehicleVoltageOther");
+                      }}
+                    />
+                    {requiredHint("vac4-vehicleVoltageOther")}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {vac4VehicleType === "Other" && (
+              <div id="field-vac4-otherVehicleType" className="md:col-span-2">
+                <label className={fieldLabelClass("vac4-otherVehicleType")}>
+                  Other Vehicle Type
+                  <RequiredMark />
+                </label>
+                <input
+                  className={fieldInputClass("vac4-otherVehicleType")}
+                  placeholder="exp: Burden Carrier"
+                  value={vac4OtherVehicleType}
+                  onChange={(e) => {
+                    setVac4OtherVehicleType(e.target.value);
+                    clearFieldHighlight("vac4-otherVehicleType");
+                  }}
+                />
+                {requiredHint("vac4-otherVehicleType")}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Vehicle Pictures */}
+        <section className={cardClassName}>
+          <FormSectionHeader title="Vehicle Pictures" tone="purple" />
+
+          <div className="space-y-5">
+            <div id="field-photo-vehicleFront">
+              <label className={fieldLabelClass("photo-vehicleFront")}>
+                Vehicle Front Picture
+                <RequiredMark />
+              </label>
+              <input
+                id="vehicleFrontPictures"
+                type="file"
+                className="hidden"
+                accept="image/*"
+                multiple
+                onChange={(e) => applyVehiclePhotoUpload("vehicleFront", e)}
+              />
+              <label
+                htmlFor="vehicleFrontPictures"
+                className={photoPickClass("photo-vehicleFront", true, vehiclePictureCounts.vehicleFront >= 1)}
+              >
+                Select Front Photo(s)
+              </label>
+              <PhotoUploadFeedback count={vehiclePictureCounts.vehicleFront} names={vehiclePictureFileNames.vehicleFront} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleFront} />
+              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleFront >= 1} />
+              <PhotoFieldError message={vehiclePictureErrors.vehicleFront} />
+              {requiredHint("photo-vehicleFront")}
+            </div>
+
+            <div id="field-photo-vehicleSide">
+              <label className={fieldLabelClass("photo-vehicleSide")}>
+                Vehicle Side Picture
+                <RequiredMark />
+              </label>
+              <input
+                id="vehicleSidePictures"
+                type="file"
+                className="hidden"
+                accept="image/*"
+                multiple
+                onChange={(e) => applyVehiclePhotoUpload("vehicleSide", e)}
+              />
+              <label
+                htmlFor="vehicleSidePictures"
+                className={photoPickClass("photo-vehicleSide", true, vehiclePictureCounts.vehicleSide >= 1)}
+              >
+                Select Side Photo(s)
+              </label>
+              <PhotoUploadFeedback count={vehiclePictureCounts.vehicleSide} names={vehiclePictureFileNames.vehicleSide} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleSide} />
+              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleSide >= 1} />
+              <PhotoFieldError message={vehiclePictureErrors.vehicleSide} />
+              {requiredHint("photo-vehicleSide")}
+            </div>
+
+            <div id="field-photo-vehicleRear">
+              <label className={labelClassName}>Vehicle Rear Picture (Optional)</label>
+              <input
+                id="vehicleRearPictures"
+                type="file"
+                className="hidden"
+                accept="image/*"
+                multiple
+                onChange={(e) => applyVehiclePhotoUpload("vehicleRear", e)}
+              />
+              <label
+                htmlFor="vehicleRearPictures"
+                className={photoPickClass("photo-vehicleRear", false, vehiclePictureCounts.vehicleRear >= 1)}
+              >
+                Select Rear Photo(s)
+              </label>
+              <PhotoUploadFeedback count={vehiclePictureCounts.vehicleRear} names={vehiclePictureFileNames.vehicleRear} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleRear} />
+              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleRear >= 1} />
+              <PhotoFieldError message={vehiclePictureErrors.vehicleRear} />
             </div>
           </div>
         </section>
@@ -950,7 +1775,11 @@ export default function Page() {
                 className={fieldSelectClass("hw-hasAdditional")}
                 value={hasAdditional}
                 onChange={(e) => {
-                  setHasAdditional(e.target.value);
+                  const value = e.target.value;
+                  setHasAdditional(value);
+                  if (value === "No") {
+                    setAdditional([]);
+                  }
                   clearFieldHighlight("hw-hasAdditional");
                 }}
               >
@@ -981,142 +1810,18 @@ export default function Page() {
           </div>
         </section>
 
-        {primary === "VAC4" && (
+        {primary && !hasAnsweredAdditionalHardwareQuestion && (
+          <section className={cardClassName}>
+            <p className="text-sm font-semibold text-amber-800">
+              Please answer &quot;Is any additional hardware being installed?&quot; to continue.
+            </p>
+          </section>
+        )}
+
+        {hasAnsweredAdditionalHardwareQuestion && primary === "VAC4" && (
           <VAC4Section>
             <section className={`${cardClassName} space-y-5`}>
               <FormSectionHeader title="VAC4 Section" tone="purple" />
-
-                <div id="field-vac4-vehicleType">
-                  <label className={fieldLabelClass("vac4-vehicleType")}>
-                    Vehicle Type
-                    <RequiredMark />
-                  </label>
-                  <select
-                    className={fieldSelectClass("vac4-vehicleType")}
-                    value={vac4VehicleType}
-                    onChange={(e) => {
-                      setVac4VehicleType(e.target.value);
-                      clearFieldHighlight("vac4-vehicleType");
-                    }}
-                  >
-                    <option value="" className="text-gray-400">
-                      Select vehicle type
-                    </option>
-                    <option>Forklift Rider</option>
-                    <option>Forklift Stand-up</option>
-                    <option>Man Lift</option>
-                    <option>Order Picker</option>
-                    <option>Pallet Jack Rider</option>
-                    <option>Pallet Jack Walkie</option>
-                    <option>Reach Truck</option>
-                    <option>Stacker Rider</option>
-                    <option>Stacker Walkie</option>
-                    <option>Sweeper/Scrubber</option>
-                    <option>Tugger/Tow Tractor</option>
-                    <option>Turret Truck</option>
-                    <option>Other</option>
-                  </select>
-                  {requiredHint("vac4-vehicleType")}
-                </div>
-
-                {vac4VehicleType === "Other" && (
-                  <div id="field-vac4-otherVehicleType">
-                    <label className={fieldLabelClass("vac4-otherVehicleType")}>
-                      Other Vehicle Type
-                      <RequiredMark />
-                    </label>
-                    <input
-                      className={fieldInputClass("vac4-otherVehicleType")}
-                      placeholder="Enter vehicle type"
-                      value={vac4OtherVehicleType}
-                      onChange={(e) => {
-                        setVac4OtherVehicleType(e.target.value);
-                        clearFieldHighlight("vac4-otherVehicleType");
-                      }}
-                    />
-                    {requiredHint("vac4-otherVehicleType")}
-                  </div>
-                )}
-
-                <div id="field-vac4-driveType">
-                  <label className={fieldLabelClass("vac4-driveType")}>
-                    Drive Type
-                    <RequiredMark />
-                  </label>
-                  <select
-                    className={fieldSelectClass("vac4-driveType")}
-                    value={vac4DriveType}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setVac4DriveType(v);
-                      clearFieldHighlight("vac4-driveType");
-                      if (v !== "Electric") {
-                        setVac4VehicleVoltage("");
-                        setVac4VehicleVoltageOther("");
-                      }
-                    }}
-                  >
-                    <option value="" className="text-gray-400">
-                      Select drive type
-                    </option>
-                    <option>Electric</option>
-                    <option>Internal Combustion</option>
-                    <option>Other</option>
-                  </select>
-                  {requiredHint("vac4-driveType")}
-                </div>
-
-                {vac4DriveType === "Electric" && (
-                  <div className="space-y-5">
-                    <div id="field-vac4-vehicleVoltage">
-                      <label className={fieldLabelClass("vac4-vehicleVoltage")}>
-                        Vehicle Voltage
-                        <RequiredMark />
-                      </label>
-                      <select
-                        className={fieldSelectClass("vac4-vehicleVoltage")}
-                        value={vac4VehicleVoltage}
-                        onChange={(e) => {
-                          setVac4VehicleVoltage(e.target.value);
-                          clearFieldHighlight("vac4-vehicleVoltage");
-                          if (e.target.value !== "Other") {
-                            setVac4VehicleVoltageOther("");
-                          }
-                        }}
-                      >
-                        <option value="" className="text-gray-400">
-                          Select vehicle voltage
-                        </option>
-                        <option value="12">12</option>
-                        <option value="24">24</option>
-                        <option value="36">36</option>
-                        <option value="48">48</option>
-                        <option value="60">60</option>
-                        <option value="80">80</option>
-                        <option value="Other">Other</option>
-                      </select>
-                      {requiredHint("vac4-vehicleVoltage")}
-                    </div>
-                    {vac4VehicleVoltage === "Other" && (
-                      <div id="field-vac4-vehicleVoltageOther">
-                        <label className={fieldLabelClass("vac4-vehicleVoltageOther")}>
-                          Other Vehicle Voltage
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("vac4-vehicleVoltageOther")}
-                          placeholder="Enter vehicle voltage"
-                          value={vac4VehicleVoltageOther}
-                          onChange={(e) => {
-                            setVac4VehicleVoltageOther(e.target.value);
-                            clearFieldHighlight("vac4-vehicleVoltageOther");
-                          }}
-                        />
-                        {requiredHint("vac4-vehicleVoltageOther")}
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 <div id="field-vac4-clientApproval">
                   <label className={fieldLabelClass("vac4-clientApproval")}>
@@ -1125,7 +1830,7 @@ export default function Page() {
                   </label>
                   <input
                     className={fieldInputClass("vac4-clientApproval")}
-                    placeholder="Name, signature confirmation, date/time"
+                    placeholder="exp: Jane Doe, approved 4/25 10:30 AM"
                     value={vac4ClientApproval}
                     onChange={(e) => {
                       setVac4ClientApproval(e.target.value);
@@ -1133,23 +1838,6 @@ export default function Page() {
                     }}
                   />
                   {requiredHint("vac4-clientApproval")}
-                </div>
-
-                <div id="field-vac4-hourMeter">
-                  <label className={fieldLabelClass("vac4-hourMeter")}>
-                    Hour Meter Entered During Configuration
-                    <RequiredMark />
-                  </label>
-                  <input
-                    className={fieldInputClass("vac4-hourMeter")}
-                    placeholder="Enter hour meter value"
-                    value={vac4HourMeter}
-                    onChange={(e) => {
-                      setVac4HourMeter(e.target.value);
-                      clearFieldHighlight("vac4-hourMeter");
-                    }}
-                  />
-                  {requiredHint("vac4-hourMeter")}
                 </div>
 
                 {vac4DriveType === "Electric" && (
@@ -1176,6 +1864,401 @@ export default function Page() {
                   </div>
                 )}
 
+                <div id="field-vac4-operatorPresence">
+                  <label className={fieldLabelClass("vac4-operatorPresence")}>
+                    Is Operator Presence Installed?
+                    <RequiredMark />
+                  </label>
+                  <select
+                    className={fieldSelectClass("vac4-operatorPresence")}
+                    value={operatorPresenceInstalled}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setOperatorPresenceInstalled(value);
+                      clearFieldHighlight("vac4-operatorPresence");
+                      if (value === "No") {
+                        setPurpleWireDescription("");
+                        setVacPhotoFiles((p) => ({ ...p, purpleWire: [] }));
+                        setVacPhotoUrlsSafe((p) => ({ ...p, purpleWire: [] }));
+                        setPhotoMetadataByFieldSafe((p) => ({ ...p, purpleWire: [] }));
+                        setVacPhotoErrors((er) => ({ ...er, purpleWire: null }));
+                        clearFieldHighlight("photo-purpleWire");
+                        clearFieldHighlight("vac4-purpleWireDescription");
+                      }
+                    }}
+                  >
+                    <option value="" className="text-gray-400">
+                      Select Yes or No
+                    </option>
+                    <option>Yes</option>
+                    <option>No</option>
+                  </select>
+                  {requiredHint("vac4-operatorPresence")}
+                </div>
+
+                <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 sm:p-5">
+                  <h3 className="text-lg font-bold text-gray-900">VAC4 Required Photos</h3>
+
+                  <div id="field-photo-vacMounting">
+                    <label className={fieldLabelClass("photo-vacMounting")}>
+                      VAC Mounting Location Photo
+                      <RequiredMark />
+                    </label>
+                    <input
+                      id="vacMountingPhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => applyVacPhotoUpload("vacMounting", e, "single")}
+                    />
+                    <label
+                      htmlFor="vacMountingPhoto"
+                      className={photoPickClass("photo-vacMounting", true, pc.vacMounting >= 1)}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.vacMounting} names={vacPhotoFileNames.vacMounting} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.vacMounting} />
+                    <PhotoUploadedBadge show={pc.vacMounting >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.vacMounting} />
+                    {requiredHint("photo-vacMounting")}
+                  </div>
+                  <div id="field-photo-wirePath">
+                    <label className={fieldLabelClass("photo-wirePath")}>
+                      Wire Path Photos
+                      <RequiredMark />
+                    </label>
+                    <input
+                      id="wirePathPhotos"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      multiple
+                      onChange={(e) => applyVacPhotoUpload("wirePath", e, "multi")}
+                    />
+                    <label
+                      htmlFor="wirePathPhotos"
+                      className={photoPickClass("photo-wirePath", true, pc.wirePath >= 1)}
+                    >
+                      📷 Take / Upload Photos
+                    </label>
+                    <PhotoUploadFeedback count={pc.wirePath} names={vacPhotoFileNames.wirePath} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.wirePath} />
+                    <PhotoUploadedBadge show={pc.wirePath >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.wirePath} />
+                    {requiredHint("photo-wirePath")}
+                    <p className="mt-2 text-base leading-relaxed text-gray-600">
+                      Upload multiple photos showing the full wire route from device to connection points.
+                    </p>
+                  </div>
+
+                  <div id="field-photo-redWire">
+                    <label className={fieldLabelClass("photo-redWire")}>
+                      Red Wire Connection Photo
+                      <RequiredMark />
+                    </label>
+                    <p className="text-base text-gray-600">Battery positive</p>
+                    <input
+                      id="redWirePhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => applyVacPhotoUpload("redWire", e, "single")}
+                    />
+                    <label
+                      htmlFor="redWirePhoto"
+                      className={`${photoPickClass("photo-redWire", true, pc.redWire >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.redWire} names={vacPhotoFileNames.redWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.redWire} />
+                    <PhotoUploadedBadge show={pc.redWire >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.redWire} />
+                    {requiredHint("photo-redWire")}
+                    <div id="field-vac4-redWireDescription" className="mt-2">
+                      <label className={fieldLabelClass("vac4-redWireDescription")}>
+                        Red wire connection description
+                        <RequiredMark />
+                      </label>
+                      <input
+                        className={fieldInputClass("vac4-redWireDescription")}
+                        placeholder="exp: Battery + terminal post"
+                        value={redWireDescription}
+                        onChange={(e) => {
+                          setRedWireDescription(e.target.value);
+                          clearFieldHighlight("vac4-redWireDescription");
+                        }}
+                      />
+                      {requiredHint("vac4-redWireDescription")}
+                    </div>
+                  </div>
+                  <div id="field-photo-blackWire">
+                    <label className={fieldLabelClass("photo-blackWire")}>
+                      Black Wire Connection Photo
+                      <RequiredMark />
+                    </label>
+                    <p className="text-base text-gray-600">Battery negative</p>
+                    <input
+                      id="blackWirePhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => applyVacPhotoUpload("blackWire", e, "single")}
+                    />
+                    <label
+                      htmlFor="blackWirePhoto"
+                      className={`${photoPickClass("photo-blackWire", true, pc.blackWire >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.blackWire} names={vacPhotoFileNames.blackWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.blackWire} />
+                    <PhotoUploadedBadge show={pc.blackWire >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.blackWire} />
+                    {requiredHint("photo-blackWire")}
+                    <div id="field-vac4-blackWireDescription" className="mt-2">
+                      <label className={fieldLabelClass("vac4-blackWireDescription")}>
+                        Black wire connection description
+                        <RequiredMark />
+                      </label>
+                      <input
+                        className={fieldInputClass("vac4-blackWireDescription")}
+                        placeholder="exp: Frame ground stud"
+                        value={blackWireDescription}
+                        onChange={(e) => {
+                          setBlackWireDescription(e.target.value);
+                          clearFieldHighlight("vac4-blackWireDescription");
+                        }}
+                      />
+                      {requiredHint("vac4-blackWireDescription")}
+                    </div>
+                  </div>
+                  <div id="field-photo-blueWire">
+                    <label className={fieldLabelClass("photo-blueWire")}>
+                      Blue Wire Connection Photo
+                      <RequiredMark />
+                    </label>
+                    <p className="text-base text-gray-600">{blueWireHelperText}</p>
+                    <input
+                      id="blueWirePhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => applyVacPhotoUpload("blueWire", e, "single")}
+                    />
+                    <label
+                      htmlFor="blueWirePhoto"
+                      className={`${photoPickClass("photo-blueWire", true, pc.blueWire >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.blueWire} names={vacPhotoFileNames.blueWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.blueWire} />
+                    <PhotoUploadedBadge show={pc.blueWire >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.blueWire} />
+                    {requiredHint("photo-blueWire")}
+                    <div id="field-vac4-blueWireDescription" className="mt-2">
+                      <label className={fieldLabelClass("vac4-blueWireDescription")}>
+                        Blue wire connection description
+                        <RequiredMark />
+                      </label>
+                      <input
+                        className={fieldInputClass("vac4-blueWireDescription")}
+                        placeholder="exp: In-gear signal at controller"
+                        value={blueWireDescription}
+                        onChange={(e) => {
+                          setBlueWireDescription(e.target.value);
+                          clearFieldHighlight("vac4-blueWireDescription");
+                        }}
+                      />
+                      {requiredHint("vac4-blueWireDescription")}
+                    </div>
+                  </div>
+                  {operatorPresenceInstalled === "Yes" && (
+                    <div id="field-photo-purpleWire">
+                      <label className={fieldLabelClass("photo-purpleWire")}>
+                      Purple Wire Connection Photo
+                        <RequiredMark />
+                      </label>
+                    <p className="text-base text-gray-600">Operator presence</p>
+                    <input
+                      id="purpleWirePhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => applyVacPhotoUpload("purpleWire", e, "single")}
+                    />
+                    <label
+                      htmlFor="purpleWirePhoto"
+                        className={`${photoPickClass("photo-purpleWire", true, pc.purpleWire >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.purpleWire} names={vacPhotoFileNames.purpleWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.purpleWire} />
+                    <PhotoUploadedBadge show={pc.purpleWire >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.purpleWire} />
+                      {requiredHint("photo-purpleWire")}
+                      <div id="field-vac4-purpleWireDescription">
+                        <label className={fieldLabelClass("vac4-purpleWireDescription")}>
+                      Purple wire connection description
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("vac4-purpleWireDescription")}
+                          placeholder="exp: Seat switch output"
+                          value={purpleWireDescription}
+                          onChange={(e) => {
+                            setPurpleWireDescription(e.target.value);
+                            clearFieldHighlight("vac4-purpleWireDescription");
+                          }}
+                        />
+                        {requiredHint("vac4-purpleWireDescription")}
+                      </div>
+                    </div>
+                  )}
+                  {(["Gas", "Diesel", "LPG", "Internal Combustion"].includes(vac4DriveType) ||
+                    (vac4DriveType === "Electric" && liftSenseInstalled === "Yes")) && (
+                    <div id="field-photo-brownWire">
+                      <label className={fieldLabelClass("photo-brownWire")}>
+                        Brown Wire Connection Photo
+                        <RequiredMark />
+                      </label>
+                      <p className="text-base text-gray-600">{brownWireHelperText}</p>
+                      <input
+                        id="brownWirePhoto"
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => applyVacPhotoUpload("brownWire", e, "single")}
+                      />
+                      <label
+                        htmlFor="brownWirePhoto"
+                        className={`${photoPickClass("photo-brownWire", true, pc.brownWire >= 1)} mb-2`}
+                      >
+                        📷 Take / Upload Photo
+                      </label>
+                      <PhotoUploadFeedback count={pc.brownWire} names={vacPhotoFileNames.brownWire} />
+                      <PhotoThumbnailGrid files={vacPhotoFiles.brownWire} />
+                      <PhotoUploadedBadge show={pc.brownWire >= 1} />
+                      <PhotoFieldError message={vacPhotoErrors.brownWire} />
+                      {requiredHint("photo-brownWire")}
+                      <div id="field-vac4-brownWireDescription" className="mt-2">
+                        <label className={fieldLabelClass("vac4-brownWireDescription")}>
+                          Brown wire connection description
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("vac4-brownWireDescription")}
+                          placeholder="exp: Ignition-on signal"
+                          value={brownWireDescription}
+                          onChange={(e) => {
+                            setBrownWireDescription(e.target.value);
+                            clearFieldHighlight("vac4-brownWireDescription");
+                          }}
+                        />
+                        {requiredHint("vac4-brownWireDescription")}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className={labelClassName}>
+                      Relay Access Control Connection(s) Photo
+                      <RequiredMark />
+                    </label>
+                    <input
+                      id="relayAccessControlPhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                      onChange={(e) => applyVacPhotoUpload("relayAccess", e, "single")}
+                    />
+                    <label
+                      htmlFor="relayAccessControlPhoto"
+                      className={`${photoPickClass("photo-relayAccess", false, pc.relayAccess >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.relayAccess} names={vacPhotoFileNames.relayAccess} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.relayAccess} />
+                    <PhotoUploadedBadge show={pc.relayAccess >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.relayAccess} />
+                    <label className={`${labelClassName} mt-2`}>
+                      Relay access control connection description
+                      <RequiredMark />
+                    </label>
+                    <input
+                      className={inputClassName}
+                      placeholder="exp: Starter interlock relay"
+                      value={relayAccessDescription}
+                      onChange={(e) => setRelayAccessDescription(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClassName}>
+                      Impact Sensor Mounting Photo
+                      <RequiredMark />
+                    </label>
+                    <input
+                      id="impactSensorMountingPhoto"
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                      onChange={(e) => applyVacPhotoUpload("impactSensor", e, "single")}
+                    />
+                    <label
+                      htmlFor="impactSensorMountingPhoto"
+                      className={`${photoPickClass("photo-impactSensor", false, pc.impactSensor >= 1)} mb-2`}
+                    >
+                      📷 Take / Upload Photo
+                    </label>
+                    <PhotoUploadFeedback count={pc.impactSensor} names={vacPhotoFileNames.impactSensor} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.impactSensor} />
+                    <PhotoUploadedBadge show={pc.impactSensor >= 1} />
+                    <PhotoFieldError message={vacPhotoErrors.impactSensor} />
+                    <label className={`${labelClassName} mt-2`}>
+                      Impact sensor mounting description
+                      <RequiredMark />
+                    </label>
+                    <input
+                      className={inputClassName}
+                      placeholder="exp: Chassis center line, right side"
+                      value={impactSensorDescription}
+                      onChange={(e) => setImpactSensorDescription(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div id="field-vac4-hourMeter">
+                  <label className={fieldLabelClass("vac4-hourMeter")}>
+                    Hour Meter Entered During Configuration
+                    <RequiredMark />
+                  </label>
+                  <input
+                    className={fieldInputClass("vac4-hourMeter")}
+                    placeholder="exp: 1532.6"
+                    value={vac4HourMeter}
+                    onChange={(e) => {
+                      setVac4HourMeter(e.target.value);
+                      clearFieldHighlight("vac4-hourMeter");
+                    }}
+                  />
+                  {requiredHint("vac4-hourMeter")}
+                </div>
+
                 <div>
                   <label className={labelClassName}>Sensor Hub Installed?</label>
                   <select
@@ -1195,7 +2278,7 @@ export default function Page() {
                   <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 sm:p-5">
                     <div>
                       <label className={labelClassName}>Sensor Hub Mounting Location</label>
-                      <input className={inputClassName} placeholder="Describe mounting location" />
+                      <input className={inputClassName} placeholder="exp: Under dash panel" />
                     </div>
                     <div id="field-photo-sensorHubMounting">
                       <label className={fieldLabelClass("photo-sensorHubMounting")}>
@@ -1217,6 +2300,7 @@ export default function Page() {
                         📷 Take / Upload Photo
                       </label>
                       <PhotoUploadFeedback count={pc.sensorHubMounting} names={vacPhotoFileNames.sensorHubMounting} />
+                      <PhotoThumbnailGrid files={vacPhotoFiles.sensorHubMounting} />
                       <PhotoUploadedBadge show={pc.sensorHubMounting >= 1} />
                       <PhotoFieldError message={vacPhotoErrors.sensorHubMounting} />
                       {requiredHint("photo-sensorHubMounting")}
@@ -1305,6 +2389,7 @@ export default function Page() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.speedSense} names={vacPhotoFileNames.speedSense} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.speedSense} />
                           <PhotoUploadedBadge show={pc.speedSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.speedSense} />
                           {requiredHint("photo-speedSense")}
@@ -1316,7 +2401,7 @@ export default function Page() {
                           </label>
                           <input
                             className={fieldInputClass("vac4-speedSenseDescription")}
-                            placeholder="Describe speed sense install"
+                            placeholder="exp: Magnet mounted on drive wheel"
                             value={speedSenseDescription}
                             onChange={(e) => {
                               setSpeedSenseDescription(e.target.value);
@@ -1332,7 +2417,7 @@ export default function Page() {
                           </label>
                           <input
                             className={fieldInputClass("vac4-speedSensePulseCount")}
-                            placeholder="Enter pulse count"
+                            placeholder="exp: 16"
                             value={speedSensePulseCount}
                             onChange={(e) => {
                               setSpeedSensePulseCount(e.target.value);
@@ -1367,6 +2452,7 @@ export default function Page() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.loadSense} names={vacPhotoFileNames.loadSense} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.loadSense} />
                           <PhotoUploadedBadge show={pc.loadSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.loadSense} />
                           {requiredHint("photo-loadSense")}
@@ -1378,7 +2464,7 @@ export default function Page() {
                           </label>
                           <input
                             className={fieldInputClass("vac4-loadSenseThresholds")}
-                            placeholder="Enter VAC thresholds"
+                            placeholder="exp: 2.5V empty / 4.2V loaded"
                             value={loadSenseThresholds}
                             onChange={(e) => {
                               setLoadSenseThresholds(e.target.value);
@@ -1413,6 +2499,7 @@ export default function Page() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.gps} names={vacPhotoFileNames.gps} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.gps} />
                           <PhotoUploadedBadge show={pc.gps >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.gps} />
                           {requiredHint("photo-gps")}
@@ -1443,6 +2530,7 @@ export default function Page() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.externalIndicator} names={vacPhotoFileNames.externalIndicator} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.externalIndicator} />
                           <PhotoUploadedBadge show={pc.externalIndicator >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.externalIndicator} />
                           {requiredHint("photo-externalIndicator")}
@@ -1451,394 +2539,62 @@ export default function Page() {
                     )}
                   </div>
                 )}
-
-                <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 sm:p-5">
-                  <h3 className="text-lg font-bold text-gray-900">VAC4 Required Photos</h3>
-
-                  <div id="field-photo-vacMounting">
-                    <label className={fieldLabelClass("photo-vacMounting")}>
-                      VAC Mounting Location Photo
-                      <RequiredMark />
-                    </label>
-                    <input
-                      id="vacMountingPhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={(e) => applyVacPhotoUpload("vacMounting", e, "single")}
-                    />
-                    <label
-                      htmlFor="vacMountingPhoto"
-                      className={photoPickClass("photo-vacMounting", true, pc.vacMounting >= 1)}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.vacMounting} names={vacPhotoFileNames.vacMounting} />
-                    <PhotoUploadedBadge show={pc.vacMounting >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.vacMounting} />
-                    {requiredHint("photo-vacMounting")}
-                  </div>
-                  <div id="field-photo-wirePath">
-                    <label className={fieldLabelClass("photo-wirePath")}>
-                      Wire Path Photos
-                      <RequiredMark />
-                    </label>
-                    <input
-                      id="wirePathPhotos"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      multiple
-                      onChange={(e) => applyVacPhotoUpload("wirePath", e, "multi")}
-                    />
-                    <label
-                      htmlFor="wirePathPhotos"
-                      className={photoPickClass("photo-wirePath", true, pc.wirePath >= 1)}
-                    >
-                      📷 Take / Upload Photos
-                    </label>
-                    <PhotoUploadFeedback count={pc.wirePath} names={vacPhotoFileNames.wirePath} />
-                    <PhotoUploadedBadge show={pc.wirePath >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.wirePath} />
-                    {requiredHint("photo-wirePath")}
-                    <p className="mt-2 text-base leading-relaxed text-gray-600">
-                      Upload multiple photos showing the full wire route from device to connection points.
-                    </p>
-                  </div>
-
-                  <div id="field-photo-redWire">
-                    <label className={fieldLabelClass("photo-redWire")}>
-                      Red Wire Connection Photo
-                      <RequiredMark />
-                    </label>
-                    <p className="text-base text-gray-600">Battery positive</p>
-                    <input
-                      id="redWirePhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={(e) => applyVacPhotoUpload("redWire", e, "single")}
-                    />
-                    <label
-                      htmlFor="redWirePhoto"
-                      className={`${photoPickClass("photo-redWire", true, pc.redWire >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.redWire} names={vacPhotoFileNames.redWire} />
-                    <PhotoUploadedBadge show={pc.redWire >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.redWire} />
-                    {requiredHint("photo-redWire")}
-                    <div id="field-vac4-redWireDescription" className="mt-2">
-                      <label className={fieldLabelClass("vac4-redWireDescription")}>
-                        Red wire connection description
-                        <RequiredMark />
-                      </label>
-                      <input
-                        className={fieldInputClass("vac4-redWireDescription")}
-                        placeholder="Red wire connection description"
-                        value={redWireDescription}
-                        onChange={(e) => {
-                          setRedWireDescription(e.target.value);
-                          clearFieldHighlight("vac4-redWireDescription");
-                        }}
-                      />
-                      {requiredHint("vac4-redWireDescription")}
-                    </div>
-                  </div>
-                  <div id="field-photo-blackWire">
-                    <label className={fieldLabelClass("photo-blackWire")}>
-                      Black Wire Connection Photo
-                      <RequiredMark />
-                    </label>
-                    <p className="text-base text-gray-600">Battery negative</p>
-                    <input
-                      id="blackWirePhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={(e) => applyVacPhotoUpload("blackWire", e, "single")}
-                    />
-                    <label
-                      htmlFor="blackWirePhoto"
-                      className={`${photoPickClass("photo-blackWire", true, pc.blackWire >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.blackWire} names={vacPhotoFileNames.blackWire} />
-                    <PhotoUploadedBadge show={pc.blackWire >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.blackWire} />
-                    {requiredHint("photo-blackWire")}
-                    <div id="field-vac4-blackWireDescription" className="mt-2">
-                      <label className={fieldLabelClass("vac4-blackWireDescription")}>
-                        Black wire connection description
-                        <RequiredMark />
-                      </label>
-                      <input
-                        className={fieldInputClass("vac4-blackWireDescription")}
-                        placeholder="Black wire connection description"
-                        value={blackWireDescription}
-                        onChange={(e) => {
-                          setBlackWireDescription(e.target.value);
-                          clearFieldHighlight("vac4-blackWireDescription");
-                        }}
-                      />
-                      {requiredHint("vac4-blackWireDescription")}
-                    </div>
-                  </div>
-                  <div id="field-photo-blueWire">
-                    <label className={fieldLabelClass("photo-blueWire")}>
-                      Blue Wire Connection Photo
-                      {blueWireRequiredUi && <RequiredMark />}
-                    </label>
-                    <p className="text-base text-gray-600">{blueWireHelperText}</p>
-                    <input
-                      id="blueWirePhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={(e) => applyVacPhotoUpload("blueWire", e, "single")}
-                    />
-                    <label
-                      htmlFor="blueWirePhoto"
-                      className={`${photoPickClass("photo-blueWire", blueWireRequiredUi, pc.blueWire >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.blueWire} names={vacPhotoFileNames.blueWire} />
-                    <PhotoUploadedBadge show={pc.blueWire >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.blueWire} />
-                    {requiredHint("photo-blueWire")}
-                    {blueWireRequiredUi && (
-                      <div id="field-vac4-blueWireDescription" className="mt-2">
-                        <label className={fieldLabelClass("vac4-blueWireDescription")}>
-                          Blue wire connection description
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("vac4-blueWireDescription")}
-                          placeholder="Blue wire connection description"
-                          value={blueWireDescription}
-                          onChange={(e) => {
-                            setBlueWireDescription(e.target.value);
-                            clearFieldHighlight("vac4-blueWireDescription");
-                          }}
-                        />
-                        {requiredHint("vac4-blueWireDescription")}
-                      </div>
-                    )}
-                    {!blueWireRequiredUi && (
-                      <input
-                        className={`${inputClassName} mt-2`}
-                        placeholder="Blue wire connection description"
-                        value={blueWireDescription}
-                        onChange={(e) => setBlueWireDescription(e.target.value)}
-                      />
-                    )}
-                  </div>
-                  <div>
-                    <label className={labelClassName}>
-                      Purple Wire Connection Photo
-                      <RequiredMark />
-                    </label>
-                    <p className="text-base text-gray-600">Operator presence</p>
-                    <input
-                      id="purpleWirePhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      required
-                      onChange={(e) => applyVacPhotoUpload("purpleWire", e, "single")}
-                    />
-                    <label
-                      htmlFor="purpleWirePhoto"
-                      className={`${photoPickClass("photo-purpleWire", false, pc.purpleWire >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.purpleWire} names={vacPhotoFileNames.purpleWire} />
-                    <PhotoUploadedBadge show={pc.purpleWire >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.purpleWire} />
-                    <label className={`${labelClassName} mt-2`}>
-                      Purple wire connection description
-                      <RequiredMark />
-                    </label>
-                    <input
-                      className={inputClassName}
-                      placeholder="Purple wire connection description"
-                      value={purpleWireDescription}
-                      onChange={(e) => setPurpleWireDescription(e.target.value)}
-                    />
-                  </div>
-                  {(vac4DriveType === "Internal Combustion" ||
-                    (vac4DriveType === "Electric" && liftSenseInstalled === "Yes")) && (
-                    <div id="field-photo-brownWire">
-                      <label className={fieldLabelClass("photo-brownWire")}>
-                        Brown Wire Connection Photo
-                        <RequiredMark />
-                      </label>
-                      <p className="text-base text-gray-600">{brownWireHelperText}</p>
-                      <input
-                        id="brownWirePhoto"
-                        type="file"
-                        className="hidden"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={(e) => applyVacPhotoUpload("brownWire", e, "single")}
-                      />
-                      <label
-                        htmlFor="brownWirePhoto"
-                        className={`${photoPickClass("photo-brownWire", true, pc.brownWire >= 1)} mb-2`}
-                      >
-                        📷 Take / Upload Photo
-                      </label>
-                      <PhotoUploadFeedback count={pc.brownWire} names={vacPhotoFileNames.brownWire} />
-                      <PhotoUploadedBadge show={pc.brownWire >= 1} />
-                      <PhotoFieldError message={vacPhotoErrors.brownWire} />
-                      {requiredHint("photo-brownWire")}
-                      <div id="field-vac4-brownWireDescription" className="mt-2">
-                        <label className={fieldLabelClass("vac4-brownWireDescription")}>
-                          Brown wire connection description
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("vac4-brownWireDescription")}
-                          placeholder="Brown wire connection description"
-                          value={brownWireDescription}
-                          onChange={(e) => {
-                            setBrownWireDescription(e.target.value);
-                            clearFieldHighlight("vac4-brownWireDescription");
-                          }}
-                        />
-                        {requiredHint("vac4-brownWireDescription")}
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className={labelClassName}>
-                      Relay Access Control Connection(s) Photo
-                      <RequiredMark />
-                    </label>
-                    <input
-                      id="relayAccessControlPhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      required
-                      onChange={(e) => applyVacPhotoUpload("relayAccess", e, "single")}
-                    />
-                    <label
-                      htmlFor="relayAccessControlPhoto"
-                      className={`${photoPickClass("photo-relayAccess", false, pc.relayAccess >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.relayAccess} names={vacPhotoFileNames.relayAccess} />
-                    <PhotoUploadedBadge show={pc.relayAccess >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.relayAccess} />
-                    <label className={`${labelClassName} mt-2`}>
-                      Relay access control connection description
-                      <RequiredMark />
-                    </label>
-                    <input
-                      className={inputClassName}
-                      placeholder="Relay access control connection description"
-                      value={relayAccessDescription}
-                      onChange={(e) => setRelayAccessDescription(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className={labelClassName}>
-                      Impact Sensor Mounting Photo
-                      <RequiredMark />
-                    </label>
-                    <input
-                      id="impactSensorMountingPhoto"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      capture="environment"
-                      required
-                      onChange={(e) => applyVacPhotoUpload("impactSensor", e, "single")}
-                    />
-                    <label
-                      htmlFor="impactSensorMountingPhoto"
-                      className={`${photoPickClass("photo-impactSensor", false, pc.impactSensor >= 1)} mb-2`}
-                    >
-                      📷 Take / Upload Photo
-                    </label>
-                    <PhotoUploadFeedback count={pc.impactSensor} names={vacPhotoFileNames.impactSensor} />
-                    <PhotoUploadedBadge show={pc.impactSensor >= 1} />
-                    <PhotoFieldError message={vacPhotoErrors.impactSensor} />
-                    <label className={`${labelClassName} mt-2`}>
-                      Impact sensor mounting description
-                      <RequiredMark />
-                    </label>
-                    <input
-                      className={inputClassName}
-                      placeholder="Impact sensor mounting description"
-                      value={impactSensorDescription}
-                      onChange={(e) => setImpactSensorDescription(e.target.value)}
-                    />
-                  </div>
-                </div>
             </section>
           </VAC4Section>
         )}
 
         {/* Dynamic Sections */}
-        {selectedSections
-          .filter((section) => section !== "VAC4")
-          .map((section) => (
-            <section key={section} className={cardClassName}>
-              <FormSectionHeader title={`${section} Section`} tone="green" />
+        {hasAnsweredAdditionalHardwareQuestion &&
+          selectedSections
+            .filter((section) => section !== "VAC4")
+            .map((section) => (
+              <section key={section} className={cardClassName}>
+                <FormSectionHeader title={`${section} Section`} tone="green" />
 
-              <div className="space-y-5">
-                <div>
-                  <label className={labelClassName}>Drive Type</label>
-                  <select className={selectClassName}>
-                    <option>Drive Type</option>
-                    <option>Electric</option>
-                    <option>Internal Combustion</option>
-                    <option>Other</option>
-                  </select>
-                </div>
+                <div className="space-y-5">
+                  <div>
+                    <label className={labelClassName}>Drive Type</label>
+                    <select className={selectClassName}>
+                      <option>Drive Type</option>
+                      <option>Electric</option>
+                      <option>Internal Combustion</option>
+                      <option>Other</option>
+                    </select>
+                  </div>
 
-                <div>
-                  <label className={labelClassName}>Notes / Details</label>
-                  <input className={inputClassName} placeholder="Notes / Details" />
-                </div>
+                  <div>
+                    <label className={labelClassName}>Notes / Details</label>
+                    <input className={inputClassName} placeholder="exp: Customer requested wire loom" />
+                  </div>
 
-                <div>
-                  <label className={labelClassName}>Attachments</label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="min-h-[52px] w-full rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-base file:mr-4 file:rounded-xl file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
-                  />
+                  <div>
+                    <label className={labelClassName}>Attachments</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="min-h-[52px] w-full rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-base file:mr-4 file:rounded-xl file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                    />
+                  </div>
                 </div>
-              </div>
-            </section>
-          ))}
+              </section>
+            ))}
 
         <div className="hidden md:flex md:flex-row md:justify-end md:gap-3 md:pt-2">
-          <button type="button" className={btnSecondaryClassName}>
-            <IconFloppy className="h-5 w-5" />
-            Save Draft
+          <button
+            type="button"
+            className={btnSecondaryClassName}
+            onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
+          >
+              <IconFloppy className="h-5 w-5" />
+            {hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}
           </button>
-          <button type="button" className={btnPrimaryClassName} onClick={handleReviewClick}>
-            <IconSend className="h-5 w-5" />
-            Review & Submit Job Card
-          </button>
+          {hasAnsweredAdditionalHardwareQuestion && (
+            <button type="button" className={btnPrimaryClassName} onClick={handleReviewClick}>
+              <IconSend className="h-5 w-5" />
+              Review & Submit Job Card
+            </button>
+          )}
         </div>
         </>
         ) : (
@@ -1861,11 +2617,56 @@ export default function Page() {
             <SummaryRow label="Location" value={coreJob.location} />
             <SummaryRow label="Work order #" value={coreJob.workOrder} />
             <SummaryRow label="Service appointment #" value={coreJob.serviceAppointment} />
-            <SummaryRow label="Unit number" value={coreJob.unitNumber} />
-            <SummaryRow label="Equipment make" value={coreJob.equipmentMake} />
-            <SummaryRow label="Equipment model" value={coreJob.equipmentModel} />
-            <SummaryRow label="Equipment serial #" value={coreJob.equipmentSerial} />
             <SummaryRow label="Installer name" value={coreJob.installerName} />
+          </div>
+        </section>
+
+        <section className={cardClassName}>
+          <FormSectionHeader title="Vehicle Information" tone="purple" />
+          <div>
+            <SummaryRow label="Make" value={coreJob.equipmentMake} />
+            <SummaryRow label="Model" value={coreJob.equipmentModel} />
+            <SummaryRow label="Serial #" value={coreJob.equipmentSerial} />
+            <SummaryRow label="Unit #" value={coreJob.unitNumber} />
+            <SummaryRow
+              label="Vehicle type"
+              value={
+                vac4VehicleType === "Other"
+                  ? `${vac4VehicleType}${vac4OtherVehicleType.trim() ? ` (${vac4OtherVehicleType})` : ""}`
+                  : vac4VehicleType
+              }
+            />
+            <SummaryRow label="Drive type" value={vac4DriveType} />
+            {vac4DriveType === "Electric" && (
+              <SummaryRow
+                label="Voltage"
+                value={
+                  vac4VehicleVoltage === "Other"
+                    ? vac4VehicleVoltageOther.trim()
+                      ? `Other (${vac4VehicleVoltageOther})`
+                      : "Other"
+                    : vac4VehicleVoltage
+                }
+              />
+            )}
+          </div>
+        </section>
+
+        <section className={cardClassName}>
+          <FormSectionHeader title="Vehicle Pictures" tone="purple" />
+          <div>
+            <SummaryRow
+              label="Vehicle front picture(s)"
+              value={reviewPhotoSummary(vehiclePictureCounts.vehicleFront, vehiclePictureFileNames.vehicleFront)}
+            />
+            <SummaryRow
+              label="Vehicle side picture(s)"
+              value={reviewPhotoSummary(vehiclePictureCounts.vehicleSide, vehiclePictureFileNames.vehicleSide)}
+            />
+            <SummaryRow
+              label="Vehicle rear picture(s)"
+              value={reviewPhotoSummary(vehiclePictureCounts.vehicleRear, vehiclePictureFileNames.vehicleRear)}
+            />
           </div>
         </section>
 
@@ -1904,21 +2705,8 @@ export default function Page() {
                 }
               />
               <SummaryRow label="Drive type" value={vac4DriveType} />
-              {vac4DriveType === "Electric" && (
-                <>
-                  <SummaryRow
-                    label="Vehicle voltage"
-                    value={
-                      vac4VehicleVoltage === "Other"
-                        ? vac4VehicleVoltageOther.trim()
-                          ? `Other (${vac4VehicleVoltageOther})`
-                          : "Other"
-                        : vac4VehicleVoltage
-                    }
-                  />
-                  <SummaryRow label="Lift sense installed?" value={liftSenseInstalled} />
-                </>
-              )}
+              {vac4DriveType === "Electric" && <SummaryRow label="Lift sense installed?" value={liftSenseInstalled} />}
+              <SummaryRow label="Operator presence installed?" value={operatorPresenceInstalled} />
               <SummaryRow label="Client representative approval" value={vac4ClientApproval} />
               <SummaryRow label="Hour meter (configuration)" value={vac4HourMeter} />
               <SummaryRow label="Sensor hub installed?" value={sensorHubInstalled} />
@@ -1972,7 +2760,7 @@ export default function Page() {
 
         <div className="hidden md:flex md:flex-row md:justify-end md:gap-3 md:pt-2">
           <button type="button" className={btnSecondaryClassName} onClick={handleBackToForm}>
-            Back (edit)
+            Back to Edit
           </button>
           <button type="button" className={btnPrimaryClassName} onClick={handleFinalSubmit}>
             <IconSend className="h-5 w-5" />
@@ -1980,40 +2768,96 @@ export default function Page() {
           </button>
         </div>
         </>
-        )}
+        ))}
       </div>
 
-      <div
-        className="fixed inset-x-0 bottom-0 z-50 border-t border-gray-200 bg-white/95 px-4 pt-3 shadow-[0_-8px_30px_rgba(15,23,42,0.08)] backdrop-blur-md md:hidden"
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))" }}
-        role="region"
-        aria-label="Job card actions"
-      >
-        <div className="mx-auto flex max-w-4xl gap-3">
-          {step === "form" ? (
-            <>
-              <button type="button" className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}>
-                <IconFloppy className="h-5 w-5 shrink-0" />
-                <span className="truncate">Save Draft</span>
-              </button>
-              <button type="button" className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleReviewClick}>
-                <IconSend className="h-5 w-5 shrink-0" />
-                <span className="line-clamp-2 text-left leading-tight">Review & Submit Job Card</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button type="button" className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleBackToForm}>
-                <span className="truncate">Back (edit)</span>
-              </button>
-              <button type="button" className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleFinalSubmit}>
-                <IconSend className="h-5 w-5 shrink-0" />
-                <span className="line-clamp-2 text-left leading-tight">Confirm & Submit</span>
-              </button>
-            </>
-          )}
+      {!isJobCardSubmitted && (
+        <div
+          className="fixed inset-x-0 bottom-0 z-50 border-t border-gray-200 bg-white/95 px-4 pt-3 shadow-[0_-8px_30px_rgba(15,23,42,0.08)] backdrop-blur-md md:hidden"
+          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))" }}
+          role="region"
+          aria-label="Job card actions"
+        >
+          <div className="mx-auto flex max-w-4xl gap-3">
+            {step === "form" ? (
+              <>
+                <button
+                  type="button"
+                  className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                  onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
+                >
+                  <IconFloppy className="h-5 w-5 shrink-0" />
+                  <span className="truncate">{hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                  onClick={handleReviewClick}
+                  disabled={!hasAnsweredAdditionalHardwareQuestion}
+                >
+                  <IconSend className="h-5 w-5 shrink-0" />
+                  <span className="line-clamp-2 text-left leading-tight">Review & Submit Job Card</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleBackToForm}>
+                  <span className="truncate">Back to Edit</span>
+                </button>
+                <button type="button" className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleFinalSubmit}>
+                  <IconSend className="h-5 w-5 shrink-0" />
+                  <span className="line-clamp-2 text-left leading-tight">Confirm & Submit</span>
+                </button>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
+  );
+}
+
+export default function HomePage() {
+  const cardClassName =
+    "rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6";
+
+  return (
+    <main className="min-h-screen bg-slate-50 py-6">
+      <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
+        <header className={cardClassName}>
+          <div className="flex flex-col items-start gap-1.5">
+            <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
+            <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Job Card</h1>
+            <p className="text-base font-medium leading-tight text-gray-600">Select an option to begin</p>
+          </div>
+        </header>
+
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Link
+            href="/new-submission"
+            className="rounded-2xl border border-blue-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-blue-300 hover:bg-blue-50/50 sm:p-6"
+          >
+            <h2 className="text-lg font-bold text-gray-900">New Submission</h2>
+            <p className="mt-1 text-sm text-gray-600">Start a new installer job card.</p>
+          </Link>
+
+          <Link
+            href="/drafts"
+            className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-emerald-300 hover:bg-emerald-50/50 sm:p-6"
+          >
+            <h2 className="text-lg font-bold text-gray-900">Saved Drafts</h2>
+            <p className="mt-1 text-sm text-gray-600">Resume or manage unfinished job cards.</p>
+          </Link>
+
+          <Link
+            href="/submitted"
+            className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50 sm:p-6"
+          >
+            <h2 className="text-lg font-bold text-gray-900">Submitted Job Cards</h2>
+            <p className="mt-1 text-sm text-gray-600">View completed submissions.</p>
+          </Link>
+        </section>
+      </div>
+    </main>
   );
 }

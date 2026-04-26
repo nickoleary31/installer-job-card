@@ -28,6 +28,7 @@ export type CoreJobFields = {
 };
 
 export type JobCardSubmissionPayload = {
+  submissionId: string;
   submissionTimestamp: string;
   status: "Submitted";
   coreJobInfo: CoreJobFields;
@@ -37,6 +38,7 @@ export type JobCardSubmissionPayload = {
     additional: string[];
   };
   selectedSections: string[];
+  photoUploads: UploadedPhotoMetadata[];
   vac4: {
     vehicleType: string;
     otherVehicleType: string;
@@ -47,6 +49,7 @@ export type JobCardSubmissionPayload = {
     hourMeter: string;
     sensorHubInstalled: string;
     liftSenseInstalled: string;
+    operatorPresenceInstalled?: string;
     speedSenseInstalled: string;
     loadSenseInstalled: string;
     gpsInstalled: string;
@@ -63,7 +66,18 @@ export type JobCardSubmissionPayload = {
     impactSensorDescription?: string;
     photoCounts: Record<string, number>;
     photoFileNames: VacPhotoFileNames;
+    photoUrls: VacPhotoFileNames;
   };
+};
+
+export type UploadedPhotoMetadata = {
+  fieldName: string;
+  group: "vac4" | "vehicle";
+  label: string;
+  filename: string;
+  storagePath: string;
+  publicUrl: string;
+  uploadedAt: string;
 };
 
 export const DEFAULT_JOB_CARD_EMAIL_TO = "install-submissions@example.com";
@@ -143,62 +157,128 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const c = p.coreJobInfo;
   const h = p.hardwareSelection;
   const v = p.vac4;
+  const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
+  const divider = "--------------------------------";
+  const orderedDescriptions = VAC4_ORDERED_DESCRIPTION_FIELDS.reduce<Record<Vac4DescriptionKey, string>>(
+    (acc, { key }) => {
+      acc[key] = textOrDash(v[key]);
+      return acc;
+    },
+    {
+      redWireDescription: "—",
+      blackWireDescription: "—",
+      blueWireDescription: "—",
+      purpleWireDescription: "—",
+      brownWireDescription: "—",
+      relayAccessDescription: "—",
+      impactSensorDescription: "—",
+    },
+  );
+  const photoLinesByKey = VAC4_ORDERED_PHOTO_FIELDS.reduce<Record<Vac4OrderedPhotoKey, string>>(
+    (acc, { key }) => {
+      const names = v.photoFileNames[key];
+      const count = countPhotoValue(names);
+      acc[key] = count > 0 ? `${count} file${count === 1 ? "" : "s"} (${names.join(", ")})` : "None uploaded";
+      return acc;
+    },
+    {
+      vacMounting: "None uploaded",
+      wirePath: "None uploaded",
+      redWire: "None uploaded",
+      blackWire: "None uploaded",
+      blueWire: "None uploaded",
+      purpleWire: "None uploaded",
+      brownWire: "None uploaded",
+      relayAccess: "None uploaded",
+      impactSensor: "None uploaded",
+      sensorHubMounting: "None uploaded",
+      speedSense: "None uploaded",
+      loadSense: "None uploaded",
+      gps: "None uploaded",
+      externalIndicator: "None uploaded",
+    },
+  );
   const lines: string[] = [];
 
-  lines.push("CORE JOB INFO");
-  lines.push(`  Customer: ${c.customer}`);
-  lines.push(`  Location: ${c.location}`);
-  lines.push(`  Work order #: ${c.workOrder}`);
-  lines.push(`  Service appointment #: ${c.serviceAppointment}`);
-  lines.push(`  Unit number: ${c.unitNumber}`);
-  lines.push(`  Equipment make: ${c.equipmentMake}`);
-  lines.push(`  Equipment model: ${c.equipmentModel}`);
-  lines.push(`  Equipment serial #: ${c.equipmentSerial}`);
-  lines.push(`  Installer name: ${c.installerName}`);
+  lines.push("INSTALLER JOB CARD");
   lines.push("");
-
-  lines.push("HARDWARE SELECTION");
-  lines.push(`  Primary hardware: ${h.primary || "—"}`);
-  lines.push(`  Additional hardware question: ${h.hasAdditional || "—"}`);
-  lines.push(`  Additional types: ${h.additional.length ? h.additional.join(", ") : "—"}`);
-  lines.push(`  Selected sections: ${p.selectedSections.length ? p.selectedSections.join(", ") : "—"}`);
+  lines.push(`Submission ID: ${textOrDash(p.submissionId)}`);
+  lines.push(`Customer: ${textOrDash(c.customer)}`);
+  lines.push(`Location: ${textOrDash(c.location)}`);
+  lines.push(`Work Order #: ${textOrDash(c.workOrder)}`);
+  lines.push(`Service Appointment #: ${textOrDash(c.serviceAppointment)}`);
+  lines.push(`Unit #: ${textOrDash(c.unitNumber)}`);
+  lines.push(`Installer: ${textOrDash(c.installerName)}`);
+  lines.push(`Submitted: ${p.submissionTimestamp}`);
   lines.push("");
-
-  lines.push("VAC4");
-  lines.push(`  Vehicle type: ${v.vehicleType || "—"}`);
-  lines.push(`  Other vehicle type: ${v.otherVehicleType || "—"}`);
-  lines.push(`  Drive type: ${v.driveType || "—"}`);
-  lines.push(`  Vehicle voltage: ${v.vehicleVoltage || "—"}`);
-  lines.push(`  Other vehicle voltage: ${v.vehicleVoltageOther || "—"}`);
-  lines.push(`  Client approval: ${v.clientApproval || "—"}`);
-  lines.push(`  Hour meter: ${v.hourMeter || "—"}`);
-  lines.push(`  Sensor hub installed: ${v.sensorHubInstalled || "—"}`);
-  lines.push(`  Lift sense installed: ${v.liftSenseInstalled || "—"}`);
-  lines.push(`  Speed sense installed: ${v.speedSenseInstalled || "—"}`);
-  lines.push(`  Load sense installed: ${v.loadSenseInstalled || "—"}`);
-  lines.push(`  GPS installed: ${v.gpsInstalled || "—"}`);
-  lines.push(`  External indicator installed: ${v.externalIndicatorInstalled || "—"}`);
-  lines.push(`  Speed sense description: ${v.speedSenseDescription || "—"}`);
-  lines.push(`  Speed sense pulse count: ${v.speedSensePulseCount || "—"}`);
-  lines.push(`  Load sense VAC thresholds: ${v.loadSenseThresholds || "—"}`);
+  lines.push(divider);
   lines.push("");
-  lines.push("  VAC4 ordered wire descriptions:");
-  VAC4_ORDERED_DESCRIPTION_FIELDS.forEach(({ key, label }) => {
-    const value = v[key];
-    lines.push(`    ${label}: ${value?.trim() ? value : "—"}`);
-  });
+  lines.push("VEHICLE INFORMATION");
+  lines.push(`Make: ${textOrDash(c.equipmentMake)}`);
+  lines.push(`Model: ${textOrDash(c.equipmentModel)}`);
+  lines.push(`Serial #: ${textOrDash(c.equipmentSerial)}`);
+  lines.push(
+    `Vehicle Type: ${
+      v.vehicleType === "Other" ? `${textOrDash(v.vehicleType)} (${textOrDash(v.otherVehicleType)})` : textOrDash(v.vehicleType)
+    }`,
+  );
+  lines.push(`Drive Type: ${textOrDash(v.driveType)}`);
+  lines.push(
+    `Voltage: ${
+      v.vehicleVoltage === "Other"
+        ? `Other (${textOrDash(v.vehicleVoltageOther)})`
+        : textOrDash(v.vehicleVoltage)
+    }`,
+  );
   lines.push("");
-  lines.push("  VAC4 ordered photo details:");
-  VAC4_ORDERED_PHOTO_FIELDS.forEach(({ key, label }) => {
-    const photoValue = v.photoFileNames[key];
-    const count = countPhotoValue(photoValue);
-    const fileNames = photoValue.length ? photoValue.join(", ") : "—";
-    lines.push(`    ${label} photo count: ${count}`);
-    lines.push(`    ${label} photo file names: ${fileNames}`);
-  });
+  lines.push(divider);
   lines.push("");
-  lines.push(`Submission timestamp: ${p.submissionTimestamp}`);
-  lines.push(`Status: ${p.status}`);
+  lines.push("HARDWARE");
+  lines.push(`Primary: ${textOrDash(h.primary)}`);
+  lines.push(
+    `Additional Hardware: ${
+      h.hasAdditional === "Yes" ? (h.additional.length ? h.additional.join(", ") : "Yes") : textOrDash(h.hasAdditional)
+    }`,
+  );
+  lines.push("");
+  lines.push(divider);
+  lines.push("");
+  lines.push("VAC4 INSTALL");
+  lines.push(`Client Approval: ${textOrDash(v.clientApproval)}`);
+  lines.push(`Hour Meter: ${textOrDash(v.hourMeter)}`);
+  lines.push(`Sensor Hub: ${textOrDash(v.sensorHubInstalled)}`);
+  lines.push(`Lift Sense: ${textOrDash(v.liftSenseInstalled)}`);
+  lines.push("");
+  lines.push(`Red Wire: ${orderedDescriptions.redWireDescription}`);
+  lines.push(`Black Wire: ${orderedDescriptions.blackWireDescription}`);
+  lines.push(`Blue Wire: ${orderedDescriptions.blueWireDescription}`);
+  lines.push(`Purple Wire: ${orderedDescriptions.purpleWireDescription}`);
+  lines.push(`Brown Wire: ${orderedDescriptions.brownWireDescription}`);
+  lines.push(`Relay Access: ${orderedDescriptions.relayAccessDescription}`);
+  lines.push(`Impact Sensor: ${orderedDescriptions.impactSensorDescription}`);
+  lines.push("");
+  lines.push(divider);
+  lines.push("");
+  lines.push("PHOTO GALLERY");
+  lines.push(`http://localhost:3000/photos/${encodeURIComponent(p.submissionId)}`);
+  lines.push("");
+  lines.push(divider);
+  lines.push("");
+  lines.push("PHOTOS");
+  lines.push(`VAC Mount: ${photoLinesByKey.vacMounting}`);
+  lines.push(`Wire Path: ${photoLinesByKey.wirePath}`);
+  lines.push(`Red Wire: ${photoLinesByKey.redWire}`);
+  lines.push(`Black Wire: ${photoLinesByKey.blackWire}`);
+  lines.push(`Blue Wire: ${photoLinesByKey.blueWire}`);
+  lines.push(`Purple Wire: ${photoLinesByKey.purpleWire}`);
+  lines.push(`Brown Wire: ${photoLinesByKey.brownWire}`);
+  lines.push(`Relay Access: ${photoLinesByKey.relayAccess}`);
+  lines.push(`Impact Sensor: ${photoLinesByKey.impactSensor}`);
+  lines.push(`Sensor Hub: ${photoLinesByKey.sensorHubMounting}`);
+  lines.push(`Speed Sense: ${photoLinesByKey.speedSense}`);
+  lines.push(`Load Sense: ${photoLinesByKey.loadSense}`);
+  lines.push(`GPS: ${photoLinesByKey.gps}`);
+  lines.push(`External Indicator: ${photoLinesByKey.externalIndicator}`);
 
   return lines.join("\n");
 }
