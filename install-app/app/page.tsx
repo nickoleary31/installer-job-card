@@ -17,6 +17,28 @@ import {
 } from "@/lib/job-card-submission";
 import { supabase } from "@/lib/supabase/client";
 
+async function deleteJobCardPhotoObject(storagePath: string) {
+  try {
+    const { error } = await supabase.storage.from("job-card-photos").remove([storagePath]);
+    if (error) console.error("Supabase storage delete failed:", error.message, storagePath);
+  } catch (e) {
+    console.error("Supabase storage delete failed:", e, storagePath);
+  }
+}
+
+function dedupeUploadedPhotoMeta(items: UploadedPhotoMetadata[]): UploadedPhotoMetadata[] {
+  const seen = new Set<string>();
+  const out: UploadedPhotoMetadata[] = [];
+  for (const item of items) {
+    const id = (item.publicUrl || "").trim() || item.storagePath;
+    if (!id) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(item);
+  }
+  return out;
+}
+
 const MAX_PHOTOS_PER_FIELD = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const UPLOAD_ERR_MAX_COUNT = "Max 5 photos allowed";
@@ -394,7 +416,9 @@ function PhotoUploadFeedback({ count, names }: { count: number; names: string[] 
   return <p className="mt-2 text-sm text-gray-700">{line}</p>;
 }
 
-function PhotoThumbnailGrid({ files }: { files: File[] }) {
+type RemoteThumb = { publicUrl: string; filename: string };
+
+function PhotoThumbnailGrid({ files, remotePhotos = [] }: { files: File[]; remotePhotos?: RemoteThumb[] }) {
   const previewUrls = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
   useEffect(
     () => () => {
@@ -403,10 +427,18 @@ function PhotoThumbnailGrid({ files }: { files: File[] }) {
     [previewUrls],
   );
 
-  if (files.length === 0 || previewUrls.length === 0) return null;
+  if (files.length === 0 && remotePhotos.length === 0) return null;
 
   return (
     <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {remotePhotos.map((remote, index) => (
+        <div key={`remote-${remote.publicUrl}-${index}`} className="rounded-lg border border-gray-200 bg-white p-2">
+          <img src={remote.publicUrl} alt={remote.filename} className="h-20 w-full rounded-md object-cover" />
+          <p className="mt-1 truncate text-xs text-gray-700" title={remote.filename}>
+            {remote.filename}
+          </p>
+        </div>
+      ))}
       {files.map((file, index) => (
         <div key={`${file.name}-${index}`} className="rounded-lg border border-gray-200 bg-white p-2">
           <img src={previewUrls[index]} alt={file.name} className="h-20 w-full rounded-md object-cover" />
@@ -494,6 +526,17 @@ export function NewSubmissionForm() {
   const [photoMetadataByField, setPhotoMetadataByField] = useState<PhotoMetadataByFieldState>(() =>
     emptyPhotoMetadataByField(),
   );
+
+  const remoteThumbsForVacField = (key: keyof VacPhotoFileNames): RemoteThumb[] =>
+    photoMetadataByField[key]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename }));
+
+  const remoteThumbsForVehicleField = (key: VehiclePictureKey): RemoteThumb[] =>
+    photoMetadataByField[key]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename }));
+
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
   const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
   const [vehiclePictureUrls, setVehiclePictureUrls] = useState<VehiclePictureUrlsState>(() => emptyVehiclePictureUrls());
@@ -549,44 +592,97 @@ export function NewSubmissionForm() {
   const vacPhotoFileNames = useMemo((): VacPhotoFileNames => {
     const out = emptyVacPhotoFileNames();
     for (const k of VAC_PHOTO_KEYS) {
-      out[k] = vacPhotoFiles[k].map((f) => f.name);
+      const fromFiles = vacPhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[k].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
     }
     return out;
-  }, [vacPhotoFiles]);
+  }, [vacPhotoFiles, photoMetadataByField]);
 
   const pc = useMemo(
     () => ({
-      vacMounting: vacPhotoFiles.vacMounting.length,
-      wirePath: vacPhotoFiles.wirePath.length,
-      redWire: vacPhotoFiles.redWire.length,
-      blackWire: vacPhotoFiles.blackWire.length,
-      blueWire: vacPhotoFiles.blueWire.length,
-      brownWire: vacPhotoFiles.brownWire.length,
-      sensorHubMounting: vacPhotoFiles.sensorHubMounting.length,
-      speedSense: vacPhotoFiles.speedSense.length,
-      loadSense: vacPhotoFiles.loadSense.length,
-      gps: vacPhotoFiles.gps.length,
-      externalIndicator: vacPhotoFiles.externalIndicator.length,
-      purpleWire: vacPhotoFiles.purpleWire.length,
-      relayAccess: vacPhotoFiles.relayAccess.length,
-      impactSensor: vacPhotoFiles.impactSensor.length,
+      vacMounting: Math.max(
+        vacPhotoFiles.vacMounting.length,
+        photoMetadataByField.vacMounting.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      wirePath: Math.max(
+        vacPhotoFiles.wirePath.length,
+        photoMetadataByField.wirePath.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      redWire: Math.max(
+        vacPhotoFiles.redWire.length,
+        photoMetadataByField.redWire.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      blackWire: Math.max(
+        vacPhotoFiles.blackWire.length,
+        photoMetadataByField.blackWire.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      blueWire: Math.max(
+        vacPhotoFiles.blueWire.length,
+        photoMetadataByField.blueWire.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      brownWire: Math.max(
+        vacPhotoFiles.brownWire.length,
+        photoMetadataByField.brownWire.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      sensorHubMounting: Math.max(
+        vacPhotoFiles.sensorHubMounting.length,
+        photoMetadataByField.sensorHubMounting.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      speedSense: Math.max(
+        vacPhotoFiles.speedSense.length,
+        photoMetadataByField.speedSense.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      loadSense: Math.max(
+        vacPhotoFiles.loadSense.length,
+        photoMetadataByField.loadSense.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      gps: Math.max(vacPhotoFiles.gps.length, photoMetadataByField.gps.filter((p) => p.publicUrl?.trim()).length),
+      externalIndicator: Math.max(
+        vacPhotoFiles.externalIndicator.length,
+        photoMetadataByField.externalIndicator.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      purpleWire: Math.max(
+        vacPhotoFiles.purpleWire.length,
+        photoMetadataByField.purpleWire.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      relayAccess: Math.max(
+        vacPhotoFiles.relayAccess.length,
+        photoMetadataByField.relayAccess.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      impactSensor: Math.max(
+        vacPhotoFiles.impactSensor.length,
+        photoMetadataByField.impactSensor.filter((p) => p.publicUrl?.trim()).length,
+      ),
     }),
-    [vacPhotoFiles],
+    [vacPhotoFiles, photoMetadataByField],
   );
   const vehiclePictureFileNames = useMemo((): VehiclePictureFileNames => {
     const out = emptyVehiclePictureFileNames();
-    out.vehicleFront = vehiclePictureFiles.vehicleFront.map((f) => f.name);
-    out.vehicleSide = vehiclePictureFiles.vehicleSide.map((f) => f.name);
-    out.vehicleRear = vehiclePictureFiles.vehicleRear.map((f) => f.name);
+    const keys: VehiclePictureKey[] = ["vehicleFront", "vehicleSide", "vehicleRear"];
+    for (const k of keys) {
+      const fromFiles = vehiclePictureFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[k].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
     return out;
-  }, [vehiclePictureFiles]);
+  }, [vehiclePictureFiles, photoMetadataByField]);
   const vehiclePictureCounts = useMemo(
     () => ({
-      vehicleFront: vehiclePictureFiles.vehicleFront.length,
-      vehicleSide: vehiclePictureFiles.vehicleSide.length,
-      vehicleRear: vehiclePictureFiles.vehicleRear.length,
+      vehicleFront: Math.max(
+        vehiclePictureFiles.vehicleFront.length,
+        photoMetadataByField.vehicleFront.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      vehicleSide: Math.max(
+        vehiclePictureFiles.vehicleSide.length,
+        photoMetadataByField.vehicleSide.filter((p) => p.publicUrl?.trim()).length,
+      ),
+      vehicleRear: Math.max(
+        vehiclePictureFiles.vehicleRear.length,
+        photoMetadataByField.vehicleRear.filter((p) => p.publicUrl?.trim()).length,
+      ),
     }),
-    [vehiclePictureFiles],
+    [vehiclePictureFiles, photoMetadataByField],
   );
 
   const setVacPhotoUrlsSafe = (updater: (current: VacPhotoUrlsState) => VacPhotoUrlsState) => {
@@ -816,25 +912,47 @@ export function NewSubmissionForm() {
     }
 
     if (mode === "single") {
+      const prevMeta = [...photoMetadataByFieldRef.current[key]];
       setVacPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
       const uploadResult = await uploadPhotosToStorage("vac4", key, [picked[0]]);
-      setVacPhotoUrlsSafe((p) => ({ ...p, [key]: uploadResult.uploadedUrls }));
-      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: uploadResult.uploadedPhotos }));
-      setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+      const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+      if (!uploadResult.ok || nextMeta.length === 0) {
+        setVacPhotoUrlsSafe((p) => ({ ...p, [key]: prevMeta.map((m) => m.publicUrl).filter(Boolean) }));
+        setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: prevMeta }));
+        setVacPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+        clearFieldHighlight(`photo-${String(key)}`);
+        return;
+      }
+      setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
+      for (const m of prevMeta) {
+        if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+          void deleteJobCardPhotoObject(m.storagePath);
+        }
+      }
+      setVacPhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(`photo-${String(key)}`);
       return;
     }
 
-    const merged = [...vacPhotoFiles[key], ...picked];
-    if (merged.length > MAX_PHOTOS_PER_FIELD) {
+    const currentCount = Math.max(
+      vacPhotoFiles[key].length,
+      photoMetadataByFieldRef.current[key].filter((p) => p.publicUrl?.trim()).length,
+    );
+    if (currentCount + picked.length > MAX_PHOTOS_PER_FIELD) {
       setVacPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
       return;
     }
 
+    const merged = [...vacPhotoFiles[key], ...picked];
     setVacPhotoFiles((p) => ({ ...p, [key]: merged }));
     const uploadResult = await uploadPhotosToStorage("vac4", key, picked);
-    setVacPhotoUrlsSafe((p) => ({ ...p, [key]: [...p[key], ...uploadResult.uploadedUrls] }));
-    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: [...p[key], ...uploadResult.uploadedPhotos] }));
+    const nextMeta = dedupeUploadedPhotoMeta([...photoMetadataByFieldRef.current[key], ...uploadResult.uploadedPhotos]).slice(
+      0,
+      MAX_PHOTOS_PER_FIELD,
+    );
+    setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
     setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
     clearFieldHighlight(`photo-${String(key)}`);
   };
@@ -875,11 +993,25 @@ export function NewSubmissionForm() {
       return;
     }
 
+    const prevMeta = [...photoMetadataByFieldRef.current[key]];
     setVehiclePictureFiles((p) => ({ ...p, [key]: picked }));
     const uploadResult = await uploadPhotosToStorage("vehicle", key, picked);
-    setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: uploadResult.uploadedUrls }));
-    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: uploadResult.uploadedPhotos }));
-    setVehiclePictureErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+    if (!uploadResult.ok || nextMeta.length === 0) {
+      setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: prevMeta.map((m) => m.publicUrl).filter(Boolean) }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: prevMeta }));
+      setVehiclePictureErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+      clearFieldHighlight(`photo-${key}`);
+      return;
+    }
+    setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
+    for (const m of prevMeta) {
+      if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+        void deleteJobCardPhotoObject(m.storagePath);
+      }
+    }
+    setVehiclePictureErrors((er) => ({ ...er, [key]: null }));
     clearFieldHighlight(`photo-${key}`);
   };
 
@@ -1075,11 +1207,8 @@ export function NewSubmissionForm() {
     setPurpleWireDescription(String(draft.vac4?.purpleWireDescription || ""));
     setRelayAccessDescription(String(draft.vac4?.relayAccessDescription || ""));
     setImpactSensorDescription(String(draft.vac4?.impactSensorDescription || ""));
-    // Files cannot be restored from localStorage; reset upload state after restore.
+    // Files cannot be restored from localStorage; rebuild photo state from saved metadata.
     setVacPhotoFiles(emptyVacPhotoFiles());
-    const restoredVacPhotoUrls = draft.photoSummary?.vac4PhotoUrls || emptyVacPhotoUrls();
-    vacPhotoUrlsRef.current = restoredVacPhotoUrls;
-    setVacPhotoUrls(restoredVacPhotoUrls);
     const restoredUploads = draft.photoUploads || draft.photoSummary?.photoUploads || [];
     const restoredMetadataByField = emptyPhotoMetadataByField();
     for (const photo of restoredUploads) {
@@ -1088,18 +1217,41 @@ export function NewSubmissionForm() {
         restoredMetadataByField[key].push(photo);
       }
     }
+    const allPhotoFieldKeys: UploadFieldName[] = [
+      ...VAC_PHOTO_KEYS,
+      "vehicleFront",
+      "vehicleSide",
+      "vehicleRear",
+    ];
+    for (const k of allPhotoFieldKeys) {
+      restoredMetadataByField[k] = dedupeUploadedPhotoMeta(restoredMetadataByField[k]);
+    }
     photoMetadataByFieldRef.current = restoredMetadataByField;
     setPhotoMetadataByField(restoredMetadataByField);
+
+    const nextVacPhotoUrls = emptyVacPhotoUrls();
+    for (const k of VAC_PHOTO_KEYS) {
+      nextVacPhotoUrls[k] = restoredMetadataByField[k].map((m) => m.publicUrl).filter(Boolean);
+    }
+    vacPhotoUrlsRef.current = nextVacPhotoUrls;
+    setVacPhotoUrls(nextVacPhotoUrls);
+
+    const nextVehiclePhotoUrls = emptyVehiclePictureUrls();
+    nextVehiclePhotoUrls.vehicleFront = restoredMetadataByField.vehicleFront.map((m) => m.publicUrl).filter(Boolean);
+    nextVehiclePhotoUrls.vehicleSide = restoredMetadataByField.vehicleSide.map((m) => m.publicUrl).filter(Boolean);
+    nextVehiclePhotoUrls.vehicleRear = restoredMetadataByField.vehicleRear.map((m) => m.publicUrl).filter(Boolean);
+    vehiclePictureUrlsRef.current = nextVehiclePhotoUrls;
+    setVehiclePictureUrls(nextVehiclePhotoUrls);
+
     setVacPhotoErrors(emptyVacPhotoErrors());
     setVehiclePictureFiles(emptyVehiclePictureFiles());
-    const restoredVehiclePhotoUrls = draft.photoSummary?.vehiclePhotoUrls || emptyVehiclePictureUrls();
-    vehiclePictureUrlsRef.current = restoredVehiclePhotoUrls;
-    setVehiclePictureUrls(restoredVehiclePhotoUrls);
     setVehiclePictureErrors(emptyVehiclePictureErrors());
     setReviewHighlights(new Set());
     setReviewBlockMessage(null);
     setStep("form");
-    setDraftNoticeMessage("Draft restored. Please re-upload photos before submitting.");
+    setDraftNoticeMessage(
+      restoredUploads.length > 0 ? "Draft restored." : "Draft restored. Please re-upload photos before submitting.",
+    );
   };
 
   useEffect(() => {
@@ -1679,7 +1831,7 @@ export function NewSubmissionForm() {
                 Select Front Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleFront} names={vehiclePictureFileNames.vehicleFront} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleFront} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleFront} remotePhotos={remoteThumbsForVehicleField("vehicleFront")} />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleFront >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleFront} />
               {requiredHint("photo-vehicleFront")}
@@ -1705,7 +1857,7 @@ export function NewSubmissionForm() {
                 Select Side Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleSide} names={vehiclePictureFileNames.vehicleSide} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleSide} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleSide} remotePhotos={remoteThumbsForVehicleField("vehicleSide")} />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleSide >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleSide} />
               {requiredHint("photo-vehicleSide")}
@@ -1728,7 +1880,7 @@ export function NewSubmissionForm() {
                 Select Rear Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleRear} names={vehiclePictureFileNames.vehicleRear} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleRear} />
+              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleRear} remotePhotos={remoteThumbsForVehicleField("vehicleRear")} />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleRear >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleRear} />
             </div>
@@ -1919,7 +2071,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.vacMounting} names={vacPhotoFileNames.vacMounting} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.vacMounting} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.vacMounting} remotePhotos={remoteThumbsForVacField("vacMounting")} />
                     <PhotoUploadedBadge show={pc.vacMounting >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.vacMounting} />
                     {requiredHint("photo-vacMounting")}
@@ -1945,7 +2097,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photos
                     </label>
                     <PhotoUploadFeedback count={pc.wirePath} names={vacPhotoFileNames.wirePath} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.wirePath} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.wirePath} remotePhotos={remoteThumbsForVacField("wirePath")} />
                     <PhotoUploadedBadge show={pc.wirePath >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.wirePath} />
                     {requiredHint("photo-wirePath")}
@@ -1975,7 +2127,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.redWire} names={vacPhotoFileNames.redWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.redWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.redWire} remotePhotos={remoteThumbsForVacField("redWire")} />
                     <PhotoUploadedBadge show={pc.redWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.redWire} />
                     {requiredHint("photo-redWire")}
@@ -2017,7 +2169,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.blackWire} names={vacPhotoFileNames.blackWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.blackWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.blackWire} remotePhotos={remoteThumbsForVacField("blackWire")} />
                     <PhotoUploadedBadge show={pc.blackWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.blackWire} />
                     {requiredHint("photo-blackWire")}
@@ -2059,7 +2211,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.blueWire} names={vacPhotoFileNames.blueWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.blueWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.blueWire} remotePhotos={remoteThumbsForVacField("blueWire")} />
                     <PhotoUploadedBadge show={pc.blueWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.blueWire} />
                     {requiredHint("photo-blueWire")}
@@ -2102,7 +2254,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.purpleWire} names={vacPhotoFileNames.purpleWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.purpleWire} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.purpleWire} remotePhotos={remoteThumbsForVacField("purpleWire")} />
                     <PhotoUploadedBadge show={pc.purpleWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.purpleWire} />
                       {requiredHint("photo-purpleWire")}
@@ -2147,7 +2299,7 @@ export function NewSubmissionForm() {
                         📷 Take / Upload Photo
                       </label>
                       <PhotoUploadFeedback count={pc.brownWire} names={vacPhotoFileNames.brownWire} />
-                      <PhotoThumbnailGrid files={vacPhotoFiles.brownWire} />
+                      <PhotoThumbnailGrid files={vacPhotoFiles.brownWire} remotePhotos={remoteThumbsForVacField("brownWire")} />
                       <PhotoUploadedBadge show={pc.brownWire >= 1} />
                       <PhotoFieldError message={vacPhotoErrors.brownWire} />
                       {requiredHint("photo-brownWire")}
@@ -2191,7 +2343,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.relayAccess} names={vacPhotoFileNames.relayAccess} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.relayAccess} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.relayAccess} remotePhotos={remoteThumbsForVacField("relayAccess")} />
                     <PhotoUploadedBadge show={pc.relayAccess >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.relayAccess} />
                     <label className={`${labelClassName} mt-2`}>
@@ -2226,7 +2378,7 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.impactSensor} names={vacPhotoFileNames.impactSensor} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.impactSensor} />
+                    <PhotoThumbnailGrid files={vacPhotoFiles.impactSensor} remotePhotos={remoteThumbsForVacField("impactSensor")} />
                     <PhotoUploadedBadge show={pc.impactSensor >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.impactSensor} />
                     <label className={`${labelClassName} mt-2`}>
@@ -2300,7 +2452,7 @@ export function NewSubmissionForm() {
                         📷 Take / Upload Photo
                       </label>
                       <PhotoUploadFeedback count={pc.sensorHubMounting} names={vacPhotoFileNames.sensorHubMounting} />
-                      <PhotoThumbnailGrid files={vacPhotoFiles.sensorHubMounting} />
+                      <PhotoThumbnailGrid files={vacPhotoFiles.sensorHubMounting} remotePhotos={remoteThumbsForVacField("sensorHubMounting")} />
                       <PhotoUploadedBadge show={pc.sensorHubMounting >= 1} />
                       <PhotoFieldError message={vacPhotoErrors.sensorHubMounting} />
                       {requiredHint("photo-sensorHubMounting")}
@@ -2389,7 +2541,7 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.speedSense} names={vacPhotoFileNames.speedSense} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.speedSense} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.speedSense} remotePhotos={remoteThumbsForVacField("speedSense")} />
                           <PhotoUploadedBadge show={pc.speedSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.speedSense} />
                           {requiredHint("photo-speedSense")}
@@ -2452,7 +2604,7 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.loadSense} names={vacPhotoFileNames.loadSense} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.loadSense} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.loadSense} remotePhotos={remoteThumbsForVacField("loadSense")} />
                           <PhotoUploadedBadge show={pc.loadSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.loadSense} />
                           {requiredHint("photo-loadSense")}
@@ -2499,7 +2651,7 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.gps} names={vacPhotoFileNames.gps} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.gps} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.gps} remotePhotos={remoteThumbsForVacField("gps")} />
                           <PhotoUploadedBadge show={pc.gps >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.gps} />
                           {requiredHint("photo-gps")}
@@ -2530,7 +2682,7 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.externalIndicator} names={vacPhotoFileNames.externalIndicator} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.externalIndicator} />
+                          <PhotoThumbnailGrid files={vacPhotoFiles.externalIndicator} remotePhotos={remoteThumbsForVacField("externalIndicator")} />
                           <PhotoUploadedBadge show={pc.externalIndicator >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.externalIndicator} />
                           {requiredHint("photo-externalIndicator")}
