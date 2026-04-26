@@ -81,6 +81,7 @@ export type UploadedPhotoMetadata = {
 };
 
 export const DEFAULT_JOB_CARD_EMAIL_TO = "install-submissions@example.com";
+const DEFAULT_APP_URL = "https://installer-job-card.vercel.app";
 
 export type Vac4OrderedPhotoKey =
   | "vacMounting"
@@ -158,6 +159,8 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const h = p.hardwareSelection;
   const v = p.vac4;
   const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL?.trim() || DEFAULT_APP_URL).replace(/\/+$/, "");
+  const photoGalleryUrl = `${appUrl}/photos/${encodeURIComponent(p.submissionId)}`;
   const divider = "--------------------------------";
   const orderedDescriptions = VAC4_ORDERED_DESCRIPTION_FIELDS.reduce<Record<Vac4DescriptionKey, string>>(
     (acc, { key }) => {
@@ -260,7 +263,7 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push(divider);
   lines.push("");
   lines.push("PHOTO GALLERY");
-  lines.push(`http://localhost:3000/photos/${encodeURIComponent(p.submissionId)}`);
+  lines.push(photoGalleryUrl);
   lines.push("");
   lines.push(divider);
   lines.push("");
