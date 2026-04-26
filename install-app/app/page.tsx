@@ -416,10 +416,62 @@ function PhotoUploadFeedback({ count, names }: { count: number; names: string[] 
   return <p className="mt-2 text-sm text-gray-700">{line}</p>;
 }
 
-type RemoteThumb = { publicUrl: string; filename: string };
+type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string };
+
+type CombinedPhotoPreview =
+  | { kind: "remote"; key: string; publicUrl: string; filename: string }
+  | { kind: "local"; key: string; file: File };
+
+function dedupeKeyForRemoteThumb(r: RemoteThumb): string {
+  const sp = (r.storagePath || "").trim();
+  if (sp) return `sp:${sp}`;
+  const u = (r.publicUrl || "").trim();
+  if (u) return `url:${u}`;
+  return `fn:${(r.filename || "").trim().toLowerCase()}`;
+}
+
+function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]): CombinedPhotoPreview[] {
+  const seen = new Set<string>();
+  const entries: CombinedPhotoPreview[] = [];
+
+  for (const r of remotePhotos) {
+    const url = (r.publicUrl || "").trim();
+    if (!url) continue;
+    const key = dedupeKeyForRemoteThumb(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({ kind: "remote", key, publicUrl: url, filename: r.filename });
+  }
+
+  const remoteFilenameLower = new Set(
+    remotePhotos
+      .filter((r) => (r.publicUrl || "").trim())
+      .map((r) => (r.filename || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  for (const file of files) {
+    const fnLower = file.name.trim().toLowerCase();
+    if (remoteFilenameLower.has(fnLower)) continue;
+    const fk = `fn:${fnLower}`;
+    if (seen.has(fk)) continue;
+    seen.add(fk);
+    entries.push({ kind: "local", key: fk, file });
+  }
+
+  return entries;
+}
 
 function PhotoThumbnailGrid({ files, remotePhotos = [] }: { files: File[]; remotePhotos?: RemoteThumb[] }) {
-  const previewUrls = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
+  const entries = useMemo(() => buildCombinedPhotoPreviews(files, remotePhotos), [files, remotePhotos]);
+
+  const localFiles = useMemo(
+    () => entries.filter((e): e is Extract<CombinedPhotoPreview, { kind: "local" }> => e.kind === "local").map((e) => e.file),
+    [entries],
+  );
+
+  const previewUrls = useMemo(() => localFiles.map((file) => URL.createObjectURL(file)), [localFiles]);
+
   useEffect(
     () => () => {
       previewUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -427,26 +479,35 @@ function PhotoThumbnailGrid({ files, remotePhotos = [] }: { files: File[]; remot
     [previewUrls],
   );
 
-  if (files.length === 0 && remotePhotos.length === 0) return null;
+  const localUrlByFile = useMemo(() => {
+    const m = new Map<File, string>();
+    localFiles.forEach((file, i) => {
+      m.set(file, previewUrls[i] ?? "");
+    });
+    return m;
+  }, [localFiles, previewUrls]);
+
+  if (entries.length === 0) return null;
 
   return (
     <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-      {remotePhotos.map((remote, index) => (
-        <div key={`remote-${remote.publicUrl}-${index}`} className="rounded-lg border border-gray-200 bg-white p-2">
-          <img src={remote.publicUrl} alt={remote.filename} className="h-20 w-full rounded-md object-cover" />
-          <p className="mt-1 truncate text-xs text-gray-700" title={remote.filename}>
-            {remote.filename}
-          </p>
-        </div>
-      ))}
-      {files.map((file, index) => (
-        <div key={`${file.name}-${index}`} className="rounded-lg border border-gray-200 bg-white p-2">
-          <img src={previewUrls[index]} alt={file.name} className="h-20 w-full rounded-md object-cover" />
-          <p className="mt-1 truncate text-xs text-gray-700" title={file.name}>
-            {file.name}
-          </p>
-        </div>
-      ))}
+      {entries.map((e) =>
+        e.kind === "remote" ? (
+          <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
+            <img src={e.publicUrl} alt={e.filename} className="h-20 w-full rounded-md object-cover" />
+            <p className="mt-1 truncate text-xs text-gray-700" title={e.filename}>
+              {e.filename}
+            </p>
+          </div>
+        ) : (
+          <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
+            <img src={localUrlByFile.get(e.file) || ""} alt={e.file.name} className="h-20 w-full rounded-md object-cover" />
+            <p className="mt-1 truncate text-xs text-gray-700" title={e.file.name}>
+              {e.file.name}
+            </p>
+          </div>
+        ),
+      )}
     </div>
   );
 }
@@ -530,12 +591,12 @@ export function NewSubmissionForm() {
   const remoteThumbsForVacField = (key: keyof VacPhotoFileNames): RemoteThumb[] =>
     photoMetadataByField[key]
       .filter((p) => p.publicUrl?.trim())
-      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename }));
+      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename, storagePath: p.storagePath }));
 
   const remoteThumbsForVehicleField = (key: VehiclePictureKey): RemoteThumb[] =>
     photoMetadataByField[key]
       .filter((p) => p.publicUrl?.trim())
-      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename }));
+      .map((p) => ({ publicUrl: p.publicUrl.trim(), filename: p.filename, storagePath: p.storagePath }));
 
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
   const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
