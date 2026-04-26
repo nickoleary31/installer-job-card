@@ -419,7 +419,7 @@ function PhotoUploadFeedback({ count, names }: { count: number; names: string[] 
 type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string; uploadedAt?: string };
 
 type CombinedPhotoPreview =
-  | { kind: "remote"; key: string; publicUrl: string; filename: string }
+  | { kind: "remote"; key: string; remote: RemoteThumb }
   | { kind: "local"; key: string; file: File };
 
 /** Stable comparison for matching user File.name to draft/server metadata filenames (handles Unicode normalization). */
@@ -523,7 +523,7 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
     const key = dedupeKeyForRemoteThumb(r);
     if (seen.has(key)) continue;
     seen.add(key);
-    entries.push({ kind: "remote", key, publicUrl: url, filename: r.filename });
+    entries.push({ kind: "remote", key, remote: { ...r, publicUrl: url } });
   }
 
   const remoteFilenameNorm = new Set(
@@ -548,7 +548,17 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
   return entries;
 }
 
-function PhotoThumbnailGrid({ files, remotePhotos = [] }: { files: File[]; remotePhotos?: RemoteThumb[] }) {
+function PhotoThumbnailGrid({
+  files,
+  remotePhotos = [],
+  onRemoveRemote,
+  onRemoveLocal,
+}: {
+  files: File[];
+  remotePhotos?: RemoteThumb[];
+  onRemoveRemote?: (remote: RemoteThumb) => void;
+  onRemoveLocal?: (file: File) => void;
+}) {
   const entries = useMemo(() => buildCombinedPhotoPreviews(files, remotePhotos), [files, remotePhotos]);
 
   const localFiles = useMemo(
@@ -580,13 +590,31 @@ function PhotoThumbnailGrid({ files, remotePhotos = [] }: { files: File[]; remot
       {entries.map((e) =>
         e.kind === "remote" ? (
           <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
-            <img src={e.publicUrl} alt={e.filename} className="h-20 w-full rounded-md object-cover" />
-            <p className="mt-1 truncate text-xs text-gray-700" title={e.filename}>
-              {e.filename}
+            <div className="mb-1 flex justify-end">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                onClick={() => onRemoveRemote?.(e.remote)}
+              >
+                Remove
+              </button>
+            </div>
+            <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
+            <p className="mt-1 truncate text-xs text-gray-700" title={e.remote.filename}>
+              {e.remote.filename}
             </p>
           </div>
         ) : (
           <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
+            <div className="mb-1 flex justify-end">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                onClick={() => onRemoveLocal?.(e.file)}
+              >
+                Remove
+              </button>
+            </div>
             <img src={localUrlByFile.get(e.file) || ""} alt={e.file.name} className="h-20 w-full rounded-md object-cover" />
             <p className="mt-1 truncate text-xs text-gray-700" title={e.file.name}>
               {e.file.name}
@@ -1047,6 +1075,105 @@ export function NewSubmissionForm() {
       }
     }
     return { ok, uploadedUrls, uploadedPhotos };
+  };
+
+  const isVacPhotoField = (key: UploadFieldName): key is keyof VacPhotoFileNames => VAC_PHOTO_KEYS.includes(key as keyof VacPhotoFileNames);
+
+  const isPhotoFieldRequiredNow = (field: UploadFieldName): boolean => {
+    if (field === "vehicleFront" || field === "vehicleSide") return true;
+    if (field === "vehicleRear") return false;
+    if (!selectedSections.includes("VAC4")) return false;
+
+    const isElectricDrive = vac4DriveType === "Electric";
+    const isInternalCombustionDrive = vac4DriveType === "Internal Combustion";
+    const isBrownWireRequired = isInternalCombustionDrive || (isElectricDrive && liftSenseInstalled === "Yes");
+
+    switch (field) {
+      case "vacMounting":
+      case "wirePath":
+      case "redWire":
+      case "blackWire":
+      case "blueWire":
+        return true;
+      case "brownWire":
+        return isBrownWireRequired;
+      case "purpleWire":
+        return operatorPresenceInstalled === "Yes";
+      case "sensorHubMounting":
+        return sensorHubInstalled === "Yes";
+      case "speedSense":
+        return sensorHubInstalled === "Yes" && speedSenseInstalled === "Yes";
+      case "loadSense":
+        return sensorHubInstalled === "Yes" && loadSenseInstalled === "Yes";
+      case "gps":
+        return sensorHubInstalled === "Yes" && gpsInstalled === "Yes";
+      case "externalIndicator":
+        return sensorHubInstalled === "Yes" && externalIndicatorInstalled === "Yes";
+      default:
+        return false;
+    }
+  };
+
+  const updatePhotoFieldHighlight = (field: UploadFieldName, nextCount: number) => {
+    const key = `photo-${field}`;
+    if (nextCount < 1 && isPhotoFieldRequiredNow(field)) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
+      return;
+    }
+    setReviewHighlights((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+      return next;
+    });
+  };
+
+  const removeLocalPhotoFromField = (field: UploadFieldName, targetFile: File) => {
+    const targetKey = localFileDedupeKey(targetFile);
+    if (isVacPhotoField(field)) {
+      const nextLocal = vacPhotoFiles[field].filter((f) => localFileDedupeKey(f) !== targetKey);
+      setVacPhotoFiles((p) => ({ ...p, [field]: nextLocal }));
+      const nextCount = Math.max(nextLocal.length, photoMetadataByFieldRef.current[field].filter((m) => m.publicUrl?.trim()).length);
+      updatePhotoFieldHighlight(field, nextCount);
+      return;
+    }
+    const nextLocal = vehiclePictureFiles[field].filter((f) => localFileDedupeKey(f) !== targetKey);
+    setVehiclePictureFiles((p) => ({ ...p, [field]: nextLocal }));
+    const nextCount = Math.max(nextLocal.length, photoMetadataByFieldRef.current[field].filter((m) => m.publicUrl?.trim()).length);
+    updatePhotoFieldHighlight(field, nextCount);
+  };
+
+  const removeUploadedPhotoFromField = async (field: UploadFieldName, target: RemoteThumb) => {
+    const targetStorage = (target.storagePath || "").trim();
+    const targetUrl = normalizePublicUrlForDedupe(target.publicUrl || "");
+    const targetName = normalizePhotoFilename(target.filename || "");
+
+    const nextMeta = photoMetadataByFieldRef.current[field].filter((m) => {
+      const metaStorage = (m.storagePath || "").trim();
+      if (targetStorage) return metaStorage !== targetStorage;
+      const metaUrl = normalizePublicUrlForDedupe(m.publicUrl || "");
+      if (targetUrl) return metaUrl !== targetUrl;
+      return normalizePhotoFilename(m.filename || "") !== targetName;
+    });
+
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [field]: nextMeta }));
+    const nextUrls = nextMeta.map((m) => m.publicUrl).filter(Boolean);
+    if (isVacPhotoField(field)) {
+      setVacPhotoUrlsSafe((p) => ({ ...p, [field]: nextUrls }));
+    } else {
+      setVehiclePictureUrlsSafe((p) => ({ ...p, [field]: nextUrls }));
+    }
+    const localCount = isVacPhotoField(field) ? vacPhotoFiles[field].length : vehiclePictureFiles[field].length;
+    updatePhotoFieldHighlight(field, Math.max(localCount, nextUrls.length));
+
+    if (targetStorage) {
+      void deleteJobCardPhotoObject(targetStorage);
+    }
   };
 
   const applyVacPhotoUpload = async (key: keyof VacPhotoFileNames, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
@@ -1993,7 +2120,12 @@ export function NewSubmissionForm() {
                 Select Front Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleFront} names={vehiclePictureFileNames.vehicleFront} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleFront} remotePhotos={remoteThumbsForVehicleField("vehicleFront")} />
+              <PhotoThumbnailGrid
+                files={vehiclePictureFiles.vehicleFront}
+                remotePhotos={remoteThumbsForVehicleField("vehicleFront")}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleFront", remote)}
+                onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleFront", file)}
+              />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleFront >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleFront} />
               {requiredHint("photo-vehicleFront")}
@@ -2019,7 +2151,12 @@ export function NewSubmissionForm() {
                 Select Side Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleSide} names={vehiclePictureFileNames.vehicleSide} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleSide} remotePhotos={remoteThumbsForVehicleField("vehicleSide")} />
+              <PhotoThumbnailGrid
+                files={vehiclePictureFiles.vehicleSide}
+                remotePhotos={remoteThumbsForVehicleField("vehicleSide")}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleSide", remote)}
+                onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleSide", file)}
+              />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleSide >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleSide} />
               {requiredHint("photo-vehicleSide")}
@@ -2042,7 +2179,12 @@ export function NewSubmissionForm() {
                 Select Rear Photo(s)
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleRear} names={vehiclePictureFileNames.vehicleRear} />
-              <PhotoThumbnailGrid files={vehiclePictureFiles.vehicleRear} remotePhotos={remoteThumbsForVehicleField("vehicleRear")} />
+              <PhotoThumbnailGrid
+                files={vehiclePictureFiles.vehicleRear}
+                remotePhotos={remoteThumbsForVehicleField("vehicleRear")}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleRear", remote)}
+                onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleRear", file)}
+              />
               <PhotoUploadedBadge show={vehiclePictureCounts.vehicleRear >= 1} />
               <PhotoFieldError message={vehiclePictureErrors.vehicleRear} />
             </div>
@@ -2233,7 +2375,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.vacMounting} names={vacPhotoFileNames.vacMounting} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.vacMounting} remotePhotos={remoteThumbsForVacField("vacMounting")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.vacMounting}
+                      remotePhotos={remoteThumbsForVacField("vacMounting")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vacMounting", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("vacMounting", file)}
+                    />
                     <PhotoUploadedBadge show={pc.vacMounting >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.vacMounting} />
                     {requiredHint("photo-vacMounting")}
@@ -2259,7 +2406,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photos
                     </label>
                     <PhotoUploadFeedback count={pc.wirePath} names={vacPhotoFileNames.wirePath} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.wirePath} remotePhotos={remoteThumbsForVacField("wirePath")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.wirePath}
+                      remotePhotos={remoteThumbsForVacField("wirePath")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("wirePath", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("wirePath", file)}
+                    />
                     <PhotoUploadedBadge show={pc.wirePath >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.wirePath} />
                     {requiredHint("photo-wirePath")}
@@ -2289,7 +2441,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.redWire} names={vacPhotoFileNames.redWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.redWire} remotePhotos={remoteThumbsForVacField("redWire")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.redWire}
+                      remotePhotos={remoteThumbsForVacField("redWire")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("redWire", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("redWire", file)}
+                    />
                     <PhotoUploadedBadge show={pc.redWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.redWire} />
                     {requiredHint("photo-redWire")}
@@ -2331,7 +2488,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.blackWire} names={vacPhotoFileNames.blackWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.blackWire} remotePhotos={remoteThumbsForVacField("blackWire")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.blackWire}
+                      remotePhotos={remoteThumbsForVacField("blackWire")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("blackWire", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("blackWire", file)}
+                    />
                     <PhotoUploadedBadge show={pc.blackWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.blackWire} />
                     {requiredHint("photo-blackWire")}
@@ -2373,7 +2535,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.blueWire} names={vacPhotoFileNames.blueWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.blueWire} remotePhotos={remoteThumbsForVacField("blueWire")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.blueWire}
+                      remotePhotos={remoteThumbsForVacField("blueWire")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("blueWire", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("blueWire", file)}
+                    />
                     <PhotoUploadedBadge show={pc.blueWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.blueWire} />
                     {requiredHint("photo-blueWire")}
@@ -2416,7 +2583,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.purpleWire} names={vacPhotoFileNames.purpleWire} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.purpleWire} remotePhotos={remoteThumbsForVacField("purpleWire")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.purpleWire}
+                      remotePhotos={remoteThumbsForVacField("purpleWire")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("purpleWire", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("purpleWire", file)}
+                    />
                     <PhotoUploadedBadge show={pc.purpleWire >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.purpleWire} />
                       {requiredHint("photo-purpleWire")}
@@ -2461,7 +2633,12 @@ export function NewSubmissionForm() {
                         📷 Take / Upload Photo
                       </label>
                       <PhotoUploadFeedback count={pc.brownWire} names={vacPhotoFileNames.brownWire} />
-                      <PhotoThumbnailGrid files={vacPhotoFiles.brownWire} remotePhotos={remoteThumbsForVacField("brownWire")} />
+                      <PhotoThumbnailGrid
+                        files={vacPhotoFiles.brownWire}
+                        remotePhotos={remoteThumbsForVacField("brownWire")}
+                        onRemoveRemote={(remote) => void removeUploadedPhotoFromField("brownWire", remote)}
+                        onRemoveLocal={(file) => removeLocalPhotoFromField("brownWire", file)}
+                      />
                       <PhotoUploadedBadge show={pc.brownWire >= 1} />
                       <PhotoFieldError message={vacPhotoErrors.brownWire} />
                       {requiredHint("photo-brownWire")}
@@ -2505,7 +2682,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.relayAccess} names={vacPhotoFileNames.relayAccess} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.relayAccess} remotePhotos={remoteThumbsForVacField("relayAccess")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.relayAccess}
+                      remotePhotos={remoteThumbsForVacField("relayAccess")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("relayAccess", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("relayAccess", file)}
+                    />
                     <PhotoUploadedBadge show={pc.relayAccess >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.relayAccess} />
                     <label className={`${labelClassName} mt-2`}>
@@ -2540,7 +2722,12 @@ export function NewSubmissionForm() {
                       📷 Take / Upload Photo
                     </label>
                     <PhotoUploadFeedback count={pc.impactSensor} names={vacPhotoFileNames.impactSensor} />
-                    <PhotoThumbnailGrid files={vacPhotoFiles.impactSensor} remotePhotos={remoteThumbsForVacField("impactSensor")} />
+                    <PhotoThumbnailGrid
+                      files={vacPhotoFiles.impactSensor}
+                      remotePhotos={remoteThumbsForVacField("impactSensor")}
+                      onRemoveRemote={(remote) => void removeUploadedPhotoFromField("impactSensor", remote)}
+                      onRemoveLocal={(file) => removeLocalPhotoFromField("impactSensor", file)}
+                    />
                     <PhotoUploadedBadge show={pc.impactSensor >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.impactSensor} />
                     <label className={`${labelClassName} mt-2`}>
@@ -2614,7 +2801,12 @@ export function NewSubmissionForm() {
                         📷 Take / Upload Photo
                       </label>
                       <PhotoUploadFeedback count={pc.sensorHubMounting} names={vacPhotoFileNames.sensorHubMounting} />
-                      <PhotoThumbnailGrid files={vacPhotoFiles.sensorHubMounting} remotePhotos={remoteThumbsForVacField("sensorHubMounting")} />
+                      <PhotoThumbnailGrid
+                        files={vacPhotoFiles.sensorHubMounting}
+                        remotePhotos={remoteThumbsForVacField("sensorHubMounting")}
+                        onRemoveRemote={(remote) => void removeUploadedPhotoFromField("sensorHubMounting", remote)}
+                        onRemoveLocal={(file) => removeLocalPhotoFromField("sensorHubMounting", file)}
+                      />
                       <PhotoUploadedBadge show={pc.sensorHubMounting >= 1} />
                       <PhotoFieldError message={vacPhotoErrors.sensorHubMounting} />
                       {requiredHint("photo-sensorHubMounting")}
@@ -2703,7 +2895,12 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.speedSense} names={vacPhotoFileNames.speedSense} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.speedSense} remotePhotos={remoteThumbsForVacField("speedSense")} />
+                          <PhotoThumbnailGrid
+                            files={vacPhotoFiles.speedSense}
+                            remotePhotos={remoteThumbsForVacField("speedSense")}
+                            onRemoveRemote={(remote) => void removeUploadedPhotoFromField("speedSense", remote)}
+                            onRemoveLocal={(file) => removeLocalPhotoFromField("speedSense", file)}
+                          />
                           <PhotoUploadedBadge show={pc.speedSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.speedSense} />
                           {requiredHint("photo-speedSense")}
@@ -2766,7 +2963,12 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.loadSense} names={vacPhotoFileNames.loadSense} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.loadSense} remotePhotos={remoteThumbsForVacField("loadSense")} />
+                          <PhotoThumbnailGrid
+                            files={vacPhotoFiles.loadSense}
+                            remotePhotos={remoteThumbsForVacField("loadSense")}
+                            onRemoveRemote={(remote) => void removeUploadedPhotoFromField("loadSense", remote)}
+                            onRemoveLocal={(file) => removeLocalPhotoFromField("loadSense", file)}
+                          />
                           <PhotoUploadedBadge show={pc.loadSense >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.loadSense} />
                           {requiredHint("photo-loadSense")}
@@ -2813,7 +3015,12 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.gps} names={vacPhotoFileNames.gps} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.gps} remotePhotos={remoteThumbsForVacField("gps")} />
+                          <PhotoThumbnailGrid
+                            files={vacPhotoFiles.gps}
+                            remotePhotos={remoteThumbsForVacField("gps")}
+                            onRemoveRemote={(remote) => void removeUploadedPhotoFromField("gps", remote)}
+                            onRemoveLocal={(file) => removeLocalPhotoFromField("gps", file)}
+                          />
                           <PhotoUploadedBadge show={pc.gps >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.gps} />
                           {requiredHint("photo-gps")}
@@ -2844,7 +3051,12 @@ export function NewSubmissionForm() {
                             📷 Take / Upload Photo
                           </label>
                           <PhotoUploadFeedback count={pc.externalIndicator} names={vacPhotoFileNames.externalIndicator} />
-                          <PhotoThumbnailGrid files={vacPhotoFiles.externalIndicator} remotePhotos={remoteThumbsForVacField("externalIndicator")} />
+                          <PhotoThumbnailGrid
+                            files={vacPhotoFiles.externalIndicator}
+                            remotePhotos={remoteThumbsForVacField("externalIndicator")}
+                            onRemoveRemote={(remote) => void removeUploadedPhotoFromField("externalIndicator", remote)}
+                            onRemoveLocal={(file) => removeLocalPhotoFromField("externalIndicator", file)}
+                          />
                           <PhotoUploadedBadge show={pc.externalIndicator >= 1} />
                           <PhotoFieldError message={vacPhotoErrors.externalIndicator} />
                           {requiredHint("photo-externalIndicator")}
