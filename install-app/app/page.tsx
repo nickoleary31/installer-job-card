@@ -24,12 +24,42 @@ import {
   sanitizeWorkOrderInput,
 } from "@/lib/format";
 
+const PHOTO_BUCKET = "job-card-photos";
+
 async function deleteJobCardPhotoObject(storagePath: string) {
   try {
-    const { error } = await supabase.storage.from("job-card-photos").remove([storagePath]);
-    if (error) console.error("Supabase storage delete failed:", error.message, storagePath);
+    const { error } = await supabase.storage.from(PHOTO_BUCKET).remove([storagePath]);
+    if (error) {
+      console.warn("Supabase storage cleanup warning:", {
+        message: String((error as { message?: unknown }).message ?? ""),
+        name: String((error as { name?: unknown }).name ?? ""),
+        statusCode: String((error as { statusCode?: unknown }).statusCode ?? ""),
+        error: String((error as { error?: unknown }).error ?? ""),
+        json: (() => {
+          try {
+            return JSON.stringify(error);
+          } catch {
+            return "";
+          }
+        })(),
+        storagePath,
+        bucket: PHOTO_BUCKET,
+      });
+    }
   } catch (e) {
-    console.error("Supabase storage delete failed:", e, storagePath);
+    console.warn("Supabase storage cleanup warning:", {
+      message: e instanceof Error ? e.message : String(e),
+      name: e instanceof Error ? e.name : "",
+      json: (() => {
+        try {
+          return JSON.stringify(e);
+        } catch {
+          return "";
+        }
+      })(),
+      storagePath,
+      bucket: PHOTO_BUCKET,
+    });
   }
 }
 
@@ -1138,31 +1168,71 @@ export function NewSubmissionForm() {
     });
   };
 
+  type UploadFailureLog = {
+    error: unknown;
+    storagePath: string;
+    filename: string;
+    fieldName: UploadFieldName;
+    group: "vac4" | "vehicle";
+    submissionId: string;
+  };
+
+  const logSupabaseUploadIssue = (level: "warn" | "error", failure: UploadFailureLog) => {
+    const error = (typeof failure.error === "object" && failure.error !== null ? failure.error : {}) as {
+      message?: unknown;
+      name?: unknown;
+      statusCode?: unknown;
+      error?: unknown;
+    };
+    const payload = {
+      message: String(error.message ?? ""),
+      name: String(error.name ?? ""),
+      statusCode: String(error.statusCode ?? ""),
+      error: String(error.error ?? ""),
+      json: (() => {
+        try {
+          return JSON.stringify(failure.error);
+        } catch {
+          return "";
+        }
+      })(),
+      storagePath: failure.storagePath,
+      bucket: PHOTO_BUCKET,
+      fieldName: failure.fieldName,
+      group: failure.group,
+      submissionId: failure.submissionId,
+      filename: failure.filename,
+    };
+    if (level === "warn") console.warn("Supabase upload warning:", payload);
+    else console.error("Supabase upload failed:", payload);
+  };
+
   const uploadPhotosToStorage = async (group: "vac4" | "vehicle", fieldName: UploadFieldName, files: File[]) => {
     const uploadedUrls: string[] = [];
     const uploadedPhotos: UploadedPhotoMetadata[] = [];
+    const failures: UploadFailureLog[] = [];
     let ok = true;
     for (const file of files) {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const stampedName = `${Date.now()}-${safeName}`;
       const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
-      const { error: uploadError } = await supabase.storage.from("job-card-photos").upload(objectPath, file, {
+      const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
         upsert: true,
         contentType: file.type || undefined,
       });
       if (uploadError) {
-        console.error("Supabase upload failed:", {
-          error: uploadError.message,
+        failures.push({
+          error: uploadError,
+          storagePath: objectPath,
+          filename: file.name,
           submissionId,
           group,
           fieldName,
-          filename: file.name,
-          path: objectPath,
         });
         ok = false;
         continue;
       }
-      const { data } = supabase.storage.from("job-card-photos").getPublicUrl(objectPath);
+      const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(objectPath);
       const publicUrl = data?.publicUrl || "";
       if (publicUrl) {
         uploadedUrls.push(publicUrl);
@@ -1177,7 +1247,7 @@ export function NewSubmissionForm() {
         });
       }
     }
-    return { ok, uploadedUrls, uploadedPhotos };
+    return { ok, uploadedUrls, uploadedPhotos, failures };
   };
 
   const isVacPhotoField = (key: UploadFieldName): key is keyof VacPhotoFileNames => VAC_PHOTO_KEYS.includes(key as keyof VacPhotoFileNames);
@@ -1303,12 +1373,16 @@ export function NewSubmissionForm() {
       setVacPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
       const uploadResult = await uploadPhotosToStorage("vac4", key, [picked[0]]);
       const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
-      if (!uploadResult.ok || nextMeta.length === 0) {
+      if (nextMeta.length === 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
         setVacPhotoUrlsSafe((p) => ({ ...p, [key]: prevMeta.map((m) => m.publicUrl).filter(Boolean) }));
         setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: prevMeta }));
         setVacPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
         clearFieldHighlight(`photo-${String(key)}`);
         return;
+      }
+      if (!uploadResult.ok && uploadResult.failures.length > 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
       }
       setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
       setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
@@ -1339,10 +1413,16 @@ export function NewSubmissionForm() {
       0,
       MAX_PHOTOS_PER_FIELD,
     );
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      const level: "warn" | "error" = nextMeta.length > 0 ? "warn" : "error";
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue(level, f));
+    }
     setVacPhotoUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
     setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
-    setVacPhotoErrors((er) => ({ ...er, [key]: uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    setVacPhotoErrors((er) => ({ ...er, [key]: nextMeta.length > 0 ? null : uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
     if (uploadResult.ok) {
+      setVacPhotoFiles((p) => ({ ...p, [key]: [] }));
+    } else if (nextMeta.length > 0) {
       setVacPhotoFiles((p) => ({ ...p, [key]: [] }));
     }
     clearFieldHighlight(`photo-${String(key)}`);
@@ -1388,12 +1468,16 @@ export function NewSubmissionForm() {
     setVehiclePictureFiles((p) => ({ ...p, [key]: picked }));
     const uploadResult = await uploadPhotosToStorage("vehicle", key, picked);
     const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
-    if (!uploadResult.ok || nextMeta.length === 0) {
+    if (nextMeta.length === 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
       setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: prevMeta.map((m) => m.publicUrl).filter(Boolean) }));
       setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: prevMeta }));
       setVehiclePictureErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
       clearFieldHighlight(`photo-${key}`);
       return;
+    }
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
     }
     setVehiclePictureUrlsSafe((p) => ({ ...p, [key]: nextMeta.map((m) => m.publicUrl).filter(Boolean) }));
     setPhotoMetadataByFieldSafe((p) => ({ ...p, [key]: nextMeta }));
