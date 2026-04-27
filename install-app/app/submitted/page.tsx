@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
 
 type SubmissionRow = {
   submission_id: string;
@@ -42,6 +43,16 @@ type SubmissionPayloadLite = {
     loadSenseInstalled?: string;
     gpsInstalled?: string;
     externalIndicatorInstalled?: string;
+    redWireDescription?: string;
+    blackWireDescription?: string;
+    blueWireDescription?: string;
+    purpleWireDescription?: string;
+    brownWireDescription?: string;
+    relayAccessDescription?: string;
+    impactSensorDescription?: string;
+    speedSenseDescription?: string;
+    speedSensePulseCount?: string;
+    loadSenseThresholds?: string;
     photoCounts?: Record<string, number>;
   };
   photoUploads?: Array<{
@@ -61,6 +72,8 @@ type SubmissionListItem = {
   payload: SubmissionPayloadLite;
 };
 
+type ResendState = "idle" | "sending" | "success" | "error";
+
 function mapRow(row: SubmissionRow): SubmissionListItem {
   const payload = (row.payload as SubmissionPayloadLite | null) || {};
   const primary = payload?.hardwareSelection?.primary?.trim() || "—";
@@ -79,10 +92,26 @@ function mapRow(row: SubmissionRow): SubmissionListItem {
   };
 }
 
+function displayValue(value: string | undefined | null) {
+  return value?.trim() ? value.trim() : "Not Installed";
+}
+
+function displayUppercase(value: string | undefined | null) {
+  const upper = formatUpper(value);
+  const shown = upper || "Not Installed";
+  return shown === "Not Installed" ? shown : shown.toUpperCase();
+}
+
+function textOrDash(value: string | undefined) {
+  return value?.trim() ? value.trim() : "—";
+}
+
 export default function SubmittedPage() {
   const [items, setItems] = useState<SubmissionListItem[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [expandedSubmissionIds, setExpandedSubmissionIds] = useState<Set<string>>(() => new Set());
+  const [resendStateBySubmissionId, setResendStateBySubmissionId] = useState<Record<string, ResendState>>({});
+  const [resendMessageBySubmissionId, setResendMessageBySubmissionId] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -132,6 +161,39 @@ export default function SubmittedPage() {
     return (payload.photoUploads || []).filter((p) => p.group === group && p.fieldName === fieldName).length;
   };
 
+  const setResendState = (submissionId: string, state: ResendState) => {
+    setResendStateBySubmissionId((prev) => ({ ...prev, [submissionId]: state }));
+  };
+
+  const handleResendEmail = async (row: SubmissionListItem) => {
+    setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "" }));
+    setResendState(row.submissionId, "sending");
+    try {
+      const res = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload: row.payload }),
+      });
+      let data: { error?: string } = {};
+      try {
+        data = (await res.json()) as { error?: string };
+      } catch {
+        // ignore parse errors
+      }
+      if (!res.ok) {
+        const msg = typeof data.error === "string" && data.error.trim() ? data.error.trim() : `Request failed (${res.status})`;
+        setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: msg }));
+        setResendState(row.submissionId, "error");
+        return;
+      }
+      setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "Email resent successfully" }));
+      setResendState(row.submissionId, "success");
+    } catch {
+      setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "Failed to resend email" }));
+      setResendState(row.submissionId, "error");
+    }
+  };
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
@@ -169,7 +231,7 @@ export default function SubmittedPage() {
                 <span className="font-semibold text-gray-600">Customer:</span> {row.customer}
               </p>
               <p>
-                <span className="font-semibold text-gray-600">Unit #:</span> {row.unitNumber}
+                <span className="font-semibold text-gray-600">Unit #:</span> {formatUpper(row.unitNumber) || "—"}
               </p>
               <p>
                 <span className="font-semibold text-gray-600">Location:</span> {row.location}
@@ -194,6 +256,14 @@ export default function SubmittedPage() {
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
+                className="rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-70"
+                onClick={() => void handleResendEmail(row)}
+                disabled={resendStateBySubmissionId[row.submissionId] === "sending"}
+              >
+                {resendStateBySubmissionId[row.submissionId] === "sending" ? "Resending..." : "Resend Email"}
+              </button>
+              <button
+                type="button"
                 className="rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
                 onClick={() => toggleExpanded(row.submissionId)}
               >
@@ -206,44 +276,54 @@ export default function SubmittedPage() {
                 View Photos
               </Link>
             </div>
+            {resendStateBySubmissionId[row.submissionId] === "success" ? (
+              <p className="mt-2 text-sm font-semibold text-emerald-800" role="status">
+                {resendMessageBySubmissionId[row.submissionId] || "Email resent successfully"}
+              </p>
+            ) : null}
+            {resendStateBySubmissionId[row.submissionId] === "error" ? (
+              <p className="mt-2 text-sm font-semibold text-red-700" role="alert">
+                {resendMessageBySubmissionId[row.submissionId] || "Failed to resend email"}
+              </p>
+            ) : null}
 
             {expandedSubmissionIds.has(row.submissionId) ? (
               <div className="mt-4 space-y-4 rounded-xl border border-gray-200 bg-gray-50/70 p-4">
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Core Job Info</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Customer:</span> {row.payload.coreJobInfo?.customer || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Location:</span> {row.payload.coreJobInfo?.location || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Work Order #:</span> {row.payload.coreJobInfo?.workOrder || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Service Appointment #:</span> {row.payload.coreJobInfo?.serviceAppointment || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Installer:</span> {row.payload.coreJobInfo?.installerName || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Unit #:</span> {row.payload.coreJobInfo?.unitNumber || "—"}</p>
+                    <p><span className="font-semibold text-gray-600">Customer:</span> {displayValue(row.payload.coreJobInfo?.customer)}</p>
+                    <p><span className="font-semibold text-gray-600">Location:</span> {displayValue(row.payload.coreJobInfo?.location)}</p>
+                    <p><span className="font-semibold text-gray-600">Work Order #:</span> {formatWorkOrder(row.payload.coreJobInfo?.workOrder) || "Not Installed"}</p>
+                    <p><span className="font-semibold text-gray-600">Service Appointment #:</span> {formatServiceAppointment(row.payload.coreJobInfo?.serviceAppointment) || "Not Installed"}</p>
+                    <p><span className="font-semibold text-gray-600">Installer:</span> {displayValue(row.payload.coreJobInfo?.installerName)}</p>
+                    <p><span className="font-semibold text-gray-600">Unit #:</span> {displayUppercase(row.payload.coreJobInfo?.unitNumber)}</p>
                   </div>
                 </section>
 
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Vehicle Information</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Make:</span> {row.payload.coreJobInfo?.equipmentMake || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Model:</span> {row.payload.coreJobInfo?.equipmentModel || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Serial #:</span> {row.payload.coreJobInfo?.equipmentSerial || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Drive Type:</span> {row.payload.vac4?.driveType || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {row.payload.vac4?.vehicleType || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Voltage:</span> {row.payload.vac4?.vehicleVoltage || "—"}</p>
+                    <p><span className="font-semibold text-gray-600">Make:</span> {displayValue(row.payload.coreJobInfo?.equipmentMake)}</p>
+                    <p><span className="font-semibold text-gray-600">Model:</span> {displayUppercase(row.payload.coreJobInfo?.equipmentModel)}</p>
+                    <p><span className="font-semibold text-gray-600">Serial #:</span> {displayUppercase(row.payload.coreJobInfo?.equipmentSerial)}</p>
+                    <p><span className="font-semibold text-gray-600">Drive Type:</span> {displayValue(row.payload.vac4?.driveType)}</p>
+                    <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {displayValue(row.payload.vac4?.vehicleType)}</p>
+                    <p><span className="font-semibold text-gray-600">Voltage:</span> {displayValue(row.payload.vac4?.vehicleVoltage)}</p>
                   </div>
                 </section>
 
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Hardware Selection</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Primary:</span> {row.payload.hardwareSelection?.primary || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Additional selected?:</span> {row.payload.hardwareSelection?.hasAdditional || "—"}</p>
+                    <p><span className="font-semibold text-gray-600">Primary:</span> {displayValue(row.payload.hardwareSelection?.primary)}</p>
+                    <p><span className="font-semibold text-gray-600">Additional selected?:</span> {displayValue(row.payload.hardwareSelection?.hasAdditional)}</p>
                     <p className="sm:col-span-2">
                       <span className="font-semibold text-gray-600">Additional hardware:</span>{" "}
                       {Array.isArray(row.payload.hardwareSelection?.additional) &&
                       row.payload.hardwareSelection.additional.length > 0
                         ? row.payload.hardwareSelection.additional.join(", ")
-                        : "—"}
+                        : "Not Installed"}
                     </p>
                   </div>
                 </section>
@@ -251,15 +331,31 @@ export default function SubmittedPage() {
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">VAC4 Summary</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Client Approval:</span> {row.payload.vac4?.clientApproval || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Hour Meter:</span> {row.payload.vac4?.hourMeter || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Sensor Hub Installed:</span> {row.payload.vac4?.sensorHubInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Lift Sense Installed:</span> {row.payload.vac4?.liftSenseInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Operator Presence Installed:</span> {row.payload.vac4?.operatorPresenceInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Speed Sense Installed:</span> {row.payload.vac4?.speedSenseInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">Load Sense Installed:</span> {row.payload.vac4?.loadSenseInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">GPS Installed:</span> {row.payload.vac4?.gpsInstalled || "—"}</p>
-                    <p><span className="font-semibold text-gray-600">External Indicator Installed:</span> {row.payload.vac4?.externalIndicatorInstalled || "—"}</p>
+                    <p><span className="font-semibold text-gray-600">Client Approval:</span> {displayValue(row.payload.vac4?.clientApproval)}</p>
+                    <p><span className="font-semibold text-gray-600">Hour Meter:</span> {textOrDash(row.payload.vac4?.hourMeter)}</p>
+                    <p><span className="font-semibold text-gray-600">Sensor Hub Installed:</span> {displayValue(row.payload.vac4?.sensorHubInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Lift Sense Installed:</span> {displayValue(row.payload.vac4?.liftSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Operator Presence Installed:</span> {displayValue(row.payload.vac4?.operatorPresenceInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Installed:</span> {displayValue(row.payload.vac4?.speedSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Load Sense Installed:</span> {displayValue(row.payload.vac4?.loadSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">GPS Installed:</span> {displayValue(row.payload.vac4?.gpsInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">External Indicator Installed:</span> {displayValue(row.payload.vac4?.externalIndicatorInstalled)}</p>
+                  </div>
+                </section>
+
+                <section>
+                  <h3 className="text-sm font-bold text-gray-900">Connection Descriptions</h3>
+                  <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                    <p><span className="font-semibold text-gray-600">Red Wire Description:</span> {displayValue(row.payload.vac4?.redWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Black Wire Description:</span> {displayValue(row.payload.vac4?.blackWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Blue Wire Description:</span> {displayValue(row.payload.vac4?.blueWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Purple Wire Description:</span> {displayValue(row.payload.vac4?.purpleWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Brown Wire Description:</span> {displayValue(row.payload.vac4?.brownWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Relay Access Description:</span> {displayValue(row.payload.vac4?.relayAccessDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Impact Sensor Description:</span> {displayValue(row.payload.vac4?.impactSensorDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Description:</span> {displayValue(row.payload.vac4?.speedSenseDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Pulse Count:</span> {displayValue(row.payload.vac4?.speedSensePulseCount)}</p>
+                    <p><span className="font-semibold text-gray-600">Load Sense Thresholds:</span> {displayValue(row.payload.vac4?.loadSenseThresholds)}</p>
                   </div>
                 </section>
 

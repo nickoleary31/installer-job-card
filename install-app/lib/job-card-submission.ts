@@ -1,3 +1,5 @@
+import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
+
 export type VacPhotoFileNames = {
   vacMounting: string[];
   wirePath: string[];
@@ -164,7 +166,7 @@ function countPhotoValue(value: unknown): number {
 
 export function formatEmailSubject(customer: string, unitNumber: string) {
   const c = customer.trim() || "Unknown";
-  const u = unitNumber.trim() || "—";
+  const u = formatUpper(unitNumber) || "—";
   return `Installer Job Card - ${c} - ${u}`;
 }
 
@@ -173,22 +175,27 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const h = p.hardwareSelection;
   const v = p.vac4;
   const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
+  const displayValue = (value: string | undefined | null) => (value && value.trim() ? value.trim() : "Not Installed");
+  const displayUppercase = (value: string | undefined | null) => {
+    const shown = formatUpper(value) || "Not Installed";
+    return shown === "Not Installed" ? shown : shown.toUpperCase();
+  };
   const appUrl = resolvePublicAppUrl();
   const photoGalleryUrl = `${appUrl}/photos/${encodeURIComponent(p.submissionId)}`;
   const divider = "--------------------------------";
   const orderedDescriptions = VAC4_ORDERED_DESCRIPTION_FIELDS.reduce<Record<Vac4DescriptionKey, string>>(
     (acc, { key }) => {
-      acc[key] = textOrDash(v[key]);
+      acc[key] = displayValue(v[key]);
       return acc;
     },
     {
-      redWireDescription: "—",
-      blackWireDescription: "—",
-      blueWireDescription: "—",
-      purpleWireDescription: "—",
-      brownWireDescription: "—",
-      relayAccessDescription: "—",
-      impactSensorDescription: "—",
+      redWireDescription: "Not Installed",
+      blackWireDescription: "Not Installed",
+      blueWireDescription: "Not Installed",
+      purpleWireDescription: "Not Installed",
+      brownWireDescription: "Not Installed",
+      relayAccessDescription: "Not Installed",
+      impactSensorDescription: "Not Installed",
     },
   );
   const photoLinesByKey = VAC4_ORDERED_PHOTO_FIELDS.reduce<Record<Vac4OrderedPhotoKey, string>>(
@@ -222,9 +229,9 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push(`Submission ID: ${textOrDash(p.submissionId)}`);
   lines.push(`Customer: ${textOrDash(c.customer)}`);
   lines.push(`Location: ${textOrDash(c.location)}`);
-  lines.push(`Work Order #: ${textOrDash(c.workOrder)}`);
-  lines.push(`Service Appointment #: ${textOrDash(c.serviceAppointment)}`);
-  lines.push(`Unit #: ${textOrDash(c.unitNumber)}`);
+  lines.push(`Work Order #: ${formatWorkOrder(c.workOrder) || "Not Installed"}`);
+  lines.push(`Service Appointment #: ${formatServiceAppointment(c.serviceAppointment) || "Not Installed"}`);
+  lines.push(`Unit #: ${displayUppercase(c.unitNumber)}`);
   lines.push(`Installer: ${textOrDash(c.installerName)}`);
   lines.push(`Submitted: ${p.submissionTimestamp}`);
   lines.push("");
@@ -232,19 +239,19 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push("");
   lines.push("VEHICLE INFORMATION");
   lines.push(`Make: ${textOrDash(c.equipmentMake)}`);
-  lines.push(`Model: ${textOrDash(c.equipmentModel)}`);
-  lines.push(`Serial #: ${textOrDash(c.equipmentSerial)}`);
+  lines.push(`Model: ${displayUppercase(c.equipmentModel)}`);
+  lines.push(`Serial #: ${displayUppercase(c.equipmentSerial)}`);
   lines.push(
     `Vehicle Type: ${
-      v.vehicleType === "Other" ? `${textOrDash(v.vehicleType)} (${textOrDash(v.otherVehicleType)})` : textOrDash(v.vehicleType)
+      v.vehicleType === "Other" ? `${displayValue(v.vehicleType)} (${displayValue(v.otherVehicleType)})` : displayValue(v.vehicleType)
     }`,
   );
-  lines.push(`Drive Type: ${textOrDash(v.driveType)}`);
+  lines.push(`Drive Type: ${displayValue(v.driveType)}`);
   lines.push(
     `Voltage: ${
       v.vehicleVoltage === "Other"
-        ? `Other (${textOrDash(v.vehicleVoltageOther)})`
-        : textOrDash(v.vehicleVoltage)
+        ? `Other (${displayValue(v.vehicleVoltageOther)})`
+        : displayValue(v.vehicleVoltage)
     }`,
   );
   lines.push("");
@@ -261,10 +268,15 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push(divider);
   lines.push("");
   lines.push("VAC4 INSTALL");
-  lines.push(`Client Approval: ${textOrDash(v.clientApproval)}`);
+  lines.push(`Client Approval: ${displayValue(v.clientApproval)}`);
   lines.push(`Hour Meter: ${textOrDash(v.hourMeter)}`);
-  lines.push(`Sensor Hub: ${textOrDash(v.sensorHubInstalled)}`);
-  lines.push(`Lift Sense: ${textOrDash(v.liftSenseInstalled)}`);
+  lines.push(`Sensor Hub: ${displayValue(v.sensorHubInstalled)}`);
+  lines.push(`Lift Sense: ${displayValue(v.liftSenseInstalled)}`);
+  lines.push(`Operator Presence: ${displayValue(v.operatorPresenceInstalled)}`);
+  lines.push(`Speed Sense: ${displayValue(v.speedSenseInstalled)}`);
+  lines.push(`Load Sense: ${displayValue(v.loadSenseInstalled)}`);
+  lines.push(`GPS: ${displayValue(v.gpsInstalled)}`);
+  lines.push(`External Indicator: ${displayValue(v.externalIndicatorInstalled)}`);
   lines.push("");
   lines.push(`Red Wire: ${orderedDescriptions.redWireDescription}`);
   lines.push(`Black Wire: ${orderedDescriptions.blackWireDescription}`);
@@ -273,6 +285,9 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push(`Brown Wire: ${orderedDescriptions.brownWireDescription}`);
   lines.push(`Relay Access: ${orderedDescriptions.relayAccessDescription}`);
   lines.push(`Impact Sensor: ${orderedDescriptions.impactSensorDescription}`);
+  lines.push(`Speed Sense Description: ${displayValue(v.speedSenseDescription)}`);
+  lines.push(`Speed Sense Pulse Count: ${displayValue(v.speedSensePulseCount)}`);
+  lines.push(`Load Sense Thresholds: ${displayValue(v.loadSenseThresholds)}`);
   lines.push("");
   lines.push(divider);
   lines.push("");

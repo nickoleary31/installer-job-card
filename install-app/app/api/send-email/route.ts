@@ -8,21 +8,92 @@ import {
 } from "@/lib/job-card-submission";
 
 const DEFAULT_RESEND_FROM = "onboarding@resend.dev";
+const ALWAYS_EMAIL_TO = "installs@tkpautomotive.com";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function isSubmissionPayload(p: unknown): p is JobCardSubmissionPayload {
-  if (!isRecord(p)) return false;
-  if (p.status !== "Submitted") return false;
-  if (typeof p.submissionTimestamp !== "string") return false;
-  if (!isRecord(p.coreJobInfo)) return false;
-  if (!isRecord(p.hardwareSelection)) return false;
-  if (!Array.isArray(p.selectedSections)) return false;
-  if (!isRecord(p.vac4)) return false;
-  if (!isRecord(p.vac4.photoCounts) || !isRecord(p.vac4.photoFileNames)) return false;
-  return true;
+function stringOrEmpty(v: unknown) {
+  return typeof v === "string" ? v : "";
+}
+
+function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null {
+  if (!isRecord(p)) return null;
+  const core = isRecord(p.coreJobInfo) ? p.coreJobInfo : {};
+  const hw = isRecord(p.hardwareSelection) ? p.hardwareSelection : {};
+  const vac = isRecord(p.vac4) ? p.vac4 : {};
+  const photoCounts = isRecord(vac.photoCounts) ? vac.photoCounts : {};
+  const photoFileNames = isRecord(vac.photoFileNames) ? vac.photoFileNames : {};
+  const photoUrls = isRecord(vac.photoUrls) ? vac.photoUrls : {};
+  const selectedSections = Array.isArray(p.selectedSections) ? p.selectedSections.filter((x) => typeof x === "string") : [];
+  const additional = Array.isArray(hw.additional) ? hw.additional.filter((x) => typeof x === "string") : [];
+  const photoUploads = Array.isArray(p.photoUploads) ? p.photoUploads.filter((x) => isRecord(x)) : [];
+  return {
+    submissionId: stringOrEmpty(p.submissionId),
+    submissionTimestamp: stringOrEmpty(p.submissionTimestamp) || new Date().toISOString(),
+    status: "Submitted",
+    coreJobInfo: {
+      customer: stringOrEmpty(core.customer),
+      location: stringOrEmpty(core.location),
+      workOrder: stringOrEmpty(core.workOrder),
+      serviceAppointment: stringOrEmpty(core.serviceAppointment),
+      unitNumber: stringOrEmpty(core.unitNumber),
+      equipmentMake: stringOrEmpty(core.equipmentMake),
+      equipmentModel: stringOrEmpty(core.equipmentModel),
+      equipmentSerial: stringOrEmpty(core.equipmentSerial),
+      installerName: stringOrEmpty(core.installerName),
+    },
+    hardwareSelection: {
+      primary: stringOrEmpty(hw.primary),
+      hasAdditional: stringOrEmpty(hw.hasAdditional),
+      additional,
+    },
+    selectedSections,
+    photoUploads: photoUploads as JobCardSubmissionPayload["photoUploads"],
+    vac4: {
+      vehicleType: stringOrEmpty(vac.vehicleType),
+      otherVehicleType: stringOrEmpty(vac.otherVehicleType),
+      driveType: stringOrEmpty(vac.driveType),
+      vehicleVoltage: stringOrEmpty(vac.vehicleVoltage),
+      vehicleVoltageOther: stringOrEmpty(vac.vehicleVoltageOther),
+      clientApproval: stringOrEmpty(vac.clientApproval),
+      hourMeter: stringOrEmpty(vac.hourMeter),
+      sensorHubInstalled: stringOrEmpty(vac.sensorHubInstalled),
+      liftSenseInstalled: stringOrEmpty(vac.liftSenseInstalled),
+      operatorPresenceInstalled: stringOrEmpty(vac.operatorPresenceInstalled),
+      speedSenseInstalled: stringOrEmpty(vac.speedSenseInstalled),
+      loadSenseInstalled: stringOrEmpty(vac.loadSenseInstalled),
+      gpsInstalled: stringOrEmpty(vac.gpsInstalled),
+      externalIndicatorInstalled: stringOrEmpty(vac.externalIndicatorInstalled),
+      speedSenseDescription: stringOrEmpty(vac.speedSenseDescription),
+      speedSensePulseCount: stringOrEmpty(vac.speedSensePulseCount),
+      loadSenseThresholds: stringOrEmpty(vac.loadSenseThresholds),
+      redWireDescription: stringOrEmpty(vac.redWireDescription),
+      blackWireDescription: stringOrEmpty(vac.blackWireDescription),
+      blueWireDescription: stringOrEmpty(vac.blueWireDescription),
+      brownWireDescription: stringOrEmpty(vac.brownWireDescription),
+      purpleWireDescription: stringOrEmpty(vac.purpleWireDescription),
+      relayAccessDescription: stringOrEmpty(vac.relayAccessDescription),
+      impactSensorDescription: stringOrEmpty(vac.impactSensorDescription),
+      photoCounts: photoCounts as Record<string, number>,
+      photoFileNames: photoFileNames as JobCardSubmissionPayload["vac4"]["photoFileNames"],
+      photoUrls: photoUrls as JobCardSubmissionPayload["vac4"]["photoUrls"],
+    },
+  };
+}
+
+function readExternalRecipientsFromPayload(payload: unknown): string[] {
+  if (!isRecord(payload)) return [];
+  const candidates: unknown[] = [];
+  if (Array.isArray(payload.externalRecipientEmails)) candidates.push(...payload.externalRecipientEmails);
+  if (isRecord(payload.project) && Array.isArray(payload.project.externalRecipientEmails)) {
+    candidates.push(...payload.project.externalRecipientEmails);
+  }
+  return candidates
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean);
 }
 
 export async function POST(req: Request) {
@@ -40,11 +111,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing payload" }, { status: 400 });
   }
 
-  if (!isSubmissionPayload(body.payload)) {
+  const payload = normalizeSubmissionPayload(body.payload);
+  if (!payload) {
     return NextResponse.json({ error: "Invalid submission payload" }, { status: 400 });
   }
-
-  const payload = body.payload;
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
@@ -55,7 +125,8 @@ export async function POST(req: Request) {
   }
 
   const from = process.env.JOB_CARD_EMAIL_FROM?.trim() || DEFAULT_RESEND_FROM;
-  const to = process.env.JOB_CARD_EMAIL_TO?.trim() || DEFAULT_JOB_CARD_EMAIL_TO;
+  const fallbackTo = process.env.JOB_CARD_EMAIL_TO?.trim() || DEFAULT_JOB_CARD_EMAIL_TO;
+  const to = [...new Set([ALWAYS_EMAIL_TO, fallbackTo, ...readExternalRecipientsFromPayload(payload)])];
 
   const subject = formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber);
   const text = formatEmailBodyFromPayload(payload);
@@ -71,9 +142,11 @@ export async function POST(req: Request) {
     });
 
     if (error) {
+      console.error("Resend send-email returned error:", error);
       return NextResponse.json({ error: error.message }, { status: 502 });
     }
   } catch (err: unknown) {
+    console.error("Resend send-email threw error:", err);
     const message = err instanceof Error ? err.message : "Failed to send email";
     return NextResponse.json({ error: message }, { status: 502 });
   }

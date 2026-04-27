@@ -16,6 +16,13 @@ import {
   formatEmailSubject,
 } from "@/lib/job-card-submission";
 import { supabase } from "@/lib/supabase/client";
+import {
+  formatServiceAppointment,
+  formatUpper,
+  formatWorkOrder,
+  sanitizeServiceAppointmentInput,
+  sanitizeWorkOrderInput,
+} from "@/lib/format";
 
 async function deleteJobCardPhotoObject(storagePath: string) {
   try {
@@ -86,6 +93,19 @@ type DefaultContextIds = {
   companyId: string;
   projectId: string;
 };
+
+const UPPERCASE_CORE_KEYS: ReadonlyArray<keyof CoreJobFields> = ["equipmentModel", "equipmentSerial", "unitNumber"];
+
+function normalizeUppercaseCoreJob(core: CoreJobFields): CoreJobFields {
+  return {
+    ...core,
+    workOrder: sanitizeWorkOrderInput(core.workOrder),
+    serviceAppointment: sanitizeServiceAppointmentInput(core.serviceAppointment),
+    equipmentModel: formatUpper(core.equipmentModel),
+    equipmentSerial: formatUpper(core.equipmentSerial),
+    unitNumber: formatUpper(core.unitNumber),
+  };
+}
 
 function readMigratedDraftsFromStorage(): StoredJobCardDraft[] {
   if (typeof window === "undefined") return [];
@@ -1090,7 +1110,15 @@ export function NewSubmissionForm() {
   };
 
   const setCoreField = (key: keyof CoreJobFields, value: string) => {
-    setCoreJob((prev) => ({ ...prev, [key]: value }));
+    const normalizedValue =
+      key === "workOrder"
+        ? sanitizeWorkOrderInput(value)
+        : key === "serviceAppointment"
+          ? sanitizeServiceAppointmentInput(value)
+          : UPPERCASE_CORE_KEYS.includes(key)
+            ? formatUpper(value)
+            : value;
+    setCoreJob((prev) => ({ ...prev, [key]: normalizedValue }));
     setReviewHighlights((prev) => {
       if (!prev.has(`core-${key}`)) return prev;
       const n = new Set(prev);
@@ -1399,11 +1427,12 @@ export function NewSubmissionForm() {
 
   const buildSubmissionPayload = (): JobCardSubmissionPayload => {
     const photoSnapshot = getPhotoPersistenceSnapshot();
+    const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     return {
       submissionId,
       submissionTimestamp: new Date().toISOString(),
       status: "Submitted",
-      coreJobInfo: { ...coreJob },
+      coreJobInfo: { ...normalizedCoreJob },
       hardwareSelection: {
         primary,
         hasAdditional,
@@ -1549,7 +1578,7 @@ export function NewSubmissionForm() {
 
   const restoreFromDraftData = (draft: StoredJobCardDraft["data"], restoredSubmissionId: string) => {
     setSubmissionId(restoredSubmissionId);
-    setCoreJob((prev) => ({ ...prev, ...draft.coreJob }));
+    setCoreJob((prev) => normalizeUppercaseCoreJob({ ...prev, ...draft.coreJob }));
     setPrimary(draft.hardwareSelection?.primary || "");
     setHasAdditional(draft.hardwareSelection?.hasAdditional || "");
     setAdditional(Array.isArray(draft.hardwareSelection?.additional) ? draft.hardwareSelection.additional : []);
@@ -1674,8 +1703,9 @@ export function NewSubmissionForm() {
 
   const handleSaveDraft = async () => {
     const photoSnapshot = getPhotoPersistenceSnapshot();
+    const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const draftData: StoredJobCardDraft["data"] = {
-      coreJob,
+      coreJob: normalizedCoreJob,
       hardwareSelection: { primary, hasAdditional, additional },
       vac4: {
         vehicleType: vac4VehicleType,
@@ -1717,8 +1747,8 @@ export function NewSubmissionForm() {
     const updatedAt = new Date().toISOString();
     const nextDraft: StoredJobCardDraft = {
       submissionId,
-      customer: coreJob.customer.trim() || "—",
-      unitNumber: coreJob.unitNumber.trim() || "—",
+      customer: normalizedCoreJob.customer.trim() || "—",
+      unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
       savedAt: updatedAt,
       data: draftData,
     };
@@ -1960,12 +1990,17 @@ export function NewSubmissionForm() {
                 Work Order #
                 <RequiredMark />
               </label>
-              <input
-                className={fieldInputClass("core-workOrder")}
-                placeholder="exp: WO-12345"
-                value={coreJob.workOrder}
-                onChange={(e) => setCoreField("workOrder", e.target.value)}
-              />
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
+                  WO-
+                </span>
+                <input
+                  className={`${fieldInputClass("core-workOrder")} pl-16`}
+                  placeholder="12345"
+                  value={coreJob.workOrder}
+                  onChange={(e) => setCoreField("workOrder", e.target.value)}
+                />
+              </div>
               {requiredHint("core-workOrder")}
             </div>
 
@@ -1974,12 +2009,17 @@ export function NewSubmissionForm() {
                 Service Appointment #
                 <RequiredMark />
               </label>
-              <input
-                className={fieldInputClass("core-serviceAppointment")}
-                placeholder="exp: SA-98765"
-                value={coreJob.serviceAppointment}
-                onChange={(e) => setCoreField("serviceAppointment", e.target.value)}
-              />
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
+                  SA-
+                </span>
+                <input
+                  className={`${fieldInputClass("core-serviceAppointment")} pl-16`}
+                  placeholder="98765"
+                  value={coreJob.serviceAppointment}
+                  onChange={(e) => setCoreField("serviceAppointment", e.target.value)}
+                />
+              </div>
               {requiredHint("core-serviceAppointment")}
             </div>
 
@@ -3240,8 +3280,8 @@ export function NewSubmissionForm() {
           <div>
             <SummaryRow label="Customer" value={coreJob.customer} />
             <SummaryRow label="Location" value={coreJob.location} />
-            <SummaryRow label="Work order #" value={coreJob.workOrder} />
-            <SummaryRow label="Service appointment #" value={coreJob.serviceAppointment} />
+            <SummaryRow label="Work order #" value={formatWorkOrder(coreJob.workOrder)} />
+            <SummaryRow label="Service appointment #" value={formatServiceAppointment(coreJob.serviceAppointment)} />
             <SummaryRow label="Installer name" value={coreJob.installerName} />
           </div>
         </section>
@@ -3344,7 +3384,7 @@ export function NewSubmissionForm() {
                   {speedSenseInstalled === "Yes" && (
                     <>
                       <SummaryRow label="Speed sense description" value={speedSenseDescription} />
-                      <SummaryRow label="Speed sense pulse count" value={speedSensePulseCount} />
+                      <SummaryRow label="Speed Sense Pulse Count" value={speedSensePulseCount} />
                     </>
                   )}
                   {loadSenseInstalled === "Yes" && <SummaryRow label="Load sense VAC thresholds" value={loadSenseThresholds} />}
