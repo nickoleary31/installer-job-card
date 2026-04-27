@@ -81,7 +81,21 @@ export type UploadedPhotoMetadata = {
 };
 
 export const DEFAULT_JOB_CARD_EMAIL_TO = "install-submissions@example.com";
-const DEFAULT_APP_URL = "https://installer-job-card.vercel.app";
+const DEFAULT_APP_URL = "https://install.tkptelematics.com";
+
+function resolvePublicAppUrl(): string {
+  const raw = process.env.NEXT_PUBLIC_APP_URL?.trim() || "";
+  if (!raw) return DEFAULT_APP_URL;
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost")) return DEFAULT_APP_URL;
+    if (host.endsWith(".vercel.app")) return DEFAULT_APP_URL;
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_APP_URL;
+  }
+}
 
 export type Vac4OrderedPhotoKey =
   | "vacMounting"
@@ -159,7 +173,7 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const h = p.hardwareSelection;
   const v = p.vac4;
   const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL?.trim() || DEFAULT_APP_URL).replace(/\/+$/, "");
+  const appUrl = resolvePublicAppUrl();
   const photoGalleryUrl = `${appUrl}/photos/${encodeURIComponent(p.submissionId)}`;
   const divider = "--------------------------------";
   const orderedDescriptions = VAC4_ORDERED_DESCRIPTION_FIELDS.reduce<Record<Vac4DescriptionKey, string>>(

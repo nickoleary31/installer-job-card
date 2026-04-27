@@ -49,6 +49,8 @@ const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
 const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
 const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-payload-v1";
 const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
+const DEFAULT_COMPANY_NAME = "Powerfleet";
+const DEFAULT_PROJECT_NAME = "Default Project";
 
 function generateSubmissionId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -78,6 +80,11 @@ type StoredJobCardDraft = {
       photoUploads?: UploadedPhotoMetadata[];
     };
   };
+};
+
+type DefaultContextIds = {
+  companyId: string;
+  projectId: string;
 };
 
 function readMigratedDraftsFromStorage(): StoredJobCardDraft[] {
@@ -667,6 +674,7 @@ export function NewSubmissionForm() {
   const [pendingEmailPayload, setPendingEmailPayload] = useState<JobCardSubmissionPayload | null>(null);
   const [emailSendStatus, setEmailSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [emailSendErrorMessage, setEmailSendErrorMessage] = useState<string | null>(null);
+  const [postSubmitSyncWarning, setPostSubmitSyncWarning] = useState<string | null>(null);
   const configuredPreviewTo = process.env.NEXT_PUBLIC_JOB_CARD_EMAIL_TO?.trim() || "";
 
   const [primary, setPrimary] = useState("");
@@ -729,6 +737,7 @@ export function NewSubmissionForm() {
   const vacPhotoUrlsRef = useRef<VacPhotoUrlsState>(emptyVacPhotoUrls());
   const vehiclePictureUrlsRef = useRef<VehiclePictureUrlsState>(emptyVehiclePictureUrls());
   const photoMetadataByFieldRef = useRef<PhotoMetadataByFieldState>(emptyPhotoMetadataByField());
+  const defaultContextIdsRef = useRef<DefaultContextIds | null>(null);
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
@@ -910,6 +919,70 @@ export function NewSubmissionForm() {
     setVacPhotoUrls(nextVacUrls);
     setVehiclePictureUrls(nextVehicleUrls);
     return { photoUploads: uploads, vacPhotoUrls: nextVacUrls, vehiclePhotoUrls: nextVehicleUrls };
+  };
+
+  const describeSupabaseError = (error: unknown): string => {
+    if (typeof error === "object" && error !== null) {
+      const maybeMessage = "message" in error ? String((error as { message?: unknown }).message ?? "") : "";
+      const maybeDetails = "details" in error ? String((error as { details?: unknown }).details ?? "") : "";
+      const maybeHint = "hint" in error ? String((error as { hint?: unknown }).hint ?? "") : "";
+      return [maybeMessage, maybeDetails, maybeHint].map((v) => v.trim()).filter(Boolean).join(" | ");
+    }
+    if (error instanceof Error) return error.message;
+    return String(error || "Unknown Supabase error");
+  };
+
+  const logSupabasePostSubmitError = (error: unknown) => {
+    const obj = (typeof error === "object" && error !== null ? error : {}) as {
+      message?: unknown;
+      code?: unknown;
+      details?: unknown;
+      hint?: unknown;
+    };
+    const message = typeof obj.message === "string" ? obj.message : "";
+    const code = typeof obj.code === "string" ? obj.code : "";
+    const details = typeof obj.details === "string" ? obj.details : "";
+    const hint = typeof obj.hint === "string" ? obj.hint : "";
+    const asJson = (() => {
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return "";
+      }
+    })();
+    console.error("Supabase post-submit sync failed:", {
+      message,
+      code,
+      details,
+      hint,
+      json: asJson,
+      raw: error,
+    });
+  };
+
+  const resolveDefaultContextIds = async (): Promise<DefaultContextIds> => {
+    if (defaultContextIdsRef.current) return defaultContextIdsRef.current;
+
+    const { data: companyRow, error: companyError } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("name", DEFAULT_COMPANY_NAME)
+      .maybeSingle<{ id: string }>();
+    if (companyError) throw companyError;
+    if (!companyRow?.id) throw new Error(`Default company not found: ${DEFAULT_COMPANY_NAME}`);
+
+    const { data: projectRow, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("company_id", companyRow.id)
+      .eq("project_name", DEFAULT_PROJECT_NAME)
+      .maybeSingle<{ id: string }>();
+    if (projectError) throw projectError;
+    if (!projectRow?.id) throw new Error(`Default project not found: ${DEFAULT_PROJECT_NAME}`);
+
+    const ids = { companyId: companyRow.id, projectId: projectRow.id };
+    defaultContextIdsRef.current = ids;
+    return ids;
   };
 
   const requiredCoreValues = [
@@ -1389,6 +1462,7 @@ export function NewSubmissionForm() {
     setPendingEmailPayload(payload);
     setEmailSendStatus("idle");
     setEmailSendErrorMessage(null);
+    setPostSubmitSyncWarning(null);
     const previewTo = configuredPreviewTo || DEFAULT_JOB_CARD_EMAIL_TO;
     setEmailSubmissionPreview({
       to: previewTo,
@@ -1405,6 +1479,7 @@ export function NewSubmissionForm() {
     if (!pendingEmailPayload) return;
     setEmailSendStatus("sending");
     setEmailSendErrorMessage(null);
+    setPostSubmitSyncWarning(null);
     try {
       const res = await fetch("/api/send-email", {
         method: "POST",
@@ -1430,9 +1505,12 @@ export function NewSubmissionForm() {
       setSubmitSuccessMessage("Job card submitted successfully.");
       const submittedPayload = pendingEmailPayload;
       try {
+        const defaultContextIds = await resolveDefaultContextIds();
         const createdAt = new Date().toISOString();
         const { error: insertError } = await supabase.from("job_card_submissions").insert({
           submission_id: submittedPayload.submissionId,
+          company_id: defaultContextIds.companyId,
+          project_id: defaultContextIds.projectId,
           customer: submittedPayload.coreJobInfo.customer.trim() || "—",
           unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
           payload: submittedPayload,
@@ -1445,7 +1523,8 @@ export function NewSubmissionForm() {
           .eq("submission_id", submittedPayload.submissionId);
         if (deleteDraftError) throw deleteDraftError;
       } catch (e) {
-        console.error("Supabase post-submit sync failed:", e);
+        logSupabasePostSubmitError(e);
+        setPostSubmitSyncWarning("Email sent, but saving the submitted job card failed. Please contact admin.");
       }
       try {
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
@@ -1645,9 +1724,12 @@ export function NewSubmissionForm() {
     };
 
     try {
+      const defaultContextIds = await resolveDefaultContextIds();
       const { error } = await supabase.from("job_card_drafts").upsert(
         {
           submission_id: submissionId,
+          company_id: defaultContextIds.companyId,
+          project_id: defaultContextIds.projectId,
           customer: nextDraft.customer,
           unit_number: nextDraft.unitNumber,
           payload: draftData,
@@ -1662,12 +1744,14 @@ export function NewSubmissionForm() {
         // ignore local cache sync errors when cloud save succeeds
       }
       setDraftNoticeMessage("Draft saved to cloud.");
-    } catch {
+    } catch (error) {
+      const details = describeSupabaseError(error);
+      console.error("Supabase draft save failed:", error);
       try {
         saveDraftLocally(nextDraft);
-        setDraftNoticeMessage("Draft saved locally.");
+        setDraftNoticeMessage(details ? `Draft saved locally. Cloud save failed: ${details}` : "Draft saved locally.");
       } catch {
-        setDraftNoticeMessage("Unable to save draft locally.");
+        setDraftNoticeMessage(details ? `Unable to save draft. ${details}` : "Unable to save draft locally.");
       }
     }
   };
@@ -1771,6 +1855,11 @@ export function NewSubmissionForm() {
               {emailSendStatus === "success" && (
                 <p className="text-sm font-semibold text-emerald-800" role="status">
                   Email sent successfully.
+                </p>
+              )}
+              {postSubmitSyncWarning && (
+                <p className="text-sm font-semibold text-amber-800" role="alert">
+                  {postSubmitSyncWarning}
                 </p>
               )}
               {emailSendStatus === "error" && emailSendErrorMessage && (

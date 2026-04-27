@@ -9,6 +9,8 @@ const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
 const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
 const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-payload-v1";
 const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
+const DEFAULT_COMPANY_NAME = "Powerfleet";
+const DEFAULT_PROJECT_NAME = "Default Project";
 
 type StoredJobCardDraftListItem = {
   submissionId: string;
@@ -34,6 +36,27 @@ type SupabaseDraftRow = {
   payload: StoredJobCardDraftListItem["data"] | null;
   updated_at: string | null;
 };
+
+async function resolveDefaultContextIds() {
+  const { data: companyRow, error: companyError } = await supabase
+    .from("companies")
+    .select("id")
+    .eq("name", DEFAULT_COMPANY_NAME)
+    .maybeSingle<{ id: string }>();
+  if (companyError) throw companyError;
+  if (!companyRow?.id) throw new Error(`Default company not found: ${DEFAULT_COMPANY_NAME}`);
+
+  const { data: projectRow, error: projectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("company_id", companyRow.id)
+    .eq("project_name", DEFAULT_PROJECT_NAME)
+    .maybeSingle<{ id: string }>();
+  if (projectError) throw projectError;
+  if (!projectRow?.id) throw new Error(`Default project not found: ${DEFAULT_PROJECT_NAME}`);
+
+  return { companyId: companyRow.id, projectId: projectRow.id };
+}
 
 function readDrafts(): StoredJobCardDraftListItem[] {
   if (typeof window === "undefined") return [];
@@ -65,9 +88,12 @@ export default function DraftsPage() {
     let cancelled = false;
     const loadFromSupabase = async () => {
       try {
+        const defaultContextIds = await resolveDefaultContextIds();
         const { data, error } = await supabase
           .from("job_card_drafts")
           .select("submission_id, customer, unit_number, payload, updated_at")
+          .eq("company_id", defaultContextIds.companyId)
+          .eq("project_id", defaultContextIds.projectId)
           .order("updated_at", { ascending: false });
         if (error) throw error;
         if (!data || cancelled) return;
