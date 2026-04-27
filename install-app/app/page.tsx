@@ -950,6 +950,8 @@ export function NewSubmissionForm() {
     if (!coreJob.location.trim()) issues.push("core-location");
     if (!coreJob.workOrder.trim()) issues.push("core-workOrder");
     if (!coreJob.serviceAppointment.trim()) issues.push("core-serviceAppointment");
+    if (!coreJob.equipmentMake.trim()) issues.push("vehicle-equipmentMake");
+    if (!coreJob.equipmentModel.trim()) issues.push("vehicle-equipmentModel");
     if (!coreJob.unitNumber.trim()) issues.push("vehicle-unitNumber");
     if (!coreJob.equipmentSerial.trim()) issues.push("vehicle-equipmentSerial");
     if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
@@ -1913,24 +1915,32 @@ export function NewSubmissionForm() {
           <FormSectionHeader title="Vehicle Information" tone="purple" />
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-x-6 md:gap-y-5">
-            <div>
-              <label className={labelClassName}>Make</label>
+            <div id="field-vehicle-equipmentMake">
+              <label className={fieldLabelClass("vehicle-equipmentMake")}>
+                Make
+                <RequiredMark />
+              </label>
               <input
-                className={inputClassName}
+                className={fieldInputClass("vehicle-equipmentMake")}
                 placeholder="exp: Toyota"
                 value={coreJob.equipmentMake}
                 onChange={(e) => setCoreField("equipmentMake", e.target.value)}
               />
+              {requiredHint("vehicle-equipmentMake")}
             </div>
 
-            <div>
-              <label className={labelClassName}>Model</label>
+            <div id="field-vehicle-equipmentModel">
+              <label className={fieldLabelClass("vehicle-equipmentModel")}>
+                Model
+                <RequiredMark />
+              </label>
               <input
-                className={inputClassName}
+                className={fieldInputClass("vehicle-equipmentModel")}
                 placeholder="exp: 8FBE20U"
                 value={coreJob.equipmentModel}
                 onChange={(e) => setCoreField("equipmentModel", e.target.value)}
               />
+              {requiredHint("vehicle-equipmentModel")}
             </div>
 
             <div id="field-vehicle-serialNumber">
