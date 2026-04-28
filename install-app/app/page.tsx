@@ -9,7 +9,6 @@ import {
   type UploadedPhotoMetadata,
   type Vac4OrderedPhotoKey,
   type VacPhotoFileNames,
-  DEFAULT_JOB_CARD_EMAIL_TO,
   VAC4_ORDERED_DESCRIPTION_FIELDS,
   VAC4_ORDERED_PHOTO_FIELDS,
   formatEmailBodyFromPayload,
@@ -125,6 +124,39 @@ type DefaultContextIds = {
   companyId: string;
   projectId: string;
 };
+
+type ProjectAutofillRow = {
+  customer_name: string | null;
+  location: string | null;
+};
+
+type ProjectContextPayload = {
+  companyId: string;
+  projectId: string;
+  projectName: string;
+  projectRecipientEmails: string[];
+};
+
+type ProjectRecipientsRow = {
+  id: string;
+  company_id: string | null;
+  project_name: string | null;
+  external_recipient_emails: unknown;
+};
+
+function dedupeEmailStrings(emails: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of emails) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
 
 const UPPERCASE_CORE_KEYS: ReadonlyArray<keyof CoreJobFields> = ["equipmentModel", "equipmentSerial", "unitNumber"];
 
@@ -473,7 +505,7 @@ function formatPhotoSelectionLine(count: number, names: string[]) {
 function PhotoUploadFeedback({ count, names }: { count: number; names: string[] }) {
   const line = formatPhotoSelectionLine(count, names);
   if (!line) return null;
-  return <p className="mt-2 text-sm text-gray-700">{line}</p>;
+  return <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{line}</p>;
 }
 
 type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string; uploadedAt?: string };
@@ -649,34 +681,40 @@ function PhotoThumbnailGrid({
     <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
       {entries.map((e) =>
         e.kind === "remote" ? (
-          <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
+          <div
+            key={e.key}
+            className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-800"
+          >
             <div className="mb-1 flex justify-end">
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
                 onClick={() => onRemoveRemote?.(e.remote)}
               >
                 Remove
               </button>
             </div>
             <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
-            <p className="mt-1 truncate text-xs text-gray-700" title={e.remote.filename}>
+            <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.remote.filename}>
               {e.remote.filename}
             </p>
           </div>
         ) : (
-          <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2">
+          <div
+            key={e.key}
+            className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-800"
+          >
             <div className="mb-1 flex justify-end">
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
                 onClick={() => onRemoveLocal?.(e.file)}
               >
                 Remove
               </button>
             </div>
             <img src={localUrlByFile.get(e.file) || ""} alt={e.file.name} className="h-20 w-full rounded-md object-cover" />
-            <p className="mt-1 truncate text-xs text-gray-700" title={e.file.name}>
+            <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.file.name}>
               {e.file.name}
             </p>
           </div>
@@ -719,16 +757,15 @@ export function NewSubmissionForm() {
   const [submissionStatus, setSubmissionStatus] = useState<"Draft" | "Submitted">("Draft");
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
   const [emailSubmissionPreview, setEmailSubmissionPreview] = useState<{
-    to: string;
-    toLabel: string;
+    externalRecipientEmails: string[];
     subject: string;
     body: string;
   } | null>(null);
+  const [projectExternalRecipientEmails, setProjectExternalRecipientEmails] = useState<string[]>([]);
   const [pendingEmailPayload, setPendingEmailPayload] = useState<JobCardSubmissionPayload | null>(null);
   const [emailSendStatus, setEmailSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [emailSendErrorMessage, setEmailSendErrorMessage] = useState<string | null>(null);
   const [postSubmitSyncWarning, setPostSubmitSyncWarning] = useState<string | null>(null);
-  const configuredPreviewTo = process.env.NEXT_PUBLIC_JOB_CARD_EMAIL_TO?.trim() || "";
 
   const [primary, setPrimary] = useState("");
   const [hasAdditional, setHasAdditional] = useState("");
@@ -791,18 +828,20 @@ export function NewSubmissionForm() {
   const vehiclePictureUrlsRef = useRef<VehiclePictureUrlsState>(emptyVehiclePictureUrls());
   const photoMetadataByFieldRef = useRef<PhotoMetadataByFieldState>(emptyPhotoMetadataByField());
   const defaultContextIdsRef = useRef<DefaultContextIds | null>(null);
+  const restoredFromDraftRef = useRef(false);
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
+  const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
 
   const availableAdditional = hardwareTypes.filter((h) => h !== primary);
   const inputClassName =
-    "w-full min-h-[52px] px-4 py-3.5 text-base border border-gray-200 rounded-xl bg-white text-gray-900 placeholder-gray-400 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100";
+    "w-full min-h-[52px] px-4 py-3.5 text-base border border-gray-200 rounded-xl bg-white text-gray-900 placeholder-gray-400 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-400 dark:focus:border-blue-400 dark:focus:ring-blue-900/40";
   const selectClassName =
-    "w-full min-h-[52px] px-4 py-3.5 text-base border border-gray-200 rounded-xl bg-white text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100";
-  const labelClassName = "block text-gray-900 font-semibold text-base mb-2";
+    "w-full min-h-[52px] px-4 py-3.5 text-base border border-gray-200 rounded-xl bg-white text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-900/40";
+  const labelClassName = "block text-gray-900 font-semibold text-base mb-2 dark:text-gray-100";
   const photoPickClassName =
-    "flex min-h-[52px] w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-center text-base font-semibold text-gray-900 active:bg-gray-100";
+    "flex min-h-[52px] w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-center text-base font-semibold text-gray-900 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:active:bg-gray-700";
   const cardClassName =
     "rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6";
   const headerCardClassName =
@@ -811,6 +850,8 @@ export function NewSubmissionForm() {
     "inline-flex min-h-[52px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-blue-700 active:bg-blue-800 sm:min-w-[220px]";
   const btnSecondaryClassName =
     "inline-flex min-h-[52px] items-center justify-center gap-2 rounded-xl border-2 border-blue-600 bg-white px-5 py-3.5 text-base font-semibold text-blue-600 shadow-sm hover:bg-blue-50 active:bg-blue-100 sm:min-w-[160px]";
+  const btnExitWithoutSaveClassName =
+    "inline-flex min-h-[52px] items-center justify-center gap-2 rounded-xl border-2 border-gray-300 bg-white px-5 py-3.5 text-base font-semibold text-gray-800 shadow-sm hover:bg-gray-50 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700 sm:min-w-[160px]";
   const checkboxRowClassName =
     "flex min-h-[52px] cursor-pointer items-center gap-3 rounded-2xl border-2 border-gray-100 bg-gray-50/80 px-4 py-3 text-base font-medium text-gray-900 active:bg-gray-100";
   const isCombustionDrive = vac4DriveType === "Internal Combustion";
@@ -1047,6 +1088,62 @@ export function NewSubmissionForm() {
       }
     }
     return resolveDefaultContextIds();
+  };
+
+  const normalizeRecipientEmails = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+      return dedupeEmailStrings(
+        value
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      );
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) {
+          return dedupeEmailStrings(
+            parsed
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter(Boolean),
+          );
+        }
+      } catch {
+        // ignore non-JSON string values
+      }
+    }
+    return [];
+  };
+
+  const resolveProjectContextPayload = async (): Promise<ProjectContextPayload> => {
+    const selected = await resolveSelectedOrDefaultContextIds();
+    let projectName = "";
+    let projectRecipientEmails: string[] = [];
+
+    try {
+      const { data, error } = await supabase
+        .from("projects")
+        .select("id, company_id, project_name, external_recipient_emails")
+        .eq("id", selected.projectId)
+        .maybeSingle<ProjectRecipientsRow>();
+      if (!error && data) {
+        projectName = data.project_name?.trim() || "";
+        projectRecipientEmails = normalizeRecipientEmails(data.external_recipient_emails);
+      }
+    } catch {
+      // ignore project lookup errors; fall back to IDs only
+    }
+
+    return {
+      companyId: selected.companyId,
+      projectId: selected.projectId,
+      projectName,
+      projectRecipientEmails,
+    };
   };
 
   const requiredCoreValues = [
@@ -1524,13 +1621,18 @@ export function NewSubmissionForm() {
     setStep("review");
   };
 
-  const buildSubmissionPayload = (): JobCardSubmissionPayload => {
+  const buildSubmissionPayload = async (): Promise<JobCardSubmissionPayload> => {
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
+    const projectContext = await resolveProjectContextPayload();
     return {
       submissionId,
       submissionTimestamp: new Date().toISOString(),
       status: "Submitted",
+      companyId: projectContext.companyId,
+      projectId: projectContext.projectId,
+      projectName: projectContext.projectName,
+      projectRecipientEmails: projectContext.projectRecipientEmails,
       coreJobInfo: { ...normalizedCoreJob },
       hardwareSelection: {
         primary,
@@ -1583,18 +1685,19 @@ export function NewSubmissionForm() {
     };
   };
 
-  const handleFinalSubmit = () => {
-    const payload = buildSubmissionPayload();
+  const handleFinalSubmit = async () => {
+    const payload = await buildSubmissionPayload();
     console.log("[Job card submission]", payload);
     setSubmitSuccessMessage(null);
     setPendingEmailPayload(payload);
     setEmailSendStatus("idle");
     setEmailSendErrorMessage(null);
     setPostSubmitSyncWarning(null);
-    const previewTo = configuredPreviewTo || DEFAULT_JOB_CARD_EMAIL_TO;
+    const externalFromPayload = dedupeEmailStrings(payload.projectRecipientEmails || []);
+    const externalRecipientEmails =
+      externalFromPayload.length > 0 ? externalFromPayload : projectExternalRecipientEmails;
     setEmailSubmissionPreview({
-      to: previewTo,
-      toLabel: configuredPreviewTo ? "To:" : "To (preview fallback):",
+      externalRecipientEmails,
       subject: formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber),
       body: formatEmailBodyFromPayload(payload),
     });
@@ -1676,6 +1779,7 @@ export function NewSubmissionForm() {
   };
 
   const restoreFromDraftData = (draft: StoredJobCardDraft["data"], restoredSubmissionId: string) => {
+    restoredFromDraftRef.current = true;
     setSubmissionId(restoredSubmissionId);
     setCoreJob((prev) => normalizeUppercaseCoreJob({ ...prev, ...draft.coreJob }));
     setPrimary(draft.hardwareSelection?.primary || "");
@@ -1788,6 +1892,67 @@ export function NewSubmissionForm() {
     } catch {
       window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (restoredFromDraftRef.current) return;
+
+    let cancelled = false;
+    const applyProjectAutofill = async () => {
+      const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      if (!selectedProjectId) return;
+      try {
+        const { data, error } = await supabase
+          .from("projects")
+          .select("customer_name, location")
+          .eq("id", selectedProjectId)
+          .maybeSingle<ProjectAutofillRow>();
+        if (error || cancelled || !data) return;
+
+        const projectCustomer = data.customer_name?.trim() || "";
+        const projectLocation = data.location?.trim() || "";
+        if (!projectCustomer && !projectLocation) return;
+
+        setCoreJob((prev) => {
+          if (restoredFromDraftRef.current) return prev;
+          const nextCustomer = prev.customer.trim() ? prev.customer : projectCustomer;
+          const nextLocation = prev.location.trim() ? prev.location : projectLocation;
+          if (nextCustomer === prev.customer && nextLocation === prev.location) return prev;
+          return { ...prev, customer: nextCustomer, location: nextLocation };
+        });
+      } catch {
+        // ignore project autofill errors
+      }
+    };
+
+    void applyProjectAutofill();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadProjectExternalRecipients = async () => {
+      try {
+        const { projectId } = await resolveSelectedOrDefaultContextIds();
+        if (!projectId || cancelled) return;
+        const { data, error } = await supabase
+          .from("projects")
+          .select("external_recipient_emails")
+          .eq("id", projectId)
+          .maybeSingle<{ external_recipient_emails: unknown }>();
+        if (cancelled || error || !data) return;
+        setProjectExternalRecipientEmails(normalizeRecipientEmails(data.external_recipient_emails));
+      } catch {
+        if (!cancelled) setProjectExternalRecipientEmails([]);
+      }
+    };
+    void loadProjectExternalRecipients();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const saveDraftLocally = (nextDraft: StoredJobCardDraft) => {
@@ -1904,6 +2069,19 @@ export function NewSubmissionForm() {
     handleExitToHome();
   };
 
+  const handleExitWithoutSavingRequest = () => {
+    setExitWithoutSavingOpen(true);
+  };
+
+  const handleExitWithoutSavingDismiss = () => {
+    setExitWithoutSavingOpen(false);
+  };
+
+  const handleExitWithoutSavingConfirm = () => {
+    setExitWithoutSavingOpen(false);
+    handleExitToHome();
+  };
+
   const hl = (key: string) => reviewHighlights.has(key);
   const fieldInputClass = (key: string) =>
     `${inputClassName}${hl(key) ? " border-red-500 ring-2 ring-red-100" : ""}`;
@@ -1964,8 +2142,18 @@ export function NewSubmissionForm() {
             </p>
             <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-900 shadow-inner">
               <div>
-                <span className="font-semibold text-gray-600">{emailSubmissionPreview.toLabel}</span>{" "}
-                <span className="break-all font-mono">{emailSubmissionPreview.to}</span>
+                <p className="font-semibold text-gray-600 dark:text-gray-300">External email recipients:</p>
+                {emailSubmissionPreview.externalRecipientEmails.length === 0 ? (
+                  <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">No external recipients assigned</p>
+                ) : (
+                  <ul className="mt-2 space-y-1">
+                    {emailSubmissionPreview.externalRecipientEmails.map((recipient) => (
+                      <li key={recipient.toLowerCase()} className="break-all font-mono text-sm text-gray-900 dark:text-gray-100">
+                        {recipient}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
               <div>
                 <span className="font-semibold text-gray-600">Subject:</span>{" "}
@@ -2598,8 +2786,8 @@ export function NewSubmissionForm() {
                   {requiredHint("vac4-operatorPresence")}
                 </div>
 
-                <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 sm:p-5">
-                  <h3 className="text-lg font-bold text-gray-900">VAC4 Required Photos</h3>
+                <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 dark:border-gray-600 dark:bg-gray-800/90 sm:p-5">
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">VAC4 Required Photos</h3>
 
                   <div id="field-photo-vacMounting">
                     <label className={fieldLabelClass("photo-vacMounting")}>
@@ -2661,7 +2849,7 @@ export function NewSubmissionForm() {
                     <PhotoUploadedBadge show={pc.wirePath >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.wirePath} />
                     {requiredHint("photo-wirePath")}
-                    <p className="mt-2 text-base leading-relaxed text-gray-600">
+                    <p className="mt-2 text-base leading-relaxed text-gray-600 dark:text-gray-300">
                       Upload multiple photos showing the full wire route from device to connection points.
                     </p>
                   </div>
@@ -2671,7 +2859,7 @@ export function NewSubmissionForm() {
                       Red Wire Connection Photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600">Battery positive</p>
+                    <p className="text-base text-gray-600 dark:text-gray-300">Battery positive</p>
                     <input
                       id="redWirePhoto"
                       type="file"
@@ -2718,7 +2906,7 @@ export function NewSubmissionForm() {
                       Black Wire Connection Photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600">Battery negative</p>
+                    <p className="text-base text-gray-600 dark:text-gray-300">Battery negative</p>
                     <input
                       id="blackWirePhoto"
                       type="file"
@@ -2765,7 +2953,7 @@ export function NewSubmissionForm() {
                       Blue Wire Connection Photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600">{blueWireHelperText}</p>
+                    <p className="text-base text-gray-600 dark:text-gray-300">{blueWireHelperText}</p>
                     <input
                       id="blueWirePhoto"
                       type="file"
@@ -2863,7 +3051,7 @@ export function NewSubmissionForm() {
                         Brown Wire Connection Photo
                         <RequiredMark />
                       </label>
-                      <p className="text-base text-gray-600">{brownWireHelperText}</p>
+                    <p className="text-base text-gray-600 dark:text-gray-300">{brownWireHelperText}</p>
                       <input
                         id="brownWirePhoto"
                         type="file"
@@ -3029,7 +3217,7 @@ export function NewSubmissionForm() {
                 </div>
 
                 {sensorHubInstalled === "Yes" && (
-                  <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 sm:p-5">
+                  <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 dark:border-gray-600 dark:bg-gray-800/90 sm:p-5">
                     <div>
                       <label className={labelClassName}>Sensor Hub Mounting Location</label>
                       <input className={inputClassName} placeholder="exp: Under dash panel" />
@@ -3126,8 +3314,8 @@ export function NewSubmissionForm() {
                     </div>
 
                     {speedSenseInstalled === "Yes" && (
-                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 sm:p-5">
-                        <h3 className="text-lg font-bold text-gray-900">Speed Sense Details</h3>
+                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Speed Sense Details</h3>
                         <div id="field-photo-speedSense">
                           <label className={fieldLabelClass("photo-speedSense")}>
                             Speed Sense Photo
@@ -3194,8 +3382,8 @@ export function NewSubmissionForm() {
                     )}
 
                     {loadSenseInstalled === "Yes" && (
-                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 sm:p-5">
-                        <h3 className="text-lg font-bold text-gray-900">Load Sense Details</h3>
+                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Load Sense Details</h3>
                         <div id="field-photo-loadSense">
                           <label className={fieldLabelClass("photo-loadSense")}>
                             Load Sense Photo
@@ -3246,8 +3434,8 @@ export function NewSubmissionForm() {
                     )}
 
                     {gpsInstalled === "Yes" && (
-                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 sm:p-5">
-                        <h3 className="text-lg font-bold text-gray-900">GPS Details</h3>
+                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">GPS Details</h3>
                         <div id="field-photo-gps">
                           <label className={fieldLabelClass("photo-gps")}>
                             GPS Mounting Location Photo
@@ -3282,8 +3470,8 @@ export function NewSubmissionForm() {
                     )}
 
                     {externalIndicatorInstalled === "Yes" && (
-                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 sm:p-5">
-                        <h3 className="text-lg font-bold text-gray-900">External Indicator Details</h3>
+                      <div className="space-y-4 rounded-2xl border-2 border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">External Indicator Details</h3>
                         <div id="field-photo-externalIndicator">
                           <label className={fieldLabelClass("photo-externalIndicator")}>
                             External Indicator Mounting Location Photo
@@ -3359,7 +3547,7 @@ export function NewSubmissionForm() {
               </section>
             ))}
 
-        <div className="hidden md:flex md:flex-row md:justify-end md:gap-3 md:pt-2">
+        <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
           <button
             type="button"
             className={btnSecondaryClassName}
@@ -3368,6 +3556,11 @@ export function NewSubmissionForm() {
               <IconFloppy className="h-5 w-5" />
             {hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}
           </button>
+          {hasCoreOrVehicleInfo ? (
+            <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingRequest}>
+              Exit Without Saving
+            </button>
+          ) : null}
           {hasAnsweredAdditionalHardwareQuestion && (
             <button type="button" className={btnPrimaryClassName} onClick={handleReviewClick}>
               <IconSend className="h-5 w-5" />
@@ -3557,26 +3750,37 @@ export function NewSubmissionForm() {
           role="region"
           aria-label="Job card actions"
         >
-          <div className="mx-auto flex max-w-4xl gap-3">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-2">
             {step === "form" ? (
               <>
-                <button
-                  type="button"
-                  className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
-                  onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
-                >
-                  <IconFloppy className="h-5 w-5 shrink-0" />
-                  <span className="truncate">{hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
-                  onClick={handleReviewClick}
-                  disabled={!hasAnsweredAdditionalHardwareQuestion}
-                >
-                  <IconSend className="h-5 w-5 shrink-0" />
-                  <span className="line-clamp-2 text-left leading-tight">Review & Submit Job Card</span>
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                    onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
+                  >
+                    <IconFloppy className="h-5 w-5 shrink-0" />
+                    <span className="truncate">{hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                    onClick={handleReviewClick}
+                    disabled={!hasAnsweredAdditionalHardwareQuestion}
+                  >
+                    <IconSend className="h-5 w-5 shrink-0" />
+                    <span className="line-clamp-2 text-left leading-tight">Review & Submit Job Card</span>
+                  </button>
+                </div>
+                {hasCoreOrVehicleInfo ? (
+                  <button
+                    type="button"
+                    className={`${btnExitWithoutSaveClassName} w-full text-sm sm:text-base`}
+                    onClick={handleExitWithoutSavingRequest}
+                  >
+                    Exit Without Saving
+                  </button>
+                ) : null}
               </>
             ) : (
               <>
@@ -3592,6 +3796,35 @@ export function NewSubmissionForm() {
           </div>
         </div>
       )}
+
+      {exitWithoutSavingOpen ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 p-4 sm:items-center"
+          role="presentation"
+          onClick={handleExitWithoutSavingDismiss}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="exit-without-saving-title"
+            className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-600 dark:bg-gray-900 sm:p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="exit-without-saving-title" className="text-lg font-bold text-gray-950 dark:text-gray-100">
+              Exit without saving?
+            </h2>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">Any unsaved changes will be lost.</p>
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button type="button" className={btnSecondaryClassName} onClick={handleExitWithoutSavingDismiss}>
+                Go Back
+              </button>
+              <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingConfirm}>
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -33,6 +33,10 @@ export type JobCardSubmissionPayload = {
   submissionId: string;
   submissionTimestamp: string;
   status: "Submitted";
+  companyId?: string;
+  projectId?: string;
+  projectName?: string;
+  projectRecipientEmails?: string[];
   coreJobInfo: CoreJobFields;
   hardwareSelection: {
     primary: string;

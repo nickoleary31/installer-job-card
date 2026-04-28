@@ -30,10 +30,17 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   const selectedSections = Array.isArray(p.selectedSections) ? p.selectedSections.filter((x) => typeof x === "string") : [];
   const additional = Array.isArray(hw.additional) ? hw.additional.filter((x) => typeof x === "string") : [];
   const photoUploads = Array.isArray(p.photoUploads) ? p.photoUploads.filter((x) => isRecord(x)) : [];
+  const projectRecipientEmails = Array.isArray(p.projectRecipientEmails)
+    ? p.projectRecipientEmails.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean)
+    : [];
   return {
     submissionId: stringOrEmpty(p.submissionId),
     submissionTimestamp: stringOrEmpty(p.submissionTimestamp) || new Date().toISOString(),
     status: "Submitted",
+    companyId: stringOrEmpty(p.companyId),
+    projectId: stringOrEmpty(p.projectId),
+    projectName: stringOrEmpty(p.projectName),
+    projectRecipientEmails,
     coreJobInfo: {
       customer: stringOrEmpty(core.customer),
       location: stringOrEmpty(core.location),
@@ -87,6 +94,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
 function readExternalRecipientsFromPayload(payload: unknown): string[] {
   if (!isRecord(payload)) return [];
   const candidates: unknown[] = [];
+  if (Array.isArray(payload.projectRecipientEmails)) candidates.push(...payload.projectRecipientEmails);
   if (Array.isArray(payload.externalRecipientEmails)) candidates.push(...payload.externalRecipientEmails);
   if (isRecord(payload.project) && Array.isArray(payload.project.externalRecipientEmails)) {
     candidates.push(...payload.project.externalRecipientEmails);
@@ -127,7 +135,13 @@ export async function POST(req: Request) {
 
   const from = process.env.JOB_CARD_EMAIL_FROM?.trim() || DEFAULT_RESEND_FROM;
   const fallbackTo = process.env.JOB_CARD_EMAIL_TO?.trim() || DEFAULT_JOB_CARD_EMAIL_TO;
-  const to = [...new Set([ALWAYS_EMAIL_TO, fallbackTo, ...readExternalRecipientsFromPayload(payload)])];
+  const to = Array.from(
+    new Set(
+      [ALWAYS_EMAIL_TO, fallbackTo, ...readExternalRecipientsFromPayload(payload)]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
 
   const subject = formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber);
   const text = formatEmailBodyFromPayload(payload);

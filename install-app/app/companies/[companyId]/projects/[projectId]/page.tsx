@@ -2,15 +2,29 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase/client";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
+
+type ProjectContext = {
+  companyName: string;
+  projectName: string;
+  customerName: string;
+  location: string;
+};
 
 export default function ProjectDashboardPage() {
   const params = useParams<{ companyId: string; projectId: string }>();
   const companyId = String(params.companyId || "");
   const projectId = String(params.projectId || "");
+  const [projectContext, setProjectContext] = useState<ProjectContext>({
+    companyName: "—",
+    projectName: "—",
+    customerName: "—",
+    location: "—",
+  });
 
   useEffect(() => {
     try {
@@ -19,6 +33,38 @@ export default function ProjectDashboardPage() {
     } catch {
       // ignore storage errors
     }
+  }, [companyId, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadProjectContext = async () => {
+      if (!companyId || !projectId) return;
+      try {
+        const [{ data: companyRow, error: companyError }, { data: projectRow, error: projectError }] = await Promise.all([
+          supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
+          supabase
+            .from("projects")
+            .select("project_name, customer_name, location")
+            .eq("id", projectId)
+            .eq("company_id", companyId)
+            .maybeSingle<{ project_name: string | null; customer_name: string | null; location: string | null }>(),
+        ]);
+        if (companyError || projectError || cancelled) return;
+        if (!companyRow && !projectRow) return;
+        setProjectContext({
+          companyName: companyRow?.name?.trim() || "—",
+          projectName: projectRow?.project_name?.trim() || "—",
+          customerName: projectRow?.customer_name?.trim() || "—",
+          location: projectRow?.location?.trim() || "—",
+        });
+      } catch {
+        // keep fallback display values
+      }
+    };
+    void loadProjectContext();
+    return () => {
+      cancelled = true;
+    };
   }, [companyId, projectId]);
 
   return (
@@ -35,6 +81,24 @@ export default function ProjectDashboardPage() {
             Back to Projects
           </Link>
         </header>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+          <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Current Project</h2>
+          <div className="mt-3 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+            <p>
+              <span className="font-semibold text-gray-600">Company:</span> {projectContext.companyName}
+            </p>
+            <p>
+              <span className="font-semibold text-gray-600">Project:</span> {projectContext.projectName}
+            </p>
+            <p>
+              <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
+            </p>
+            <p>
+              <span className="font-semibold text-gray-600">Location:</span> {projectContext.location}
+            </p>
+          </div>
+        </section>
 
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Link
