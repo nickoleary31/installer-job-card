@@ -163,8 +163,8 @@ export default function DraftsPage() {
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
         <header className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
           <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
-          <h1 className="text-2xl font-bold tracking-tight text-gray-950">Saved Drafts</h1>
-          <p className="mt-1 text-sm text-gray-600">Resume or delete unfinished job cards</p>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-950">Installer Sheetz</h1>
+          <p className="mt-1 text-sm text-gray-600">Digital Job Cards for Field Technicians</p>
           <Link
             href="/"
             className="mt-3 inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"

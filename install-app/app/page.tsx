@@ -88,6 +88,8 @@ const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-paylo
 const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
 const DEFAULT_COMPANY_NAME = "Powerfleet";
 const DEFAULT_PROJECT_NAME = "Default Project";
+const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
+const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
 function generateSubmissionId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -1036,6 +1038,17 @@ export function NewSubmissionForm() {
     return ids;
   };
 
+  const resolveSelectedOrDefaultContextIds = async (): Promise<DefaultContextIds> => {
+    if (typeof window !== "undefined") {
+      const selectedCompanyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      if (selectedCompanyId && selectedProjectId) {
+        return { companyId: selectedCompanyId, projectId: selectedProjectId };
+      }
+    }
+    return resolveDefaultContextIds();
+  };
+
   const requiredCoreValues = [
     coreJob.customer,
     coreJob.location,
@@ -1620,12 +1633,12 @@ export function NewSubmissionForm() {
       setSubmitSuccessMessage("Job card submitted successfully.");
       const submittedPayload = pendingEmailPayload;
       try {
-        const defaultContextIds = await resolveDefaultContextIds();
+        const contextIds = await resolveSelectedOrDefaultContextIds();
         const createdAt = new Date().toISOString();
         const { error: insertError } = await supabase.from("job_card_submissions").insert({
           submission_id: submittedPayload.submissionId,
-          company_id: defaultContextIds.companyId,
-          project_id: defaultContextIds.projectId,
+          company_id: contextIds.companyId,
+          project_id: contextIds.projectId,
           customer: submittedPayload.coreJobInfo.customer.trim() || "—",
           unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
           payload: submittedPayload,
@@ -1840,12 +1853,12 @@ export function NewSubmissionForm() {
     };
 
     try {
-      const defaultContextIds = await resolveDefaultContextIds();
+      const contextIds = await resolveSelectedOrDefaultContextIds();
       const { error } = await supabase.from("job_card_drafts").upsert(
         {
           submission_id: submissionId,
-          company_id: defaultContextIds.companyId,
-          project_id: defaultContextIds.projectId,
+          company_id: contextIds.companyId,
+          project_id: contextIds.projectId,
           customer: nextDraft.customer,
           unit_number: nextDraft.unitNumber,
           payload: draftData,
@@ -1873,6 +1886,14 @@ export function NewSubmissionForm() {
   };
 
   const handleExitToHome = () => {
+    if (typeof window !== "undefined") {
+      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      if (companyId && projectId) {
+        router.push(`/companies/${encodeURIComponent(companyId)}/projects/${encodeURIComponent(projectId)}`);
+        return;
+      }
+    }
     router.push("/");
   };
 
@@ -1880,7 +1901,7 @@ export function NewSubmissionForm() {
     if (hasCoreOrVehicleInfo) {
       await handleSaveDraft();
     }
-    router.push("/");
+    handleExitToHome();
   };
 
   const hl = (key: string) => reviewHighlights.has(key);
@@ -1907,13 +1928,13 @@ export function NewSubmissionForm() {
           <div className="flex flex-col items-start gap-1.5">
             <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Job Card</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Sheetz</h1>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wide text-blue-700 ring-1 ring-inset ring-blue-200/80 sm:px-3 sm:py-1">
                 <IconDocument className="h-3.5 w-3.5 shrink-0" />
                 DRAFT
               </span>
             </div>
-            <p className="text-base font-medium leading-tight text-gray-600">Complete one job card per unit.</p>
+            <p className="text-base font-medium leading-tight text-gray-600">Digital Job Cards for Field Technicians</p>
           </div>
         </header>
 
@@ -3576,43 +3597,19 @@ export function NewSubmissionForm() {
 }
 
 export default function HomePage() {
-  const cardClassName =
-    "rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6";
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/companies");
+  }, [router]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
-      <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
-        <header className={cardClassName}>
-          <div className="flex flex-col items-start gap-1.5">
-            <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
-            <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Job Card</h1>
-            <p className="text-base font-medium leading-tight text-gray-600">Select an option to begin</p>
-          </div>
-        </header>
-
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Link
-            href="/new-submission"
-            className="rounded-2xl border border-blue-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-blue-300 hover:bg-blue-50/50 sm:p-6"
-          >
-            <h2 className="text-lg font-bold text-gray-900">New Submission</h2>
-            <p className="mt-1 text-sm text-gray-600">Start a new installer job card.</p>
-          </Link>
-
-          <Link
-            href="/drafts"
-            className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-emerald-300 hover:bg-emerald-50/50 sm:p-6"
-          >
-            <h2 className="text-lg font-bold text-gray-900">Saved Drafts</h2>
-            <p className="mt-1 text-sm text-gray-600">Resume or manage unfinished job cards.</p>
-          </Link>
-
-          <Link
-            href="/submitted"
-            className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50 sm:p-6"
-          >
-            <h2 className="text-lg font-bold text-gray-900">Submitted Job Cards</h2>
-            <p className="mt-1 text-sm text-gray-600">View completed submissions.</p>
+      <div className="mx-auto max-w-3xl px-4 sm:px-5 sm:py-2">
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+          <p className="text-sm font-medium text-gray-700">Redirecting to company selection...</p>
+          <Link href="/companies" className="mt-2 inline-block text-sm font-semibold text-blue-700 hover:underline">
+            Continue
           </Link>
         </section>
       </div>
