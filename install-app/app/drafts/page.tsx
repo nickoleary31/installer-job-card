@@ -9,8 +9,8 @@ const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
 const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
 const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-payload-v1";
 const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
-const DEFAULT_COMPANY_NAME = "Powerfleet";
-const DEFAULT_PROJECT_NAME = "Default Project";
+const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
+const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
 type StoredJobCardDraftListItem = {
   submissionId: string;
@@ -36,27 +36,6 @@ type SupabaseDraftRow = {
   payload: StoredJobCardDraftListItem["data"] | null;
   updated_at: string | null;
 };
-
-async function resolveDefaultContextIds() {
-  const { data: companyRow, error: companyError } = await supabase
-    .from("companies")
-    .select("id")
-    .eq("name", DEFAULT_COMPANY_NAME)
-    .maybeSingle<{ id: string }>();
-  if (companyError) throw companyError;
-  if (!companyRow?.id) throw new Error(`Default company not found: ${DEFAULT_COMPANY_NAME}`);
-
-  const { data: projectRow, error: projectError } = await supabase
-    .from("projects")
-    .select("id")
-    .eq("company_id", companyRow.id)
-    .eq("project_name", DEFAULT_PROJECT_NAME)
-    .maybeSingle<{ id: string }>();
-  if (projectError) throw projectError;
-  if (!projectRow?.id) throw new Error(`Default project not found: ${DEFAULT_PROJECT_NAME}`);
-
-  return { companyId: companyRow.id, projectId: projectRow.id };
-}
 
 function readDrafts(): StoredJobCardDraftListItem[] {
   if (typeof window === "undefined") return [];
@@ -88,13 +67,23 @@ export default function DraftsPage() {
     let cancelled = false;
     const loadFromSupabase = async () => {
       try {
-        const defaultContextIds = await resolveDefaultContextIds();
-        const { data, error } = await supabase
+        const selectedCompanyId = (typeof window !== "undefined"
+          ? window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)
+          : "")?.trim() || "";
+        const selectedProjectId = (typeof window !== "undefined"
+          ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)
+          : "")?.trim() || "";
+
+        let query = supabase
           .from("job_card_drafts")
           .select("submission_id, customer, unit_number, payload, updated_at")
-          .eq("company_id", defaultContextIds.companyId)
-          .eq("project_id", defaultContextIds.projectId)
           .order("updated_at", { ascending: false });
+
+        if (selectedCompanyId && selectedProjectId) {
+          query = query.eq("company_id", selectedCompanyId).eq("project_id", selectedProjectId);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
         if (!data || cancelled) return;
         const mapped = (data as SupabaseDraftRow[]).map((row) => ({

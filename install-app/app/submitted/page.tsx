@@ -5,6 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
 
+const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
+const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
+
 type SubmissionRow = {
   submission_id: string;
   customer: string | null;
@@ -128,10 +131,23 @@ export default function SubmittedPage() {
     let cancelled = false;
     const load = async () => {
       try {
-        const { data, error } = await supabase
+        const selectedCompanyId = (typeof window !== "undefined"
+          ? window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)
+          : "")?.trim() || "";
+        const selectedProjectId = (typeof window !== "undefined"
+          ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)
+          : "")?.trim() || "";
+
+        let query = supabase
           .from("job_card_submissions")
           .select("submission_id, customer, unit_number, payload, created_at")
           .order("created_at", { ascending: false });
+
+        if (selectedCompanyId && selectedProjectId) {
+          query = query.eq("company_id", selectedCompanyId).eq("project_id", selectedProjectId);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
         if (cancelled || !data) return;
         setItems((data as SubmissionRow[]).map(mapRow));
