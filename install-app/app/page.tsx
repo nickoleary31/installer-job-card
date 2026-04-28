@@ -435,11 +435,12 @@ function FormSectionHeader({ title, tone }: { title: string; tone: "blue" | "gre
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
-  const shown = value.trim() ? value : "—";
+  const shown = value.trim() ? value : "Not Installed";
+  const valueClass = shown === "Not Installed" ? "text-base font-semibold text-red-600 sm:col-span-2" : "text-base text-gray-900 sm:col-span-2";
   return (
     <div className="grid gap-1 border-b border-gray-100 py-3 sm:grid-cols-3 sm:gap-4 last:border-b-0">
       <div className="text-sm font-semibold text-gray-600">{label}</div>
-      <div className="text-base text-gray-900 sm:col-span-2">{shown}</div>
+      <div className={valueClass}>{shown}</div>
     </div>
   );
 }
@@ -1099,6 +1100,7 @@ export function NewSubmissionForm() {
     }
     if (!vac4ClientApproval.trim()) issues.push("vac4-clientApproval");
     if (!vac4HourMeter.trim()) issues.push("vac4-hourMeter");
+    if (!sensorHubInstalled.trim()) issues.push("vac4-sensorHubInstalled");
     if (isElectricDrive && !liftSenseInstalled) issues.push("vac4-liftSense");
     if (!operatorPresenceInstalled) issues.push("vac4-operatorPresence");
 
@@ -2983,12 +2985,18 @@ export function NewSubmissionForm() {
                   {requiredHint("vac4-hourMeter")}
                 </div>
 
-                <div>
-                  <label className={labelClassName}>Sensor Hub Installed?</label>
+                <div id="field-vac4-sensorHubInstalled">
+                  <label className={fieldLabelClass("vac4-sensorHubInstalled")}>
+                    Sensor Hub Installed?
+                    <RequiredMark />
+                  </label>
                   <select
-                    className={selectClassName}
+                    className={fieldSelectClass("vac4-sensorHubInstalled")}
                     value={sensorHubInstalled}
-                    onChange={(e) => setSensorHubInstalled(e.target.value)}
+                    onChange={(e) => {
+                      setSensorHubInstalled(e.target.value);
+                      clearFieldHighlight("vac4-sensorHubInstalled");
+                    }}
                   >
                     <option value="" className="text-gray-400">
                       Select Yes or No
@@ -2996,6 +3004,7 @@ export function NewSubmissionForm() {
                     <option>Yes</option>
                     <option>No</option>
                   </select>
+                  {requiredHint("vac4-sensorHubInstalled")}
                 </div>
 
                 {sensorHubInstalled === "Yes" && (

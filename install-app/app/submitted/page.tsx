@@ -106,6 +106,17 @@ function textOrDash(value: string | undefined) {
   return value?.trim() ? value.trim() : "—";
 }
 
+function renderDetailText(value: string) {
+  if (value === "Not Installed") {
+    return <span className="font-semibold text-red-600">Not Installed</span>;
+  }
+  return value;
+}
+
+function renderDetailValue(value: string | undefined | null) {
+  return renderDetailText(displayValue(value));
+}
+
 export default function SubmittedPage() {
   const [items, setItems] = useState<SubmissionListItem[]>([]);
   const [loadError, setLoadError] = useState(false);
@@ -292,38 +303,38 @@ export default function SubmittedPage() {
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Core Job Info</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Customer:</span> {displayValue(row.payload.coreJobInfo?.customer)}</p>
-                    <p><span className="font-semibold text-gray-600">Location:</span> {displayValue(row.payload.coreJobInfo?.location)}</p>
-                    <p><span className="font-semibold text-gray-600">Work Order #:</span> {formatWorkOrder(row.payload.coreJobInfo?.workOrder) || "Not Installed"}</p>
-                    <p><span className="font-semibold text-gray-600">Service Appointment #:</span> {formatServiceAppointment(row.payload.coreJobInfo?.serviceAppointment) || "Not Installed"}</p>
-                    <p><span className="font-semibold text-gray-600">Installer:</span> {displayValue(row.payload.coreJobInfo?.installerName)}</p>
-                    <p><span className="font-semibold text-gray-600">Unit #:</span> {displayUppercase(row.payload.coreJobInfo?.unitNumber)}</p>
+                    <p><span className="font-semibold text-gray-600">Customer:</span> {renderDetailValue(row.payload.coreJobInfo?.customer)}</p>
+                    <p><span className="font-semibold text-gray-600">Location:</span> {renderDetailValue(row.payload.coreJobInfo?.location)}</p>
+                    <p><span className="font-semibold text-gray-600">Work Order #:</span> {renderDetailText(formatWorkOrder(row.payload.coreJobInfo?.workOrder) || "Not Installed")}</p>
+                    <p><span className="font-semibold text-gray-600">Service Appointment #:</span> {renderDetailText(formatServiceAppointment(row.payload.coreJobInfo?.serviceAppointment) || "Not Installed")}</p>
+                    <p><span className="font-semibold text-gray-600">Installer:</span> {renderDetailValue(row.payload.coreJobInfo?.installerName)}</p>
+                    <p><span className="font-semibold text-gray-600">Unit #:</span> {renderDetailText(displayUppercase(row.payload.coreJobInfo?.unitNumber))}</p>
                   </div>
                 </section>
 
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Vehicle Information</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Make:</span> {displayValue(row.payload.coreJobInfo?.equipmentMake)}</p>
-                    <p><span className="font-semibold text-gray-600">Model:</span> {displayUppercase(row.payload.coreJobInfo?.equipmentModel)}</p>
-                    <p><span className="font-semibold text-gray-600">Serial #:</span> {displayUppercase(row.payload.coreJobInfo?.equipmentSerial)}</p>
-                    <p><span className="font-semibold text-gray-600">Drive Type:</span> {displayValue(row.payload.vac4?.driveType)}</p>
-                    <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {displayValue(row.payload.vac4?.vehicleType)}</p>
-                    <p><span className="font-semibold text-gray-600">Voltage:</span> {displayValue(row.payload.vac4?.vehicleVoltage)}</p>
+                    <p><span className="font-semibold text-gray-600">Make:</span> {renderDetailValue(row.payload.coreJobInfo?.equipmentMake)}</p>
+                    <p><span className="font-semibold text-gray-600">Model:</span> {renderDetailText(displayUppercase(row.payload.coreJobInfo?.equipmentModel))}</p>
+                    <p><span className="font-semibold text-gray-600">Serial #:</span> {renderDetailText(displayUppercase(row.payload.coreJobInfo?.equipmentSerial))}</p>
+                    <p><span className="font-semibold text-gray-600">Drive Type:</span> {renderDetailValue(row.payload.vac4?.driveType)}</p>
+                    <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {renderDetailValue(row.payload.vac4?.vehicleType)}</p>
+                    <p><span className="font-semibold text-gray-600">Voltage:</span> {renderDetailValue(row.payload.vac4?.vehicleVoltage)}</p>
                   </div>
                 </section>
 
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Hardware Selection</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Primary:</span> {displayValue(row.payload.hardwareSelection?.primary)}</p>
-                    <p><span className="font-semibold text-gray-600">Additional selected?:</span> {displayValue(row.payload.hardwareSelection?.hasAdditional)}</p>
+                    <p><span className="font-semibold text-gray-600">Primary:</span> {renderDetailValue(row.payload.hardwareSelection?.primary)}</p>
+                    <p><span className="font-semibold text-gray-600">Additional selected?:</span> {renderDetailValue(row.payload.hardwareSelection?.hasAdditional)}</p>
                     <p className="sm:col-span-2">
                       <span className="font-semibold text-gray-600">Additional hardware:</span>{" "}
                       {Array.isArray(row.payload.hardwareSelection?.additional) &&
                       row.payload.hardwareSelection.additional.length > 0
                         ? row.payload.hardwareSelection.additional.join(", ")
-                        : "Not Installed"}
+                        : renderDetailText("Not Installed")}
                     </p>
                   </div>
                 </section>
@@ -331,31 +342,31 @@ export default function SubmittedPage() {
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">VAC4 Summary</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Client Approval:</span> {displayValue(row.payload.vac4?.clientApproval)}</p>
+                    <p><span className="font-semibold text-gray-600">Client Approval:</span> {renderDetailValue(row.payload.vac4?.clientApproval)}</p>
                     <p><span className="font-semibold text-gray-600">Hour Meter:</span> {textOrDash(row.payload.vac4?.hourMeter)}</p>
-                    <p><span className="font-semibold text-gray-600">Sensor Hub Installed:</span> {displayValue(row.payload.vac4?.sensorHubInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">Lift Sense Installed:</span> {displayValue(row.payload.vac4?.liftSenseInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">Operator Presence Installed:</span> {displayValue(row.payload.vac4?.operatorPresenceInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">Speed Sense Installed:</span> {displayValue(row.payload.vac4?.speedSenseInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">Load Sense Installed:</span> {displayValue(row.payload.vac4?.loadSenseInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">GPS Installed:</span> {displayValue(row.payload.vac4?.gpsInstalled)}</p>
-                    <p><span className="font-semibold text-gray-600">External Indicator Installed:</span> {displayValue(row.payload.vac4?.externalIndicatorInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Sensor Hub Installed:</span> {renderDetailValue(row.payload.vac4?.sensorHubInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Lift Sense Installed:</span> {renderDetailValue(row.payload.vac4?.liftSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Operator Presence Installed:</span> {renderDetailValue(row.payload.vac4?.operatorPresenceInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Installed:</span> {renderDetailValue(row.payload.vac4?.speedSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">Load Sense Installed:</span> {renderDetailValue(row.payload.vac4?.loadSenseInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">GPS Installed:</span> {renderDetailValue(row.payload.vac4?.gpsInstalled)}</p>
+                    <p><span className="font-semibold text-gray-600">External Indicator Installed:</span> {renderDetailValue(row.payload.vac4?.externalIndicatorInstalled)}</p>
                   </div>
                 </section>
 
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Connection Descriptions</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Red Wire Description:</span> {displayValue(row.payload.vac4?.redWireDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Black Wire Description:</span> {displayValue(row.payload.vac4?.blackWireDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Blue Wire Description:</span> {displayValue(row.payload.vac4?.blueWireDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Purple Wire Description:</span> {displayValue(row.payload.vac4?.purpleWireDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Brown Wire Description:</span> {displayValue(row.payload.vac4?.brownWireDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Relay Access Description:</span> {displayValue(row.payload.vac4?.relayAccessDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Impact Sensor Description:</span> {displayValue(row.payload.vac4?.impactSensorDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Speed Sense Description:</span> {displayValue(row.payload.vac4?.speedSenseDescription)}</p>
-                    <p><span className="font-semibold text-gray-600">Speed Sense Pulse Count:</span> {displayValue(row.payload.vac4?.speedSensePulseCount)}</p>
-                    <p><span className="font-semibold text-gray-600">Load Sense Thresholds:</span> {displayValue(row.payload.vac4?.loadSenseThresholds)}</p>
+                    <p><span className="font-semibold text-gray-600">Red Wire Description:</span> {renderDetailValue(row.payload.vac4?.redWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Black Wire Description:</span> {renderDetailValue(row.payload.vac4?.blackWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Blue Wire Description:</span> {renderDetailValue(row.payload.vac4?.blueWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Purple Wire Description:</span> {renderDetailValue(row.payload.vac4?.purpleWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Brown Wire Description:</span> {renderDetailValue(row.payload.vac4?.brownWireDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Relay Access Description:</span> {renderDetailValue(row.payload.vac4?.relayAccessDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Impact Sensor Description:</span> {renderDetailValue(row.payload.vac4?.impactSensorDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Description:</span> {renderDetailValue(row.payload.vac4?.speedSenseDescription)}</p>
+                    <p><span className="font-semibold text-gray-600">Speed Sense Pulse Count:</span> {renderDetailValue(row.payload.vac4?.speedSensePulseCount)}</p>
+                    <p><span className="font-semibold text-gray-600">Load Sense Thresholds:</span> {renderDetailValue(row.payload.vac4?.loadSenseThresholds)}</p>
                   </div>
                 </section>
 

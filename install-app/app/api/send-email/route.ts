@@ -4,6 +4,7 @@ import {
   type JobCardSubmissionPayload,
   DEFAULT_JOB_CARD_EMAIL_TO,
   formatEmailBodyFromPayload,
+  formatEmailHtmlFromPayload,
   formatEmailSubject,
 } from "@/lib/job-card-submission";
 
@@ -130,6 +131,7 @@ export async function POST(req: Request) {
 
   const subject = formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber);
   const text = formatEmailBodyFromPayload(payload);
+  const html = formatEmailHtmlFromPayload(payload);
 
   const resend = new Resend(apiKey);
 
@@ -139,6 +141,7 @@ export async function POST(req: Request) {
       to,
       subject,
       text,
+      html,
     });
 
     if (error) {

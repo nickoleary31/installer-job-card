@@ -314,3 +314,20 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
 
   return lines.join("\n");
 }
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export function formatEmailHtmlFromPayload(p: JobCardSubmissionPayload): string {
+  const text = formatEmailBodyFromPayload(p);
+  const escaped = escapeHtml(text);
+  const highlighted = escaped.replaceAll(
+    "Not Installed",
+    '<span style="color:#b91c1c;font-weight:700;">Not Installed</span>',
+  );
+  return `<div style="font-family:Arial,sans-serif;white-space:pre-wrap;line-height:1.45;">${highlighted}</div>`;
+}
