@@ -14,11 +14,16 @@ type ProjectRow = {
   active: boolean;
 };
 
+type CompanyRow = {
+  name: string;
+};
+
 export default function CompanyProjectsPage() {
   const params = useParams<{ companyId: string }>();
   const router = useRouter();
   const companyId = String(params.companyId || "");
   const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [companyName, setCompanyName] = useState("—");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -29,6 +34,24 @@ export default function CompanyProjectsPage() {
     } catch {
       // ignore storage errors
     }
+  }, [companyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadCompanyName = async () => {
+      if (!companyId) return;
+      try {
+        const { data, error } = await supabase.from("companies").select("name").eq("id", companyId).maybeSingle<CompanyRow>();
+        if (error || cancelled || !data?.name) return;
+        setCompanyName(data.name.trim() || "—");
+      } catch {
+        // keep fallback
+      }
+    };
+    void loadCompanyName();
+    return () => {
+      cancelled = true;
+    };
   }, [companyId]);
 
   useEffect(() => {
@@ -75,6 +98,7 @@ export default function CompanyProjectsPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
         <header className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+          <p className="text-center text-lg font-semibold text-gray-700 dark:text-gray-300">Company: {companyName}</p>
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Select Project</h1>
           <p className="mt-1 text-sm text-gray-600">Choose a project for this company.</p>
           <Link href="/companies" className="mt-3 inline-flex text-sm font-semibold text-blue-700 hover:underline">
