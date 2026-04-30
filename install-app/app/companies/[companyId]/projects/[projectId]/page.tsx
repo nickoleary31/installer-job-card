@@ -20,6 +20,7 @@ type ProjectContextRow = {
   customer_id: string | null;
   customer_name: string | null;
   location: string | null;
+  customers: CustomerContextRow | CustomerContextRow[] | null;
 };
 
 type CustomerContextRow = {
@@ -56,7 +57,7 @@ export default function ProjectDashboardPage() {
           supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
           supabase
             .from("projects")
-            .select("project_name, customer_id, customer_name, location")
+            .select("project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address)")
             .eq("id", projectId)
             .eq("company_id", companyId)
             .maybeSingle<ProjectContextRow>(),
@@ -67,17 +68,11 @@ export default function ProjectDashboardPage() {
         let customerName = projectRow?.customer_name?.trim() || "—";
         let location = projectRow?.location?.trim() || "—";
         if (projectRow?.customer_id) {
-          const { data: customerRow, error: customerError } = await supabase
-            .from("customers")
-            .select("customer_name, full_address")
-            .eq("id", projectRow.customer_id)
-            .maybeSingle<CustomerContextRow>();
-          if (!customerError && customerRow) {
-            const customerNameFromCustomer = customerRow.customer_name?.trim();
-            const locationFromCustomer = customerRow.full_address?.trim();
-            if (customerNameFromCustomer) customerName = customerNameFromCustomer;
-            if (locationFromCustomer) location = locationFromCustomer;
-          }
+          const customerLookup = Array.isArray(projectRow.customers) ? projectRow.customers[0] : projectRow.customers;
+          const customerNameFromCustomer = customerLookup?.customer_name?.trim();
+          const locationFromCustomer = customerLookup?.full_address?.trim();
+          if (customerNameFromCustomer) customerName = customerNameFromCustomer;
+          if (locationFromCustomer) location = locationFromCustomer;
         }
 
         setProjectContext({

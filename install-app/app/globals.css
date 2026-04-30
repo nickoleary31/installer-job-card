@@ -95,9 +95,33 @@
     border-color: #4b5563 !important;
   }
 
+  input:focus,
+  select:focus,
+  textarea:focus {
+    background-color: #111827 !important;
+    color: #f3f4f6 !important;
+  }
+
   input::placeholder,
   textarea::placeholder {
     color: #9ca3af !important;
+  }
+
+  /* Force browser autofill to respect dark theme fields */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  textarea:-webkit-autofill:hover,
+  textarea:-webkit-autofill:focus,
+  select:-webkit-autofill,
+  select:-webkit-autofill:hover,
+  select:-webkit-autofill:focus {
+    -webkit-text-fill-color: #f3f4f6 !important;
+    caret-color: #f3f4f6 !important;
+    -webkit-box-shadow: 0 0 0 1000px #111827 inset !important;
+    box-shadow: 0 0 0 1000px #111827 inset !important;
+    transition: background-color 9999s ease-out 0s;
   }
 
   /* Keep status surfaces readable */

@@ -8,10 +8,21 @@ import { supabase } from "@/lib/supabase/client";
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
-type ProjectRow = {
+type ProjectCardRow = {
   id: string;
   project_name: string;
   active: boolean;
+  displayCustomerName: string;
+  completedSubmissionCount: number;
+};
+
+type ProjectQueryRow = {
+  id: string;
+  project_name: string;
+  active: boolean;
+  customer_id: string | null;
+  customer_name: string | null;
+  customers: { customer_name: string | null } | { customer_name: string | null }[] | null;
 };
 
 type CompanyRow = {
@@ -58,7 +69,7 @@ export default function CompanyProjectsPage() {
   const params = useParams<{ companyId: string }>();
   const router = useRouter();
   const companyId = String(params.companyId || "");
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [projects, setProjects] = useState<ProjectCardRow[]>([]);
   const [companyName, setCompanyName] = useState("—");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -108,13 +119,50 @@ export default function CompanyProjectsPage() {
 
   const loadProjects = useCallback(async () => {
     if (!companyId) return;
-    const { data, error } = await supabase
+    const { data: projData, error: projError } = await supabase
       .from("projects")
-      .select("id, project_name, active")
+      .select(
+        "id, project_name, active, customer_id, customer_name, customers:customer_id(customer_name)",
+      )
       .eq("company_id", companyId)
       .order("project_name", { ascending: true });
-    if (error) throw error;
-    setProjects((data as ProjectRow[]) || []);
+    if (projError) throw projError;
+
+    const projectsRaw = (projData as ProjectQueryRow[]) || [];
+    const projectIds = projectsRaw.map((p) => p.id);
+
+    let submissionRows: { project_id: string }[] = [];
+    if (projectIds.length > 0) {
+      const { data: subData, error: subError } = await supabase
+        .from("job_card_submissions")
+        .select("project_id")
+        .eq("company_id", companyId)
+        .in("project_id", projectIds);
+      if (subError) throw subError;
+      submissionRows = (subData as { project_id: string }[]) || [];
+    }
+
+    const countByProject = new Map<string, number>();
+    for (const row of submissionRows) {
+      const pid = row.project_id;
+      if (!pid) continue;
+      countByProject.set(pid, (countByProject.get(pid) || 0) + 1);
+    }
+
+    const enriched: ProjectCardRow[] = projectsRaw.map((row) => {
+      const linked = Array.isArray(row.customers) ? row.customers[0] : row.customers;
+      const fromCustomer = linked?.customer_name?.trim() || "";
+      const fromProject = row.customer_name?.trim() || "";
+      return {
+        id: row.id,
+        project_name: row.project_name,
+        active: row.active,
+        displayCustomerName: fromCustomer || fromProject || "—",
+        completedSubmissionCount: countByProject.get(row.id) ?? 0,
+      };
+    });
+
+    setProjects(enriched);
     setLoadError(null);
   }, [companyId]);
 
@@ -243,6 +291,27 @@ export default function CompanyProjectsPage() {
     setIsSavingNewCustomer(true);
     setNewCustomerError(null);
     try {
+      const normalizedName = name.toLowerCase();
+      const { data: existingCustomers, error: existingLookupError } = await supabase
+        .from("customers")
+        .select("id, customer_name, full_address")
+        .eq("company_id", companyId);
+      if (existingLookupError) throw existingLookupError;
+
+      const existingMatch = ((existingCustomers as CustomerOption[]) || []).find(
+        (customer) => (customer.customer_name || "").trim().toLowerCase() === normalizedName,
+      );
+      if (existingMatch) {
+        setSelectedCustomerId(existingMatch.id);
+        const existingName = existingMatch.customer_name?.trim() || name;
+        const existingAddress = existingMatch.full_address?.trim() || "";
+        setCustomerSiteInput(existingName);
+        setCustomerNameInput(existingName);
+        setLocationInput(existingAddress);
+        closeAddCustomerModal();
+        return;
+      }
+
       const row = {
         company_id: companyId,
         customer_name: name,
@@ -270,8 +339,18 @@ export default function CompanyProjectsPage() {
       setLocationInput(createdAddress);
       closeAddCustomerModal();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to save customer";
-      setNewCustomerError(msg);
+      const maybeDbError = e as { code?: string; message?: string; details?: string } | null;
+      const detailsText = `${maybeDbError?.message || ""} ${maybeDbError?.details || ""}`.toLowerCase();
+      const isDuplicateCustomerName =
+        maybeDbError?.code === "23505" ||
+        detailsText.includes("idx_customers_company_normalized_customer_name") ||
+        detailsText.includes("duplicate key");
+      if (isDuplicateCustomerName) {
+        setNewCustomerError("Customer already exists.");
+      } else {
+        const msg = e instanceof Error ? e.message : "Failed to save customer";
+        setNewCustomerError(msg);
+      }
     } finally {
       setIsSavingNewCustomer(false);
     }
@@ -327,6 +406,7 @@ export default function CompanyProjectsPage() {
     try {
       const { error } = await supabase.from("projects").insert({
         company_id: companyId,
+        customer_id: selectedCustomerId,
         project_name: projectName,
         customer_name: customerName,
         location,
@@ -377,9 +457,17 @@ export default function CompanyProjectsPage() {
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Select Project</h1>
           <p className="mt-1 text-sm text-gray-600">Choose a project for this company.</p>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <Link href="/companies" className="inline-flex text-sm font-semibold text-blue-700 hover:underline">
-              Back to Companies
-            </Link>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <Link href="/companies" className="inline-flex text-sm font-semibold text-blue-700 hover:underline">
+                Back to Companies
+              </Link>
+              <Link
+                href={`/companies/${encodeURIComponent(companyId)}/customers`}
+                className="inline-flex text-sm font-semibold text-blue-700 hover:underline"
+              >
+                Customers / Sites
+              </Link>
+            </div>
             {/* TODO: Restrict project creation to admin-only users when auth/roles are introduced. */}
             <button
               type="button"
@@ -412,6 +500,13 @@ export default function CompanyProjectsPage() {
                 className="block w-full rounded-2xl border border-indigo-200 bg-white p-5 text-left shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50"
               >
                 <h2 className="text-lg font-bold text-gray-900">{project.project_name}</h2>
+                <p className="mt-1 text-sm text-gray-700">
+                  <span className="font-semibold text-gray-600">Customer:</span> {project.displayCustomerName}
+                </p>
+                <p className="mt-0.5 text-sm text-gray-700">
+                  <span className="font-semibold text-gray-600">Completed submissions:</span>{" "}
+                  {project.completedSubmissionCount}
+                </p>
                 <p className="mt-1 text-sm text-gray-600">{project.active ? "Active project" : "Inactive project"}</p>
               </button>
             ))
@@ -440,7 +535,7 @@ export default function CompanyProjectsPage() {
                   <input
                     value={projectNameInput}
                     onChange={(e) => setProjectNameInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     placeholder="e.g. East Yard Rollout"
                   />
                 </div>
@@ -449,7 +544,7 @@ export default function CompanyProjectsPage() {
                   <input
                     value={customerSiteInput}
                     onChange={(e) => handleCustomerSiteFieldChange(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     placeholder="Search customers or enter a new customer / site name"
                     disabled={isLoadingCustomers}
                     autoComplete="off"
@@ -459,14 +554,16 @@ export default function CompanyProjectsPage() {
                   {!isLoadingCustomers && !customerLoadError ? (
                     <>
                       {filteredCustomers.length > 0 ? (
-                        <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-gray-200">
+                        <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white dark:border-slate-600 dark:bg-slate-900">
                           {filteredCustomers.map((customer) => (
                             <button
                               key={customer.id}
                               type="button"
                               onClick={() => handleCustomerSelectionChange(customer)}
-                              className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 ${
-                                selectedCustomerId === customer.id ? "bg-blue-50 font-semibold text-blue-800" : "text-gray-800"
+                              className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-slate-800 ${
+                                selectedCustomerId === customer.id
+                                  ? "bg-blue-50 font-semibold text-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
+                                  : "text-gray-800 dark:text-slate-100"
                               }`}
                             >
                               {customer.customer_name?.trim() || "Unnamed customer"}
@@ -498,7 +595,7 @@ export default function CompanyProjectsPage() {
                   <input
                     value={locationInput}
                     onChange={(e) => setLocationInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     placeholder="e.g. Acworth, GA"
                   />
                 </div>
@@ -507,8 +604,10 @@ export default function CompanyProjectsPage() {
                   <input
                     value={externalEmailsInput}
                     onChange={(e) => setExternalEmailsInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     placeholder="name@company.com, ops@company.com"
+                    autoComplete="off"
+                    spellCheck={false}
                   />
                   <p className="mt-1 text-xs text-gray-500">Optional. Enter comma-separated emails.</p>
                 </div>
@@ -562,7 +661,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.customer_name}
                       onChange={(e) => updateNewCustomerField("customer_name", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       placeholder="Required"
                       autoComplete="organization"
                     />
@@ -572,7 +671,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.full_address}
                       onChange={(e) => updateNewCustomerField("full_address", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       autoComplete="street-address"
                     />
                   </div>
@@ -581,7 +680,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.site_contact_name}
                       onChange={(e) => updateNewCustomerField("site_contact_name", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     />
                   </div>
                   <div>
@@ -589,7 +688,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.contact_number}
                       onChange={(e) => updateNewCustomerField("contact_number", formatPhoneNumber(e.target.value))}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       inputMode="numeric"
                     />
                   </div>
@@ -598,7 +697,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.license_key_1}
                       onChange={(e) => updateNewCustomerField("license_key_1", formatLicenseKey(e.target.value))}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       inputMode="numeric"
                     />
                   </div>
@@ -607,7 +706,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.license_key_2}
                       onChange={(e) => updateNewCustomerField("license_key_2", formatLicenseKey(e.target.value))}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       inputMode="numeric"
                     />
                   </div>
@@ -618,7 +717,7 @@ export default function CompanyProjectsPage() {
                       onChange={(e) =>
                         updateNewCustomerField("server_port_type", e.target.value as NewCustomerForm["server_port_type"])
                       }
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     >
                       <option value="">—</option>
                       <option value="TLS">TLS</option>
@@ -629,8 +728,11 @@ export default function CompanyProjectsPage() {
                     <label className="mb-1 block text-sm font-semibold text-gray-800">Server port number</label>
                     <input
                       value={newCustomerForm.server_port_number}
-                      onChange={(e) => updateNewCustomerField("server_port_number", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      onChange={(e) =>
+                        updateNewCustomerField("server_port_number", digitsOnly(e.target.value).slice(0, 5))
+                      }
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                      inputMode="numeric"
                     />
                   </div>
                   <div>
@@ -638,7 +740,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.facility_code}
                       onChange={(e) => updateNewCustomerField("facility_code", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     />
                   </div>
                   <div>
@@ -646,7 +748,7 @@ export default function CompanyProjectsPage() {
                     <input
                       value={newCustomerForm.wifi_ssid}
                       onChange={(e) => updateNewCustomerField("wifi_ssid", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       autoComplete="off"
                     />
                   </div>
@@ -656,7 +758,7 @@ export default function CompanyProjectsPage() {
                       type="password"
                       value={newCustomerForm.wifi_password}
                       onChange={(e) => updateNewCustomerField("wifi_password", e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       autoComplete="new-password"
                     />
                   </div>
@@ -666,7 +768,7 @@ export default function CompanyProjectsPage() {
                       value={newCustomerForm.notes}
                       onChange={(e) => updateNewCustomerField("notes", e.target.value)}
                       rows={3}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     />
                   </div>
                 </div>
