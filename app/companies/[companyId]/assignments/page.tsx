@@ -62,6 +62,7 @@ export default function ProjectAssignmentsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
 
   const companyRole = context.companyRolesById[companyId];
@@ -202,10 +203,36 @@ export default function ProjectAssignmentsPage() {
   };
 
   const handleAssignmentToggle = async (userId: string, projectId: string, shouldAssign: boolean) => {
-    if (!isAdminForCompany) return;
+    const currentUserId = context.userId;
+    const currentUserAdminMembership = memberships.find(
+      (row) => row.user_id === currentUserId && row.role === "admin" && row.is_active,
+    );
+    if (!currentUserId || !isAdminForCompany || !currentUserAdminMembership) {
+      setSaveError("Only active company admins can update assignments.");
+      setSaveNotice(null);
+      return;
+    }
+
+    const targetUserMembership = memberships.find(
+      (row) => row.user_id === userId && row.role === "technician" && row.is_active,
+    );
+    if (!targetUserMembership) {
+      setSaveError("This user is not an active technician for this company.");
+      setSaveNotice(null);
+      return;
+    }
+
+    const targetProject = projects.find((row) => row.id === projectId);
+    if (!targetProject) {
+      setSaveError("This project is unavailable for the selected company.");
+      setSaveNotice(null);
+      return;
+    }
+
     const key = `${userId}::${projectId}`;
     setSavingKey(key, true);
     setSaveError(null);
+    setSaveNotice(null);
 
     try {
       if (shouldAssign) {
@@ -239,9 +266,11 @@ export default function ProjectAssignmentsPage() {
         next[existingIndex] = { ...next[existingIndex], is_active: shouldAssign };
         return next;
       });
+      setSaveNotice(`Assignment updated. Last updated ${new Date().toLocaleTimeString()}.`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save assignment";
       setSaveError(msg);
+      setSaveNotice(null);
     } finally {
       setSavingKey(key, false);
     }
@@ -277,6 +306,9 @@ export default function ProjectAssignmentsPage() {
         ) : null}
         {saveError ? (
           <section className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">Could not save assignment: {saveError}</section>
+        ) : null}
+        {saveNotice ? (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">{saveNotice}</section>
         ) : null}
 
         {!loading && !loadError && canReadPage ? (
