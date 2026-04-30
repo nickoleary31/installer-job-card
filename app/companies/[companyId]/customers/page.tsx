@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
@@ -27,6 +28,7 @@ function displayCell(value: string | null) {
 export default function CompanyCustomersPage() {
   const params = useParams<{ companyId: string }>();
   const searchParams = useSearchParams();
+  const { loading: authLoading, context: userContext } = useAuthUserContext();
   const companyId = String(params.companyId || "");
   const wasCreated = searchParams.get("created") === "1";
   const [companyName, setCompanyName] = useState("—");
@@ -34,6 +36,8 @@ export default function CompanyCustomersPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(() => companyId.length > 0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const companyRole = userContext.companyRolesById[companyId];
+  const isAdminForCompany = companyRole === "admin";
 
   useEffect(() => {
     if (!companyId) return;
@@ -64,9 +68,36 @@ export default function CompanyCustomersPage() {
 
   useEffect(() => {
     if (!companyId) return;
+    if (authLoading) return;
     let cancelled = false;
     void (async () => {
       try {
+        let allowedIds: Set<string> | null = null;
+        if (companyRole === "technician" && userContext.userId) {
+          const { data: assignments, error: assignmentError } = await supabase
+            .from("project_assignments")
+            .select("project_id")
+            .eq("user_id", userContext.userId)
+            .eq("is_active", true);
+          if (assignmentError) throw assignmentError;
+
+          const assignedProjectIds = ((assignments as { project_id: string }[]) || []).map((row) => row.project_id).filter(Boolean);
+          if (assignedProjectIds.length > 0) {
+            const { data: projectRows, error: projectError } = await supabase
+              .from("projects")
+              .select("customer_id")
+              .eq("company_id", companyId)
+              .in("id", assignedProjectIds);
+            if (projectError) throw projectError;
+
+            allowedIds = new Set(
+              ((projectRows as { customer_id: string | null }[]) || []).map((row) => row.customer_id).filter((value): value is string => !!value),
+            );
+          } else {
+            allowedIds = new Set();
+          }
+        }
+
         const { data, error } = await supabase
           .from("customers")
           .select("id, customer_name, full_address, site_contact_name, contact_number")
@@ -74,7 +105,9 @@ export default function CompanyCustomersPage() {
           .order("customer_name", { ascending: true });
         if (cancelled) return;
         if (error) throw error;
-        setCustomers((data as CustomerListRow[]) || []);
+        const customerRows = (data as CustomerListRow[]) || [];
+        const visibleCustomers = allowedIds ? customerRows.filter((row) => allowedIds?.has(row.id)) : customerRows;
+        setCustomers(visibleCustomers);
         setLoadError(null);
       } catch (e) {
         if (!cancelled) {
@@ -89,7 +122,7 @@ export default function CompanyCustomersPage() {
     return () => {
       cancelled = true;
     };
-  }, [companyId]);
+  }, [authLoading, companyId, companyRole, userContext.userId]);
 
   const filteredCustomers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -117,12 +150,14 @@ export default function CompanyCustomersPage() {
                 Back to Projects
               </Link>
             </div>
-            <Link
-              href={`/companies/${encodeURIComponent(companyId)}/customers/new`}
-              className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
-            >
-              New Customer / Site
-            </Link>
+            {isAdminForCompany ? (
+              <Link
+                href={`/companies/${encodeURIComponent(companyId)}/customers/new`}
+                className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
+              >
+                New Customer / Site
+              </Link>
+            ) : null}
           </div>
         </header>
 

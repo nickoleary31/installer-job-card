@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 import { CustomerRecord } from "../_lib/customerForm";
 
@@ -14,6 +15,7 @@ const displayCell = (value: string | null) => {
 export default function CustomerDetailPage() {
   const params = useParams<{ companyId: string; customerId: string }>();
   const searchParams = useSearchParams();
+  const { loading: authLoading, context: userContext } = useAuthUserContext();
   const companyId = String(params.companyId || "");
   const customerId = String(params.customerId || "");
   const wasSaved = searchParams.get("saved") === "1";
@@ -21,13 +23,53 @@ export default function CustomerDetailPage() {
   const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [accessRestricted, setAccessRestricted] = useState(false);
+  const companyRole = userContext.companyRolesById[companyId];
 
   useEffect(() => {
     if (!companyId || !customerId) return;
+    if (authLoading) return;
     let cancelled = false;
     const loadCustomer = async () => {
       setLoadError(null);
+      setAccessRestricted(false);
       try {
+        if (companyRole === "technician" && userContext.userId) {
+          const { data: assignments, error: assignmentError } = await supabase
+            .from("project_assignments")
+            .select("project_id")
+            .eq("user_id", userContext.userId)
+            .eq("is_active", true);
+          if (assignmentError) throw assignmentError;
+
+          const assignedProjectIds = ((assignments as { project_id: string }[]) || []).map((row) => row.project_id).filter(Boolean);
+          if (assignedProjectIds.length === 0) {
+            if (!cancelled) {
+              setAccessRestricted(true);
+              setCustomer(null);
+            }
+            return;
+          }
+
+          const { data: linkedProjects, error: linkedProjectError } = await supabase
+            .from("projects")
+            .select("id")
+            .eq("company_id", companyId)
+            .eq("customer_id", customerId)
+            .in("id", assignedProjectIds)
+            .limit(1);
+          if (linkedProjectError) throw linkedProjectError;
+
+          const hasAllowedLink = ((linkedProjects as { id: string }[]) || []).length > 0;
+          if (!hasAllowedLink) {
+            if (!cancelled) {
+              setAccessRestricted(true);
+              setCustomer(null);
+            }
+            return;
+          }
+        }
+
         const { data, error } = await supabase
           .from("customers")
           .select(
@@ -58,7 +100,7 @@ export default function CustomerDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [companyId, customerId]);
+  }, [authLoading, companyId, companyRole, customerId, userContext.userId]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
@@ -73,7 +115,7 @@ export default function CustomerDetailPage() {
             >
               ← Back to Customers / Sites
             </Link>
-            {!loadError ? (
+            {!loadError && !accessRestricted ? (
               <Link
                 href={`/companies/${encodeURIComponent(companyId)}/customers/${encodeURIComponent(customerId)}/edit`}
                 className="inline-flex rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-50"
@@ -81,7 +123,7 @@ export default function CustomerDetailPage() {
                 Edit
               </Link>
             ) : null}
-            {!loadError ? (
+            {!loadError && !accessRestricted ? (
               <Link
                 href={`/companies/${encodeURIComponent(companyId)}/customers/${encodeURIComponent(customerId)}/projects`}
                 className="inline-flex rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-50"
@@ -100,9 +142,14 @@ export default function CustomerDetailPage() {
 
         <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
           {loading ? <p className="text-sm text-gray-600">Loading customer...</p> : null}
+          {!loading && accessRestricted ? (
+            <p className="text-sm font-semibold text-amber-800">
+              Access restricted. This customer/site is not linked to one of your assigned projects.
+            </p>
+          ) : null}
           {loadError ? <p className="text-sm font-semibold text-red-700">{loadError}</p> : null}
 
-          {!loading && !loadError && customer ? (
+          {!loading && !loadError && !accessRestricted && customer ? (
             <div className="space-y-3">
               <div>
                 <p className="mb-1 text-sm font-semibold text-gray-800">Customer name</p>

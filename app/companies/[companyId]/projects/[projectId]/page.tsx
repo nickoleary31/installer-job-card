@@ -26,6 +26,51 @@ type ProjectContextRow = {
 type CustomerContextRow = {
   customer_name: string | null;
   full_address: string | null;
+  site_contact_name: string | null;
+  contact_number: string | null;
+  license_key_1: string | null;
+  license_key_2: string | null;
+  server_port_type: string | null;
+  server_port_number: string | null;
+  facility_code: string | null;
+  wifi_ssid: string | null;
+  wifi_password: string | null;
+  notes: string | null;
+};
+
+type SiteInfo = {
+  customer_name: string;
+  full_address: string;
+  site_contact_name: string;
+  contact_number: string;
+  license_key_1: string;
+  license_key_2: string;
+  server_port_type: string;
+  server_port_number: string;
+  facility_code: string;
+  wifi_ssid: string;
+  wifi_password: string;
+  notes: string;
+};
+
+const emptySiteInfo: SiteInfo = {
+  customer_name: "—",
+  full_address: "—",
+  site_contact_name: "—",
+  contact_number: "—",
+  license_key_1: "—",
+  license_key_2: "—",
+  server_port_type: "—",
+  server_port_number: "—",
+  facility_code: "—",
+  wifi_ssid: "—",
+  wifi_password: "—",
+  notes: "—",
+};
+
+const displayCell = (value: string | null | undefined) => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : "—";
 };
 
 export default function ProjectDashboardPage() {
@@ -38,6 +83,10 @@ export default function ProjectDashboardPage() {
     customerName: "—",
     location: "—",
   });
+  const [siteInfoExpanded, setSiteInfoExpanded] = useState(false);
+  const [showWifiPassword, setShowWifiPassword] = useState(false);
+  const [siteInfo, setSiteInfo] = useState<SiteInfo>(emptySiteInfo);
+  const [hasLinkedCustomer, setHasLinkedCustomer] = useState(false);
 
   useEffect(() => {
     try {
@@ -57,7 +106,9 @@ export default function ProjectDashboardPage() {
           supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
           supabase
             .from("projects")
-            .select("project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address)")
+            .select(
+              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes)",
+            )
             .eq("id", projectId)
             .eq("company_id", companyId)
             .maybeSingle<ProjectContextRow>(),
@@ -73,6 +124,26 @@ export default function ProjectDashboardPage() {
           const locationFromCustomer = customerLookup?.full_address?.trim();
           if (customerNameFromCustomer) customerName = customerNameFromCustomer;
           if (locationFromCustomer) location = locationFromCustomer;
+
+          setHasLinkedCustomer(!!customerLookup);
+          setSiteInfo({
+            customer_name: displayCell(customerLookup?.customer_name),
+            full_address: displayCell(customerLookup?.full_address),
+            site_contact_name: displayCell(customerLookup?.site_contact_name),
+            contact_number: displayCell(customerLookup?.contact_number),
+            license_key_1: displayCell(customerLookup?.license_key_1),
+            license_key_2: displayCell(customerLookup?.license_key_2),
+            server_port_type: displayCell(customerLookup?.server_port_type),
+            server_port_number: displayCell(customerLookup?.server_port_number),
+            facility_code: displayCell(customerLookup?.facility_code),
+            wifi_ssid: displayCell(customerLookup?.wifi_ssid),
+            wifi_password: displayCell(customerLookup?.wifi_password),
+            notes: displayCell(customerLookup?.notes),
+          });
+        } else {
+          setHasLinkedCustomer(false);
+          setSiteInfo(emptySiteInfo);
+          setShowWifiPassword(false);
         }
 
         setProjectContext({
@@ -122,6 +193,58 @@ export default function ProjectDashboardPage() {
               <span className="font-semibold text-gray-600">Location:</span> {projectContext.location}
             </p>
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+          <button
+            type="button"
+            onClick={() => setSiteInfoExpanded((prev) => !prev)}
+            className="flex w-full items-center justify-between text-left"
+            aria-expanded={siteInfoExpanded}
+          >
+            <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Site Info</h2>
+            <span className="text-sm text-gray-600">{siteInfoExpanded ? "▾" : "▸"}</span>
+          </button>
+
+          {siteInfoExpanded ? (
+            hasLinkedCustomer ? (
+              <div className="mt-4 grid gap-3 text-sm text-gray-800 sm:grid-cols-2">
+                <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
+                <p><span className="font-semibold text-gray-600">Full address:</span> {siteInfo.full_address}</p>
+                <p><span className="font-semibold text-gray-600">Site contact:</span> {siteInfo.site_contact_name}</p>
+                <p><span className="font-semibold text-gray-600">Contact number:</span> {siteInfo.contact_number}</p>
+                <p><span className="font-semibold text-gray-600">License key 1:</span> {siteInfo.license_key_1}</p>
+                <p><span className="font-semibold text-gray-600">License key 2:</span> {siteInfo.license_key_2}</p>
+                <p><span className="font-semibold text-gray-600">Server port type:</span> {siteInfo.server_port_type}</p>
+                <p><span className="font-semibold text-gray-600">Server port number:</span> {siteInfo.server_port_number}</p>
+                <p><span className="font-semibold text-gray-600">Facility code:</span> {siteInfo.facility_code}</p>
+                <p><span className="font-semibold text-gray-600">Wi-Fi SSID:</span> {siteInfo.wifi_ssid}</p>
+                <div className="sm:col-span-2">
+                  <p className="font-semibold text-gray-600">Wi-Fi password:</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900">
+                      {showWifiPassword ? siteInfo.wifi_password : siteInfo.wifi_password === "—" ? "—" : "••••••••"}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowWifiPassword((prev) => !prev)}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                    >
+                      {showWifiPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                </div>
+                <div className="sm:col-span-2">
+                  <p className="font-semibold text-gray-600">Notes:</p>
+                  <p className="mt-1 min-h-20 whitespace-pre-wrap rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900">
+                    {siteInfo.notes}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-gray-600">No linked customer/site record found for this project.</p>
+            )
+          ) : null}
         </section>
 
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">

@@ -193,6 +193,7 @@ export default function CompanyProjectsPage() {
   }, [companyId, loadProjects]);
 
   const companyRole = userContext.companyRolesById[companyId];
+  const isAdminForCompany = companyRole === "admin";
 
   useEffect(() => {
     if (authLoading || !userContext.userId || companyRole !== "technician") return;
@@ -292,6 +293,10 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddProjectModal = () => {
+    if (!isAdminForCompany) {
+      setAddProjectError("Only company admins can create projects.");
+      return;
+    }
     resetAddProjectForm();
     setCustomerLoadError(null);
     setShowAddProjectModal(true);
@@ -307,6 +312,10 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddCustomerModal = () => {
+    if (!isAdminForCompany) {
+      setNewCustomerError("Only company admins can create customers/sites from project setup.");
+      return;
+    }
     setNewCustomerForm({
       ...emptyNewCustomerForm(),
       customer_name: customerSiteInput.trim(),
@@ -326,6 +335,10 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewCustomer = async () => {
+    if (!isAdminForCompany) {
+      setNewCustomerError("Only company admins can create customers/sites from project setup.");
+      return;
+    }
     const name = newCustomerForm.customer_name.trim();
     if (!name) {
       setNewCustomerError("Customer name is required.");
@@ -425,6 +438,10 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewProject = async () => {
+    if (!isAdminForCompany) {
+      setAddProjectError("Only company admins can create projects.");
+      return;
+    }
     const projectName = projectNameInput.trim();
     const customerName = customerNameInput.trim();
     const location = locationInput.trim();
@@ -521,14 +538,15 @@ export default function CompanyProjectsPage() {
                 </Link>
               ) : null}
             </div>
-            {/* TODO: Restrict project creation to admin-only users when auth/roles are introduced. */}
-            <button
-              type="button"
-              onClick={openAddProjectModal}
-              className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
-            >
-              Add New Project
-            </button>
+            {isAdminForCompany ? (
+              <button
+                type="button"
+                onClick={openAddProjectModal}
+                className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
+              >
+                Add New Project
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -622,22 +640,24 @@ export default function CompanyProjectsPage() {
                               {customer.customer_name?.trim() || "Unnamed customer"}
                             </button>
                           ))}
-                          <button
-                            type="button"
-                            onClick={openAddCustomerModal}
-                            className="block w-full border-t border-gray-200 bg-emerald-50/80 px-3 py-2 text-left text-sm font-medium text-emerald-900 hover:bg-emerald-100"
-                          >
-                            ➕ Add New Customer / Site
-                          </button>
+                          {isAdminForCompany ? (
+                            <button
+                              type="button"
+                              onClick={openAddCustomerModal}
+                              className="block w-full border-t border-gray-200 bg-emerald-50/80 px-3 py-2 text-left text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+                            >
+                              + Add New Customer / Site
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
-                      {customerSiteInput.trim() && filteredCustomers.length === 0 ? (
+                      {isAdminForCompany && customerSiteInput.trim() && filteredCustomers.length === 0 ? (
                         <button
                           type="button"
                           onClick={openAddCustomerModal}
                           className="mt-2 inline-flex w-fit rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
                         >
-                          ➕ Add New Customer / Site
+                          + Add New Customer / Site
                         </button>
                       ) : null}
                     </>

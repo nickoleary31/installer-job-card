@@ -64,6 +64,8 @@ export default function ProjectAssignmentsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [recentlyChangedKey, setRecentlyChangedKey] = useState<string | null>(null);
 
   const companyRole = context.companyRolesById[companyId];
   const isAdminForCompany = companyRole === "admin";
@@ -202,6 +204,12 @@ export default function ProjectAssignmentsPage() {
     });
   };
 
+  useEffect(() => {
+    if (!recentlyChangedKey) return;
+    const timeout = window.setTimeout(() => setRecentlyChangedKey(null), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [recentlyChangedKey]);
+
   const handleAssignmentToggle = async (userId: string, projectId: string, shouldAssign: boolean) => {
     const currentUserId = context.userId;
     const currentUserAdminMembership = memberships.find(
@@ -266,10 +274,13 @@ export default function ProjectAssignmentsPage() {
         next[existingIndex] = { ...next[existingIndex], is_active: shouldAssign };
         return next;
       });
-      setSaveNotice(`Assignment updated. Last updated ${new Date().toLocaleTimeString()}.`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to save assignment";
-      setSaveError(msg);
+      const updatedTime = new Date().toLocaleTimeString();
+      setSaveError(null);
+      setSaveNotice("Assignment updated");
+      setLastUpdatedAt(updatedTime);
+      setRecentlyChangedKey(key);
+    } catch {
+      setSaveError("Failed to update assignment");
       setSaveNotice(null);
     } finally {
       setSavingKey(key, false);
@@ -305,10 +316,13 @@ export default function ProjectAssignmentsPage() {
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">Could not load data: {loadError}</section>
         ) : null}
         {saveError ? (
-          <section className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">Could not save assignment: {saveError}</section>
+          <section className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">{saveError}</section>
         ) : null}
         {saveNotice ? (
-          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">{saveNotice}</section>
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">
+            {saveNotice}
+            {lastUpdatedAt ? <span className="ml-2 text-emerald-700">Last updated: {lastUpdatedAt}</span> : null}
+          </section>
         ) : null}
 
         {!loading && !loadError && canReadPage ? (
@@ -317,41 +331,66 @@ export default function ProjectAssignmentsPage() {
           ) : projects.length === 0 ? (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">No projects found for this company.</section>
           ) : (
-            <section className="space-y-4">
-              {technicians.map((tech) => (
-                <article key={tech.userId} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-                  <h2 className="text-lg font-bold text-gray-900">{tech.displayName}</h2>
-                  <p className="mt-0.5 text-sm text-gray-700">{tech.email}</p>
-                  <p className="mt-1 text-xs text-gray-500">
-                    Assigned projects: {tech.assignedProjectIds.size} / {projects.length}
-                  </p>
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                    {projects.map((project) => {
-                      const key = `${tech.userId}::${project.id}`;
-                      const isChecked = assignmentSet.has(key);
-                      const isSaving = savingKeys.has(key);
-                      return (
-                        <label
-                          key={project.id}
-                          className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800"
-                        >
-                          <span className="min-w-0 truncate">
-                            {project.project_name}
-                            {!project.active ? <span className="ml-1 text-xs text-amber-700">(inactive)</span> : null}
-                          </span>
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            disabled={!isAdminForCompany || isSaving || !tech.isMembershipActive}
-                            onChange={(e) => void handleAssignmentToggle(tech.userId, project.id, e.target.checked)}
-                            className="h-4 w-4 accent-blue-600"
-                          />
-                        </label>
-                      );
-                    })}
-                  </div>
-                </article>
-              ))}
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+              <p className="text-sm font-semibold text-gray-800">Assignment Matrix</p>
+              <p className="mt-1 text-xs text-gray-600">
+                Rows are technicians. Columns are projects. Check a cell to grant access.
+              </p>
+
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr>
+                      <th className="sticky left-0 z-10 min-w-[260px] border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">
+                        Technician (row)
+                      </th>
+                      {projects.map((project) => (
+                        <th key={project.id} className="min-w-[140px] border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">
+                          <span className="block truncate">{project.project_name}</span>
+                          {!project.active ? <span className="text-xs font-medium text-amber-700">(inactive)</span> : null}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {technicians.map((tech) => (
+                      <tr key={tech.userId}>
+                        <th className="sticky left-0 z-10 border border-gray-200 bg-white px-3 py-2 text-left align-top">
+                          <div className="font-semibold text-gray-900">{tech.displayName}</div>
+                          <div className="text-xs text-gray-600">{tech.email}</div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            Assigned: {tech.assignedProjectIds.size} / {projects.length}
+                          </div>
+                        </th>
+                        {projects.map((project) => {
+                          const key = `${tech.userId}::${project.id}`;
+                          const isChecked = assignmentSet.has(key);
+                          const isSaving = savingKeys.has(key);
+                          const wasRecentlyChanged = recentlyChangedKey === key;
+                          return (
+                            <td
+                              key={project.id}
+                              className={`border border-gray-200 px-3 py-2 text-center align-middle ${wasRecentlyChanged ? "bg-emerald-50" : "bg-white"}`}
+                            >
+                              <label className="inline-flex items-center justify-center gap-2 text-xs text-gray-700">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  disabled={!isAdminForCompany || isSaving || !tech.isMembershipActive}
+                                  onChange={(e) => void handleAssignmentToggle(tech.userId, project.id, e.target.checked)}
+                                  aria-busy={isSaving}
+                                  className="h-4 w-4 accent-blue-600"
+                                />
+                                {isSaving ? <span className="text-blue-700">Saving...</span> : null}
+                              </label>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )
         ) : null}
