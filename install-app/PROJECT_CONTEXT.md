@@ -36,3 +36,31 @@
 - Keep changes backward-compatible
 - Prefer simple solutions
 - Do not introduce unnecessary complexity
+## 🚀 Future Roadmap — Project Financials
+
+### Invoicing
+- Generate invoices from completed job cards within a project
+- Aggregate labor, hardware, and services
+- Support invoice status:
+  - Draft
+  - Sent
+  - Paid
+  - Overdue
+
+### Expense Tracking
+- Track expenses against projects
+- Expense categories:
+  - Labor
+  - Travel
+  - Parts
+  - Fuel
+  - Lodging
+  - Misc
+- Associate expenses to specific projects
+- Enable basic project profit/loss visibility
+
+### Long-Term Goal
+- Full project financial dashboard:
+  - Revenue (invoices)
+  - Costs (expenses)
+  - Profit margin
