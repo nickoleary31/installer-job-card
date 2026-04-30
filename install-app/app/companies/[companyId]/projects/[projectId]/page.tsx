@@ -15,6 +15,18 @@ type ProjectContext = {
   location: string;
 };
 
+type ProjectContextRow = {
+  project_name: string | null;
+  customer_id: string | null;
+  customer_name: string | null;
+  location: string | null;
+};
+
+type CustomerContextRow = {
+  customer_name: string | null;
+  full_address: string | null;
+};
+
 export default function ProjectDashboardPage() {
   const params = useParams<{ companyId: string; projectId: string }>();
   const companyId = String(params.companyId || "");
@@ -44,18 +56,35 @@ export default function ProjectDashboardPage() {
           supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
           supabase
             .from("projects")
-            .select("project_name, customer_name, location")
+            .select("project_name, customer_id, customer_name, location")
             .eq("id", projectId)
             .eq("company_id", companyId)
-            .maybeSingle<{ project_name: string | null; customer_name: string | null; location: string | null }>(),
+            .maybeSingle<ProjectContextRow>(),
         ]);
         if (companyError || projectError || cancelled) return;
         if (!companyRow && !projectRow) return;
+
+        let customerName = projectRow?.customer_name?.trim() || "—";
+        let location = projectRow?.location?.trim() || "—";
+        if (projectRow?.customer_id) {
+          const { data: customerRow, error: customerError } = await supabase
+            .from("customers")
+            .select("customer_name, full_address")
+            .eq("id", projectRow.customer_id)
+            .maybeSingle<CustomerContextRow>();
+          if (!customerError && customerRow) {
+            const customerNameFromCustomer = customerRow.customer_name?.trim();
+            const locationFromCustomer = customerRow.full_address?.trim();
+            if (customerNameFromCustomer) customerName = customerNameFromCustomer;
+            if (locationFromCustomer) location = locationFromCustomer;
+          }
+        }
+
         setProjectContext({
           companyName: companyRow?.name?.trim() || "—",
           projectName: projectRow?.project_name?.trim() || "—",
-          customerName: projectRow?.customer_name?.trim() || "—",
-          location: projectRow?.location?.trim() || "—",
+          customerName,
+          location,
         });
       } catch {
         // keep fallback display values

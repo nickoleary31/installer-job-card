@@ -126,8 +126,14 @@ type DefaultContextIds = {
 };
 
 type ProjectAutofillRow = {
+  customer_id: string | null;
   customer_name: string | null;
   location: string | null;
+};
+
+type CustomerLookupRow = {
+  customer_name: string | null;
+  full_address: string | null;
 };
 
 type ProjectContextPayload = {
@@ -1178,6 +1184,8 @@ export function NewSubmissionForm() {
 
   const hardwareStatusSections = [...new Set(selectedSections)];
 
+  const vac4PhotoIssueKeys = useMemo(() => new Set(VAC_PHOTO_KEYS.map((key) => `photo-${key}`)), []);
+
   const collectReviewValidationIssues = (): string[] => {
     const issues: string[] = [];
     if (!coreJob.customer.trim()) issues.push("core-customer");
@@ -1250,6 +1258,71 @@ export function NewSubmissionForm() {
 
     return issues;
   };
+
+  const vac4SectionStatus: SectionStepStatus = useMemo(() => {
+    if (!selectedSections.includes("VAC4")) return "Not Started";
+
+    const vac4ValuesStarted = [
+      vac4VehicleType,
+      vac4OtherVehicleType,
+      vac4DriveType,
+      vac4VehicleVoltage,
+      vac4VehicleVoltageOther,
+      vac4ClientApproval,
+      vac4HourMeter,
+      sensorHubInstalled,
+      liftSenseInstalled,
+      operatorPresenceInstalled,
+      speedSenseInstalled,
+      loadSenseInstalled,
+      gpsInstalled,
+      externalIndicatorInstalled,
+      speedSenseDescription,
+      speedSensePulseCount,
+      loadSenseThresholds,
+      redWireDescription,
+      blackWireDescription,
+      blueWireDescription,
+      brownWireDescription,
+      purpleWireDescription,
+      relayAccessDescription,
+      impactSensorDescription,
+    ].some((value) => value.trim().length > 0);
+    const vac4PhotosStarted = Object.values(pc).some((count) => count > 0);
+    if (!vac4ValuesStarted && !vac4PhotosStarted) return "Not Started";
+
+    const issues = collectReviewValidationIssues();
+    const vac4Issues = issues.filter((key) => key.startsWith("vac4-") || vac4PhotoIssueKeys.has(key));
+    return vac4Issues.length === 0 ? "Complete" : "In Progress";
+  }, [
+    selectedSections,
+    vac4VehicleType,
+    vac4OtherVehicleType,
+    vac4DriveType,
+    vac4VehicleVoltage,
+    vac4VehicleVoltageOther,
+    vac4ClientApproval,
+    vac4HourMeter,
+    sensorHubInstalled,
+    liftSenseInstalled,
+    operatorPresenceInstalled,
+    speedSenseInstalled,
+    loadSenseInstalled,
+    gpsInstalled,
+    externalIndicatorInstalled,
+    speedSenseDescription,
+    speedSensePulseCount,
+    loadSenseThresholds,
+    redWireDescription,
+    blackWireDescription,
+    blueWireDescription,
+    brownWireDescription,
+    purpleWireDescription,
+    relayAccessDescription,
+    impactSensorDescription,
+    pc,
+    vac4PhotoIssueKeys,
+  ]);
 
   const setCoreField = (key: keyof CoreJobFields, value: string) => {
     const normalizedValue =
@@ -1905,13 +1978,26 @@ export function NewSubmissionForm() {
       try {
         const { data, error } = await supabase
           .from("projects")
-          .select("customer_name, location")
+          .select("customer_id, customer_name, location")
           .eq("id", selectedProjectId)
           .maybeSingle<ProjectAutofillRow>();
         if (error || cancelled || !data) return;
+        let projectCustomer = data.customer_name?.trim() || "";
+        let projectLocation = data.location?.trim() || "";
 
-        const projectCustomer = data.customer_name?.trim() || "";
-        const projectLocation = data.location?.trim() || "";
+        if (data.customer_id) {
+          const { data: customerRow, error: customerError } = await supabase
+            .from("customers")
+            .select("customer_name, full_address")
+            .eq("id", data.customer_id)
+            .maybeSingle<CustomerLookupRow>();
+          if (!customerError && customerRow) {
+            const customerNameFromCustomer = customerRow.customer_name?.trim() || "";
+            const locationFromCustomer = customerRow.full_address?.trim() || "";
+            if (customerNameFromCustomer) projectCustomer = customerNameFromCustomer;
+            if (locationFromCustomer) projectLocation = locationFromCustomer;
+          }
+        }
         if (!projectCustomer && !projectLocation) return;
 
         setCoreJob((prev) => {
@@ -2233,7 +2319,7 @@ export function NewSubmissionForm() {
               title={`${section} Section`}
               tone={section === "VAC4" ? "purple" : "green"}
               icon={section === "VAC4" ? IconGear : IconChip}
-              status="In Progress"
+              status={section === "VAC4" ? vac4SectionStatus : "In Progress"}
             />
           ))}
         </div>

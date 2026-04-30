@@ -62,6 +62,17 @@ function readDrafts(): StoredJobCardDraftListItem[] {
 export default function DraftsPage() {
   const router = useRouter();
   const [drafts, setDrafts] = useState<StoredJobCardDraftListItem[]>(() => readDrafts());
+  const goToProjectDashboard = () => {
+    if (typeof window !== "undefined") {
+      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      if (companyId && projectId) {
+        router.push(`/companies/${encodeURIComponent(companyId)}/projects/${encodeURIComponent(projectId)}`);
+        return;
+      }
+    }
+    router.push("/");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -154,12 +165,21 @@ export default function DraftsPage() {
           <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Installer Sheetz</h1>
           <p className="mt-1 text-sm text-gray-600">Digital Job Cards for Field Technicians</p>
-          <Link
-            href="/"
-            className="mt-3 inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
-          >
-            Back to Home Screen
-          </Link>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={goToProjectDashboard}
+              className="inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
+            >
+              Back
+            </button>
+            <Link
+              href="/"
+              className="inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
+            >
+              Back to Home Screen
+            </Link>
+          </div>
         </header>
 
         {sortedDrafts.length === 0 ? (
