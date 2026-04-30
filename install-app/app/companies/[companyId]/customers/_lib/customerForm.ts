@@ -69,6 +69,8 @@ export const toCustomerUpdatePayload = (form: CustomerFormState) => ({
   server_port_number: form.server_port_number.trim() || null,
   facility_code: form.facility_code.trim() || null,
   wifi_ssid: form.wifi_ssid.trim() || null,
+  // TODO(security): wifi_password is sensitive. Future phase should encrypt/decrypt
+  // or restrict read/write access by role and RLS policies.
   wifi_password: form.wifi_password.trim() || null,
   notes: form.notes.trim() || null,
 });

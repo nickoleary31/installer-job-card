@@ -5,9 +5,11 @@ import { CustomerFormState, digitsOnly, formatLicenseKey, formatPhoneNumber } fr
 type Props = {
   form: CustomerFormState;
   onChange: <K extends keyof CustomerFormState>(key: K, value: CustomerFormState[K]) => void;
+  showWifiPassword: boolean;
+  onToggleWifiPassword: () => void;
 };
 
-export default function CustomerEditorForm({ form, onChange }: Props) {
+export default function CustomerEditorForm({ form, onChange, showWifiPassword, onToggleWifiPassword }: Props) {
   return (
     <div className="space-y-3">
       <div>
@@ -104,13 +106,22 @@ export default function CustomerEditorForm({ form, onChange }: Props) {
       </div>
       <div>
         <label className="mb-1 block text-sm font-semibold text-gray-800">Wi-Fi password</label>
-        <input
-          type="password"
-          value={form.wifi_password}
-          onChange={(e) => onChange("wifi_password", e.target.value)}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
-          autoComplete="new-password"
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type={showWifiPassword ? "text" : "password"}
+            value={form.wifi_password}
+            onChange={(e) => onChange("wifi_password", e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+            autoComplete="new-password"
+          />
+          <button
+            type="button"
+            onClick={onToggleWifiPassword}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            {showWifiPassword ? "Hide" : "Show"}
+          </button>
+        </div>
       </div>
       <div>
         <label className="mb-1 block text-sm font-semibold text-gray-800">Notes</label>

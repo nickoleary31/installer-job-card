@@ -18,6 +18,7 @@ export default function CustomerDetailPage() {
   const customerId = String(params.customerId || "");
   const wasSaved = searchParams.get("saved") === "1";
   const [customer, setCustomer] = useState<CustomerRecord | null>(null);
+  const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -165,9 +166,22 @@ export default function CustomerDetailPage() {
               </div>
               <div>
                 <p className="mb-1 text-sm font-semibold text-gray-800">Wi-Fi password</p>
-                <p className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900">
-                  {displayCell(customer.wifi_password)}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900">
+                    {showWifiPassword
+                      ? displayCell(customer.wifi_password)
+                      : customer.wifi_password?.trim()
+                        ? "••••••••"
+                        : "—"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowWifiPassword((prev) => !prev)}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                  >
+                    {showWifiPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
               <div>
                 <p className="mb-1 text-sm font-semibold text-gray-800">Notes</p>

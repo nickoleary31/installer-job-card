@@ -19,6 +19,7 @@ export default function CustomerNewPage() {
   const [form, setForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showWifiPassword, setShowWifiPassword] = useState(false);
 
   const updateField = <K extends keyof CustomerFormState>(key: K, value: CustomerFormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -70,7 +71,12 @@ export default function CustomerNewPage() {
         </header>
 
         <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
-          <CustomerEditorForm form={form} onChange={updateField} />
+          <CustomerEditorForm
+            form={form}
+            onChange={updateField}
+            showWifiPassword={showWifiPassword}
+            onToggleWifiPassword={() => setShowWifiPassword((prev) => !prev)}
+          />
           {saveError ? <p className="mt-3 text-sm font-semibold text-red-700">{saveError}</p> : null}
           <div className="mt-5 flex justify-end">
             <button

@@ -24,6 +24,7 @@ export default function CustomerEditPage() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showWifiPassword, setShowWifiPassword] = useState(false);
 
   useEffect(() => {
     if (!companyId || !customerId) return;
@@ -114,7 +115,12 @@ export default function CustomerEditPage() {
           {loadError ? <p className="text-sm font-semibold text-red-700">{loadError}</p> : null}
           {!loading && !loadError ? (
             <>
-              <CustomerEditorForm form={form} onChange={updateField} />
+              <CustomerEditorForm
+                form={form}
+                onChange={updateField}
+                showWifiPassword={showWifiPassword}
+                onToggleWifiPassword={() => setShowWifiPassword((prev) => !prev)}
+              />
               {saveError ? <p className="mt-3 text-sm font-semibold text-red-700">{saveError}</p> : null}
               <div className="mt-5 flex justify-end">
                 <button
