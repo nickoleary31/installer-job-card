@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 type CompanyRow = {
@@ -10,6 +11,7 @@ type CompanyRow = {
 };
 
 export default function CompaniesPage() {
+  const { loading: authLoading, context } = useAuthUserContext();
   const [companies, setCompanies] = useState<CompanyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -39,6 +41,16 @@ export default function CompaniesPage() {
     };
   }, []);
 
+  const visibleCompanies = useMemo(() => {
+    // Safe fallback while auth context is still loading to avoid breaking app startup.
+    if (authLoading) return companies;
+    if (!context.userId) return [];
+    if (context.companyIds.length === 0) return [];
+
+    const allowed = new Set(context.companyIds);
+    return companies.filter((company) => allowed.has(company.id));
+  }, [authLoading, companies, context.companyIds, context.userId]);
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
@@ -56,12 +68,18 @@ export default function CompaniesPage() {
         ) : null}
 
         {!loading && !loadError ? (
-          companies.length === 0 ? (
-            <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">No companies found.</section>
+          visibleCompanies.length === 0 ? (
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
+              {!authLoading && !context.userId
+                ? "No companies available. Log in to view your assigned companies."
+                : !authLoading && context.userId && context.companyIds.length === 0
+                  ? "No companies assigned to your account yet."
+                  : "No companies found."}
+            </section>
           ) : (
             <section className="space-y-3">
               <h2 className="px-1 text-base font-bold tracking-tight text-gray-900">Select Company</h2>
-              {companies.map((company) => (
+              {visibleCompanies.map((company) => (
                 <Link
                   key={company.id}
                   href={`/companies/${encodeURIComponent(company.id)}/projects`}
