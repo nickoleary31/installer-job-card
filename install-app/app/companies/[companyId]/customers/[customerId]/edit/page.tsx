@@ -80,7 +80,7 @@ export default function CustomerEditPage() {
       const payload = toCustomerUpdatePayload(form);
       const { error } = await supabase.from("customers").update(payload).eq("id", customerId).eq("company_id", companyId);
       if (error) throw error;
-      router.push(`/companies/${encodeURIComponent(companyId)}/customers/${encodeURIComponent(customerId)}`);
+      router.push(`/companies/${encodeURIComponent(companyId)}/customers/${encodeURIComponent(customerId)}?saved=1`);
     } catch (e) {
       if (isDuplicateCustomerNameError(e)) {
         setSaveError("Customer already exists.");

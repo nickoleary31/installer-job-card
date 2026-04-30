@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { CustomerRecord } from "../_lib/customerForm";
@@ -13,8 +13,10 @@ const displayCell = (value: string | null) => {
 
 export default function CustomerDetailPage() {
   const params = useParams<{ companyId: string; customerId: string }>();
+  const searchParams = useSearchParams();
   const companyId = String(params.companyId || "");
   const customerId = String(params.customerId || "");
+  const wasSaved = searchParams.get("saved") === "1";
   const [customer, setCustomer] = useState<CustomerRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,8 +80,22 @@ export default function CustomerDetailPage() {
                 Edit
               </Link>
             ) : null}
+            {!loadError ? (
+              <Link
+                href={`/companies/${encodeURIComponent(companyId)}/customers/${encodeURIComponent(customerId)}/projects`}
+                className="inline-flex rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+              >
+                Associated Projects
+              </Link>
+            ) : null}
           </div>
         </header>
+
+        {wasSaved ? (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">
+            Customer saved.
+          </section>
+        ) : null}
 
         <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
           {loading ? <p className="text-sm text-gray-600">Loading customer...</p> : null}

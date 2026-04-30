@@ -40,7 +40,7 @@ export default function CustomerNewPage() {
       };
       const { error } = await supabase.from("customers").insert(payload);
       if (error) throw error;
-      router.push(`/companies/${encodeURIComponent(companyId)}/customers`);
+      router.push(`/companies/${encodeURIComponent(companyId)}/customers?created=1`);
     } catch (e) {
       if (isDuplicateCustomerNameError(e)) {
         setSaveError("Customer already exists.");

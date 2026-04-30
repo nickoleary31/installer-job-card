@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 
@@ -26,7 +26,9 @@ function displayCell(value: string | null) {
 
 export default function CompanyCustomersPage() {
   const params = useParams<{ companyId: string }>();
+  const searchParams = useSearchParams();
   const companyId = String(params.companyId || "");
+  const wasCreated = searchParams.get("created") === "1";
   const [companyName, setCompanyName] = useState("—");
   const [customers, setCustomers] = useState<CustomerListRow[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -124,6 +126,12 @@ export default function CompanyCustomersPage() {
           </div>
         </header>
 
+        {wasCreated ? (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">
+            Customer saved.
+          </section>
+        ) : null}
+
         <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
           <label className="mb-2 block text-sm font-semibold text-gray-800" htmlFor="customer-search">
             Search by customer or site
@@ -151,7 +159,9 @@ export default function CompanyCustomersPage() {
         {!loading && !loadError ? (
           filteredCustomers.length === 0 ? (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
-              {customers.length === 0 ? "No customers found for this company." : "No customers match your search."}
+              {customers.length === 0
+                ? "No customers/sites yet. Add one or create one while adding a project."
+                : "No customers match your search."}
             </section>
           ) : (
             <div className="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
