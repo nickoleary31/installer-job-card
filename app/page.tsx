@@ -208,6 +208,68 @@ const hardwareTypes = [
   "FTxw",
 ];
 
+/** PPD local-only photo slots (no Supabase upload in this phase). */
+const PPD_PHOTO_KEYS = [
+  "monitorInstalled",
+  "cameraHubMounting",
+  "wirePath",
+  "redBattery",
+  "blackBattery",
+  "yellowIgnition",
+  "greyMotion",
+  "blueDirection",
+  "powerConverter",
+  "redAlarmOut",
+  "yellowAlarmOut",
+  "blackAlarmGround",
+] as const;
+type PpdPhotoKey = (typeof PPD_PHOTO_KEYS)[number];
+
+function emptyPpdPhotoFiles(): Record<PpdPhotoKey, File[]> {
+  const out = {} as Record<PpdPhotoKey, File[]>;
+  for (const k of PPD_PHOTO_KEYS) out[k] = [];
+  return out;
+}
+
+function emptyPpdPhotoErrors(): Record<PpdPhotoKey, string | null> {
+  const out = {} as Record<PpdPhotoKey, string | null>;
+  for (const k of PPD_PHOTO_KEYS) out[k] = null;
+  return out;
+}
+
+function parseVehicleVoltageVolts(driveType: string, voltageSelect: string, voltageOther: string): number | null {
+  if (driveType !== "Electric") return null;
+  if (!voltageSelect.trim()) return null;
+  if (voltageSelect === "Other") {
+    const cleaned = voltageOther.replace(/,/g, ".").replace(/[^0-9.]/gi, "").trim();
+    const n = parseFloat(cleaned);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const n = parseFloat(voltageSelect);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function hardwareSectionTriggersPpdAlarmOut(sectionLabel: string): boolean {
+  const label = sectionLabel.trim().toLowerCase();
+  if (!label) return false;
+  if (label.includes("vac4")) return true;
+  if (label.includes("speed")) return true;
+  if (label.includes("transmon")) return true;
+  if (label.includes("ssc")) return true;
+  return false;
+}
+
+/** PPD "relays for speed control" — only when Speed-family hardware is checked as *additional*, not primary-only. */
+function isSpeedControlAdditionalHardwareLabel(sectionLabel: string): boolean {
+  const t = sectionLabel.trim();
+  if (!t || t === "VAC4") return false;
+  const lower = t.toLowerCase();
+  if (lower.includes("speed")) return true;
+  if (lower.includes("transmon")) return true;
+  if (lower.includes("ssc")) return true;
+  return false;
+}
+
 const emptyVacPhotoFileNames = (): VacPhotoFileNames => ({
   vacMounting: [],
   wirePath: [],
@@ -800,6 +862,25 @@ export function NewSubmissionForm() {
   const [purpleWireDescription, setPurpleWireDescription] = useState("");
   const [relayAccessDescription, setRelayAccessDescription] = useState("");
   const [impactSensorDescription, setImpactSensorDescription] = useState("");
+  const [ppdHubSerial, setPpdHubSerial] = useState("");
+  const [ppdCameraSerials, setPpdCameraSerials] = useState("");
+  const [ppdMonitorInstalled, setPpdMonitorInstalled] = useState("");
+  const [ppdCustomBracketsNeeded, setPpdCustomBracketsNeeded] = useState("");
+  const [ppdCustomBracketNotes, setPpdCustomBracketNotes] = useState("");
+  const [ppdClientApproval, setPpdClientApproval] = useState("");
+  const [ppdJsonFileName, setPpdJsonFileName] = useState("");
+  const [ppdRelaysUsedForSpeedControl, setPpdRelaysUsedForSpeedControl] = useState("");
+  const [ppdRedWireDescription, setPpdRedWireDescription] = useState("");
+  const [ppdBlackWireDescription, setPpdBlackWireDescription] = useState("");
+  const [ppdYellowWireDescription, setPpdYellowWireDescription] = useState("");
+  const [ppdGreyWireDescription, setPpdGreyWireDescription] = useState("");
+  const [ppdBlueWireDescription, setPpdBlueWireDescription] = useState("");
+  const [ppdPowerConverterDescription, setPpdPowerConverterDescription] = useState("");
+  const [ppdRedAlarmOutDescription, setPpdRedAlarmOutDescription] = useState("");
+  const [ppdYellowAlarmOutDescription, setPpdYellowAlarmOutDescription] = useState("");
+  const [ppdBlackAlarmGroundDescription, setPpdBlackAlarmGroundDescription] = useState("");
+  const [ppdPhotoFiles, setPpdPhotoFiles] = useState<Record<PpdPhotoKey, File[]>>(() => emptyPpdPhotoFiles());
+  const [ppdPhotoErrors, setPpdPhotoErrors] = useState<Record<PpdPhotoKey, string | null>>(() => emptyPpdPhotoErrors());
   const [vacPhotoFiles, setVacPhotoFiles] = useState<VacPhotoFilesState>(() => emptyVacPhotoFiles());
   const [vacPhotoUrls, setVacPhotoUrls] = useState<VacPhotoUrlsState>(() => emptyVacPhotoUrls());
   const [photoMetadataByField, setPhotoMetadataByField] = useState<PhotoMetadataByFieldState>(() =>
@@ -882,6 +963,33 @@ export function NewSubmissionForm() {
     }
   };
   const selectedSections = [primary, ...additional].filter(Boolean);
+
+  const ppdVehicleVolts = useMemo(
+    () => parseVehicleVoltageVolts(vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther),
+    [vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther],
+  );
+  const ppdShowPowerConverterMounting = ppdVehicleVolts !== null && ppdVehicleVolts > 36;
+  const ppdShowAlarmOutConnections = useMemo(
+    () => selectedSections.some((s) => hardwareSectionTriggersPpdAlarmOut(s)),
+    [selectedSections],
+  );
+  const ppdShowRelaysSpeedControlQuestion = useMemo(
+    () => additional.some((s) => isSpeedControlAdditionalHardwareLabel(s)),
+    [additional],
+  );
+  const ppdShowBlackAlarmGround = ppdShowRelaysSpeedControlQuestion && ppdRelaysUsedForSpeedControl === "Yes";
+
+  const ppdPc = useMemo(() => {
+    const out = {} as Record<PpdPhotoKey, number>;
+    for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].length;
+    return out;
+  }, [ppdPhotoFiles]);
+
+  const ppdPhotoFileNames = useMemo(() => {
+    const out = {} as Record<PpdPhotoKey, string[]>;
+    for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].map((f) => f.name);
+    return out;
+  }, [ppdPhotoFiles]);
 
   const vacPhotoFileNames = useMemo((): VacPhotoFileNames => {
     const out = emptyVacPhotoFileNames();
@@ -1202,58 +1310,106 @@ export function NewSubmissionForm() {
     if (!primary) issues.push("hw-primary");
     if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
 
-    if (!selectedSections.includes("VAC4")) return issues;
+    if (selectedSections.includes("VAC4")) {
+      const isElectricDrive = vac4DriveType === "Electric";
+      const isInternalCombustionDrive = vac4DriveType === "Internal Combustion";
+      const isBlueWireRequired = true;
+      const isBrownWireRequired = isInternalCombustionDrive || (isElectricDrive && liftSenseInstalled === "Yes");
 
-    const isElectricDrive = vac4DriveType === "Electric";
-    const isInternalCombustionDrive = vac4DriveType === "Internal Combustion";
-    const isBlueWireRequired = true;
-    const isBrownWireRequired = isInternalCombustionDrive || (isElectricDrive && liftSenseInstalled === "Yes");
-
-    if (!vac4VehicleType) issues.push("vac4-vehicleType");
-    if (vac4VehicleType === "Other" && !vac4OtherVehicleType.trim()) issues.push("vac4-otherVehicleType");
-    if (!vac4DriveType) issues.push("vac4-driveType");
-    if (isElectricDrive) {
-      if (!vac4VehicleVoltage.trim()) issues.push("vac4-vehicleVoltage");
-      if (vac4VehicleVoltage === "Other" && !vac4VehicleVoltageOther.trim()) issues.push("vac4-vehicleVoltageOther");
-    }
-    if (!vac4ClientApproval.trim()) issues.push("vac4-clientApproval");
-    if (!vac4HourMeter.trim()) issues.push("vac4-hourMeter");
-    if (!sensorHubInstalled.trim()) issues.push("vac4-sensorHubInstalled");
-    if (isElectricDrive && !liftSenseInstalled) issues.push("vac4-liftSense");
-    if (!operatorPresenceInstalled) issues.push("vac4-operatorPresence");
-
-    if (sensorHubInstalled === "Yes") {
-      if (pc.sensorHubMounting < 1) issues.push("photo-sensorHubMounting");
-      if (speedSenseInstalled === "Yes") {
-        if (pc.speedSense < 1) issues.push("photo-speedSense");
-        if (!speedSenseDescription.trim()) issues.push("vac4-speedSenseDescription");
-        if (!speedSensePulseCount.trim()) issues.push("vac4-speedSensePulseCount");
+      if (!vac4VehicleType) issues.push("vac4-vehicleType");
+      if (vac4VehicleType === "Other" && !vac4OtherVehicleType.trim()) issues.push("vac4-otherVehicleType");
+      if (!vac4DriveType) issues.push("vac4-driveType");
+      if (isElectricDrive) {
+        if (!vac4VehicleVoltage.trim()) issues.push("vac4-vehicleVoltage");
+        if (vac4VehicleVoltage === "Other" && !vac4VehicleVoltageOther.trim()) issues.push("vac4-vehicleVoltageOther");
       }
-      if (loadSenseInstalled === "Yes") {
-        if (pc.loadSense < 1) issues.push("photo-loadSense");
-        if (!loadSenseThresholds.trim()) issues.push("vac4-loadSenseThresholds");
+      if (!vac4ClientApproval.trim()) issues.push("vac4-clientApproval");
+      if (!vac4HourMeter.trim()) issues.push("vac4-hourMeter");
+      if (!sensorHubInstalled.trim()) issues.push("vac4-sensorHubInstalled");
+      if (isElectricDrive && !liftSenseInstalled) issues.push("vac4-liftSense");
+      if (!operatorPresenceInstalled) issues.push("vac4-operatorPresence");
+
+      if (sensorHubInstalled === "Yes") {
+        if (pc.sensorHubMounting < 1) issues.push("photo-sensorHubMounting");
+        if (speedSenseInstalled === "Yes") {
+          if (pc.speedSense < 1) issues.push("photo-speedSense");
+          if (!speedSenseDescription.trim()) issues.push("vac4-speedSenseDescription");
+          if (!speedSensePulseCount.trim()) issues.push("vac4-speedSensePulseCount");
+        }
+        if (loadSenseInstalled === "Yes") {
+          if (pc.loadSense < 1) issues.push("photo-loadSense");
+          if (!loadSenseThresholds.trim()) issues.push("vac4-loadSenseThresholds");
+        }
+        if (gpsInstalled === "Yes" && pc.gps < 1) issues.push("photo-gps");
+        if (externalIndicatorInstalled === "Yes" && pc.externalIndicator < 1) issues.push("photo-externalIndicator");
       }
-      if (gpsInstalled === "Yes" && pc.gps < 1) issues.push("photo-gps");
-      if (externalIndicatorInstalled === "Yes" && pc.externalIndicator < 1) issues.push("photo-externalIndicator");
+
+      if (pc.vacMounting < 1) issues.push("photo-vacMounting");
+      if (pc.wirePath < 1) issues.push("photo-wirePath");
+      if (pc.redWire < 1) issues.push("photo-redWire");
+      if (!redWireDescription.trim()) issues.push("vac4-redWireDescription");
+      if (pc.blackWire < 1) issues.push("photo-blackWire");
+      if (!blackWireDescription.trim()) issues.push("vac4-blackWireDescription");
+      if (isBlueWireRequired) {
+        if (pc.blueWire < 1) issues.push("photo-blueWire");
+        if (!blueWireDescription.trim()) issues.push("vac4-blueWireDescription");
+      }
+      if (operatorPresenceInstalled === "Yes") {
+        if (pc.purpleWire < 1) issues.push("photo-purpleWire");
+        if (!purpleWireDescription.trim()) issues.push("vac4-purpleWireDescription");
+      }
+      if (isBrownWireRequired) {
+        if (pc.brownWire < 1) issues.push("photo-brownWire");
+        if (!brownWireDescription.trim()) issues.push("vac4-brownWireDescription");
+      }
     }
 
-    if (pc.vacMounting < 1) issues.push("photo-vacMounting");
-    if (pc.wirePath < 1) issues.push("photo-wirePath");
-    if (pc.redWire < 1) issues.push("photo-redWire");
-    if (!redWireDescription.trim()) issues.push("vac4-redWireDescription");
-    if (pc.blackWire < 1) issues.push("photo-blackWire");
-    if (!blackWireDescription.trim()) issues.push("vac4-blackWireDescription");
-    if (isBlueWireRequired) {
-      if (pc.blueWire < 1) issues.push("photo-blueWire");
-      if (!blueWireDescription.trim()) issues.push("vac4-blueWireDescription");
-    }
-    if (operatorPresenceInstalled === "Yes") {
-      if (pc.purpleWire < 1) issues.push("photo-purpleWire");
-      if (!purpleWireDescription.trim()) issues.push("vac4-purpleWireDescription");
-    }
-    if (isBrownWireRequired) {
-      if (pc.brownWire < 1) issues.push("photo-brownWire");
-      if (!brownWireDescription.trim()) issues.push("vac4-brownWireDescription");
+    if (selectedSections.includes("PPD")) {
+      if (!ppdHubSerial.trim()) issues.push("ppd-hubSerial");
+      if (!ppdCameraSerials.trim()) issues.push("ppd-cameraSerials");
+      if (!ppdClientApproval.trim()) issues.push("ppd-clientApproval");
+      if (!ppdJsonFileName.trim()) issues.push("ppd-jsonFileName");
+      if (ppdMonitorInstalled !== "Yes" && ppdMonitorInstalled !== "No") issues.push("ppd-monitorInstalled");
+      if (ppdCustomBracketsNeeded !== "Yes" && ppdCustomBracketsNeeded !== "No") issues.push("ppd-customBracketsNeeded");
+      if (ppdCustomBracketsNeeded === "Yes" && !ppdCustomBracketNotes.trim()) issues.push("ppd-customBracketNotes");
+      if (ppdShowRelaysSpeedControlQuestion) {
+        if (ppdRelaysUsedForSpeedControl !== "Yes" && ppdRelaysUsedForSpeedControl !== "No") {
+          issues.push("ppd-relaysSpeedControl");
+        }
+      }
+
+      if (ppdMonitorInstalled === "Yes" && ppdPc.monitorInstalled < 1) {
+        issues.push("photo-ppd-monitorInstalled");
+      }
+
+      if (ppdPc.cameraHubMounting < 1) issues.push("photo-ppd-cameraHubMounting");
+      if (ppdPc.wirePath < 1) issues.push("photo-ppd-wirePath");
+
+      if (ppdPc.redBattery < 1) issues.push("photo-ppd-redBattery");
+      if (!ppdRedWireDescription.trim()) issues.push("ppd-redWireDescription");
+      if (ppdPc.blackBattery < 1) issues.push("photo-ppd-blackBattery");
+      if (!ppdBlackWireDescription.trim()) issues.push("ppd-blackWireDescription");
+      if (ppdPc.yellowIgnition < 1) issues.push("photo-ppd-yellowIgnition");
+      if (!ppdYellowWireDescription.trim()) issues.push("ppd-yellowWireDescription");
+      if (ppdPc.greyMotion < 1) issues.push("photo-ppd-greyMotion");
+      if (!ppdGreyWireDescription.trim()) issues.push("ppd-greyWireDescription");
+      if (ppdPc.blueDirection < 1) issues.push("photo-ppd-blueDirection");
+      if (!ppdBlueWireDescription.trim()) issues.push("ppd-blueWireDescription");
+
+      if (ppdShowPowerConverterMounting) {
+        if (ppdPc.powerConverter < 1) issues.push("photo-ppd-powerConverter");
+        if (!ppdPowerConverterDescription.trim()) issues.push("ppd-powerConverterDescription");
+      }
+      if (ppdShowAlarmOutConnections) {
+        if (ppdPc.redAlarmOut < 1) issues.push("photo-ppd-redAlarmOut");
+        if (!ppdRedAlarmOutDescription.trim()) issues.push("ppd-redAlarmOutDescription");
+        if (ppdPc.yellowAlarmOut < 1) issues.push("photo-ppd-yellowAlarmOut");
+        if (!ppdYellowAlarmOutDescription.trim()) issues.push("ppd-yellowAlarmOutDescription");
+      }
+      if (ppdShowBlackAlarmGround) {
+        if (ppdPc.blackAlarmGround < 1) issues.push("photo-ppd-blackAlarmGround");
+        if (!ppdBlackAlarmGroundDescription.trim()) issues.push("ppd-blackAlarmGroundDescription");
+      }
     }
 
     return issues;
@@ -1674,6 +1830,83 @@ export function NewSubmissionForm() {
     }
     setVehiclePictureErrors((er) => ({ ...er, [key]: null }));
     clearFieldHighlight(`photo-${key}`);
+  };
+
+  const ppdPhotoIssueKey = (key: PpdPhotoKey) => `photo-ppd-${key}`;
+
+  const removePpdLocalPhoto = (key: PpdPhotoKey, targetFile: File) => {
+    const targetKey = localFileDedupeKey(targetFile);
+    const photoKey = ppdPhotoIssueKey(key);
+    setPpdPhotoFiles((p) => {
+      const nextList = p[key].filter((f) => localFileDedupeKey(f) !== targetKey);
+      queueMicrotask(() => {
+        if (nextList.length < 1) {
+          setReviewHighlights((prev) => {
+            const next = new Set(prev);
+            next.add(photoKey);
+            return next;
+          });
+        } else {
+          setReviewHighlights((prev) => {
+            if (!prev.has(photoKey)) return prev;
+            const next = new Set(prev);
+            next.delete(photoKey);
+            if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+            return next;
+          });
+        }
+      });
+      return { ...p, [key]: nextList };
+    });
+  };
+
+  const applyPpdPhotoUpload = (key: PpdPhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType && picked.length > 0) {
+      setPpdPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setPpdPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    const photoKey = ppdPhotoIssueKey(key);
+
+    if (picked.length === 0) {
+      setPpdPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      return;
+    }
+
+    if (mode === "single") {
+      setPpdPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+      setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      return;
+    }
+
+    const currentCount = ppdPhotoFiles[key].length;
+    if (currentCount + picked.length > MAX_PHOTOS_PER_FIELD) {
+      setPpdPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
+      return;
+    }
+
+    setPpdPhotoFiles((p) => ({ ...p, [key]: [...p[key], ...picked] }));
+    setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
+    clearFieldHighlight(photoKey);
   };
 
   const handleReviewClick = () => {
@@ -3600,38 +3833,752 @@ export function NewSubmissionForm() {
         {hasAnsweredAdditionalHardwareQuestion &&
           selectedSections
             .filter((section) => section !== "VAC4")
-            .map((section) => (
-              <section key={section} className={cardClassName}>
-                <FormSectionHeader title={`${section} Section`} tone="green" />
-
-                <div className="space-y-5">
-                  <div>
-                    <label className={labelClassName}>Drive Type</label>
-                    <select className={selectClassName}>
-                      <option>Drive Type</option>
-                      <option>Electric</option>
-                      <option>Internal Combustion</option>
-                      <option>Other</option>
-                    </select>
+            .map((section) =>
+              section === "PPD" ? (
+                <section key={section} className={cardClassName}>
+                  <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
+                  <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
+                    <p className="font-semibold">Uses Vehicle Information from this card</p>
+                    <p className="mt-1 text-emerald-900/90 dark:text-emerald-200/90">
+                      Drive type: <span className="font-medium">{vac4DriveType.trim() || "—"}</span>
+                      {vac4DriveType === "Electric" ? (
+                        <>
+                          {" "}
+                          · Voltage:{" "}
+                          <span className="font-medium">
+                            {vac4VehicleVoltage === "Other"
+                              ? vac4VehicleVoltageOther.trim() || "Other (not specified)"
+                              : vac4VehicleVoltage.trim() || "—"}
+                          </span>
+                          {ppdVehicleVolts !== null ? (
+                            <span className="block pt-1 text-xs font-normal text-emerald-800 dark:text-emerald-300">
+                              Parsed for PPD conditionals: {ppdVehicleVolts} V
+                              {ppdShowPowerConverterMounting ? " · Power converter section required (>36 V)." : ""}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </p>
+                    {ppdShowAlarmOutConnections ? (
+                      <p className="mt-2 text-xs font-medium text-emerald-900 dark:text-emerald-200">
+                        Alarm-out photo fields are shown because VAC4 and/or Speed-family hardware is on this job card.
+                      </p>
+                    ) : null}
                   </div>
 
-                  <div>
-                    <label className={labelClassName}>Notes / Details</label>
-                    <input className={inputClassName} placeholder="exp: Customer requested wire loom" />
-                  </div>
+                  <div className="space-y-8">
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <div id="field-ppd-hubSerial" className="sm:col-span-1">
+                        <label className={fieldLabelClass("ppd-hubSerial")}>
+                          Hub serial number
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("ppd-hubSerial")}
+                          value={ppdHubSerial}
+                          placeholder="Scan or type serial"
+                          onChange={(e) => {
+                            setPpdHubSerial(e.target.value);
+                            clearFieldHighlight("ppd-hubSerial");
+                          }}
+                        />
+                        {requiredHint("ppd-hubSerial")}
+                      </div>
+                      <div id="field-ppd-cameraSerials" className="sm:col-span-1">
+                        <label className={fieldLabelClass("ppd-cameraSerials")}>
+                          Camera serial number(s)
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("ppd-cameraSerials")}
+                          value={ppdCameraSerials}
+                          placeholder="One serial, or comma-separated / one per line"
+                          onChange={(e) => {
+                            setPpdCameraSerials(e.target.value);
+                            clearFieldHighlight("ppd-cameraSerials");
+                          }}
+                        />
+                        {requiredHint("ppd-cameraSerials")}
+                      </div>
+                    </div>
 
-                  <div>
-                    <label className={labelClassName}>Attachments</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      className="min-h-[52px] w-full rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-base file:mr-4 file:rounded-xl file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
-                    />
+                    <div id="field-ppd-clientApproval" className="space-y-2">
+                      <label className={fieldLabelClass("ppd-clientApproval")}>
+                        Client representative approval details
+                        <RequiredMark />
+                      </label>
+                      <textarea
+                        className={`${fieldInputClass("ppd-clientApproval")} min-h-[100px] resize-y py-3`}
+                        value={ppdClientApproval}
+                        onChange={(e) => {
+                          setPpdClientApproval(e.target.value);
+                          clearFieldHighlight("ppd-clientApproval");
+                        }}
+                      />
+                      {requiredHint("ppd-clientApproval")}
+                    </div>
+
+                    <div id="field-ppd-jsonFileName">
+                      <label className={fieldLabelClass("ppd-jsonFileName")}>
+                        Name of JSON file sent to PM
+                        <RequiredMark />
+                      </label>
+                      <input
+                        className={fieldInputClass("ppd-jsonFileName")}
+                        value={ppdJsonFileName}
+                        onChange={(e) => {
+                          setPpdJsonFileName(e.target.value);
+                          clearFieldHighlight("ppd-jsonFileName");
+                        }}
+                      />
+                      {requiredHint("ppd-jsonFileName")}
+                    </div>
+
+                    <div id="field-ppd-customBracketsNeeded">
+                      <label className={fieldLabelClass("ppd-customBracketsNeeded")}>
+                        Were modifications or custom brackets needed for cameras and/or hub?
+                        <RequiredMark />
+                      </label>
+                      <select
+                        className={fieldSelectClass("ppd-customBracketsNeeded")}
+                        value={ppdCustomBracketsNeeded}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setPpdCustomBracketsNeeded(v);
+                          clearFieldHighlight("ppd-customBracketsNeeded");
+                          if (v !== "Yes") {
+                            setPpdCustomBracketNotes("");
+                            clearFieldHighlight("ppd-customBracketNotes");
+                          }
+                        }}
+                      >
+                        <option value="">Select</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                      {requiredHint("ppd-customBracketsNeeded")}
+                    </div>
+
+                    {ppdCustomBracketsNeeded === "Yes" ? (
+                      <div id="field-ppd-customBracketNotes">
+                        <label className={fieldLabelClass("ppd-customBracketNotes")}>
+                          Notes about modifications or custom brackets
+                          <RequiredMark />
+                        </label>
+                        <textarea
+                          className={`${fieldInputClass("ppd-customBracketNotes")} min-h-[88px] resize-y py-3`}
+                          value={ppdCustomBracketNotes}
+                          onChange={(e) => {
+                            setPpdCustomBracketNotes(e.target.value);
+                            clearFieldHighlight("ppd-customBracketNotes");
+                          }}
+                        />
+                        {requiredHint("ppd-customBracketNotes")}
+                      </div>
+                    ) : null}
+
+                    <div id="field-ppd-monitorInstalled">
+                      <label className={fieldLabelClass("ppd-monitorInstalled")}>
+                        Is monitor installed?
+                        <RequiredMark />
+                      </label>
+                      <select
+                        className={fieldSelectClass("ppd-monitorInstalled")}
+                        value={ppdMonitorInstalled}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setPpdMonitorInstalled(v);
+                          clearFieldHighlight("ppd-monitorInstalled");
+                          if (v !== "Yes") {
+                            setPpdPhotoFiles((p) => ({ ...p, monitorInstalled: [] }));
+                            setPpdPhotoErrors((er) => ({ ...er, monitorInstalled: null }));
+                            clearFieldHighlight(ppdPhotoIssueKey("monitorInstalled"));
+                          }
+                        }}
+                      >
+                        <option value="">Select</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                      {requiredHint("ppd-monitorInstalled")}
+                    </div>
+
+                    {ppdMonitorInstalled === "Yes" ? (
+                      <div id={`field-${ppdPhotoIssueKey("monitorInstalled")}`} className="space-y-2">
+                        <label className={fieldLabelClass(ppdPhotoIssueKey("monitorInstalled"))}>
+                          Monitor installation photo
+                          <RequiredMark />
+                        </label>
+                        <input
+                          id="ppd-photo-monitorInstalled"
+                          type="file"
+                          className="hidden"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={(e) => applyPpdPhotoUpload("monitorInstalled", e, "single")}
+                        />
+                        <label
+                          htmlFor="ppd-photo-monitorInstalled"
+                          className={photoPickClass(ppdPhotoIssueKey("monitorInstalled"), true, ppdPc.monitorInstalled >= 1)}
+                        >
+                          Take / upload photo
+                        </label>
+                        <PhotoUploadFeedback count={ppdPc.monitorInstalled} names={ppdPhotoFileNames.monitorInstalled} />
+                        <PhotoThumbnailGrid
+                          files={ppdPhotoFiles.monitorInstalled}
+                          onRemoveLocal={(file) => removePpdLocalPhoto("monitorInstalled", file)}
+                        />
+                        <PhotoUploadedBadge show={ppdPc.monitorInstalled >= 1} />
+                        <PhotoFieldError message={ppdPhotoErrors.monitorInstalled} />
+                        {requiredHint(ppdPhotoIssueKey("monitorInstalled"))}
+                      </div>
+                    ) : null}
+
+                    {ppdShowRelaysSpeedControlQuestion ? (
+                      <div id="field-ppd-relaysSpeedControl">
+                        <label className={fieldLabelClass("ppd-relaysSpeedControl")}>
+                          Are relays being used for speed control?
+                          <RequiredMark />
+                        </label>
+                        <select
+                          className={fieldSelectClass("ppd-relaysSpeedControl")}
+                          value={ppdRelaysUsedForSpeedControl}
+                          onChange={(e) => {
+                            setPpdRelaysUsedForSpeedControl(e.target.value);
+                            clearFieldHighlight("ppd-relaysSpeedControl");
+                          }}
+                        >
+                          <option value="">Select</option>
+                          <option value="Yes">Yes</option>
+                          <option value="No">No</option>
+                        </select>
+                        {requiredHint("ppd-relaysSpeedControl")}
+                        {ppdShowBlackAlarmGround ? (
+                          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                            Black wire alarm out ground photos are required when relays are used.
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {/* PPD photos — local files only (no cloud upload this phase) */}
+                    <div className="space-y-6 border-t border-gray-100 pt-6 dark:border-gray-700">
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">PPD photos</h3>
+
+                      <div id={`field-${ppdPhotoIssueKey("cameraHubMounting")}`}>
+                        <label className={fieldLabelClass(ppdPhotoIssueKey("cameraHubMounting"))}>
+                          Camera and hub mounting locations
+                          <RequiredMark />
+                        </label>
+                        <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                          Include safety cable installation on camera mounts where applicable.
+                        </p>
+                        <input
+                          id="ppd-photo-cameraHubMounting"
+                          type="file"
+                          className="hidden"
+                          accept="image/*"
+                          capture="environment"
+                          multiple
+                          onChange={(e) => applyPpdPhotoUpload("cameraHubMounting", e, "multi")}
+                        />
+                        <label
+                          htmlFor="ppd-photo-cameraHubMounting"
+                          className={photoPickClass(ppdPhotoIssueKey("cameraHubMounting"), true, ppdPc.cameraHubMounting >= 1)}
+                        >
+                          Take / upload photo(s)
+                        </label>
+                        <PhotoUploadFeedback count={ppdPc.cameraHubMounting} names={ppdPhotoFileNames.cameraHubMounting} />
+                        <PhotoThumbnailGrid
+                          files={ppdPhotoFiles.cameraHubMounting}
+                          onRemoveLocal={(file) => removePpdLocalPhoto("cameraHubMounting", file)}
+                        />
+                        <PhotoUploadedBadge show={ppdPc.cameraHubMounting >= 1} />
+                        <PhotoFieldError message={ppdPhotoErrors.cameraHubMounting} />
+                        {requiredHint(ppdPhotoIssueKey("cameraHubMounting"))}
+                      </div>
+
+                      <div id={`field-${ppdPhotoIssueKey("wirePath")}`}>
+                        <label className={fieldLabelClass(ppdPhotoIssueKey("wirePath"))}>
+                          Wire path
+                          <RequiredMark />
+                        </label>
+                        <input
+                          id="ppd-photo-wirePath"
+                          type="file"
+                          className="hidden"
+                          accept="image/*"
+                          capture="environment"
+                          multiple
+                          onChange={(e) => applyPpdPhotoUpload("wirePath", e, "multi")}
+                        />
+                        <label
+                          htmlFor="ppd-photo-wirePath"
+                          className={photoPickClass(ppdPhotoIssueKey("wirePath"), true, ppdPc.wirePath >= 1)}
+                        >
+                          Take / upload photo(s)
+                        </label>
+                        <PhotoUploadFeedback count={ppdPc.wirePath} names={ppdPhotoFileNames.wirePath} />
+                        <PhotoThumbnailGrid
+                          files={ppdPhotoFiles.wirePath}
+                          onRemoveLocal={(file) => removePpdLocalPhoto("wirePath", file)}
+                        />
+                        <PhotoUploadedBadge show={ppdPc.wirePath >= 1} />
+                        <PhotoFieldError message={ppdPhotoErrors.wirePath} />
+                        {requiredHint(ppdPhotoIssueKey("wirePath"))}
+                      </div>
+
+                      <div className="rounded-2xl border border-gray-100 bg-gray-50/50 p-4 dark:border-gray-700 dark:bg-gray-900/40 sm:p-5">
+                        <h4 className="mb-4 text-base font-bold text-gray-900 dark:text-gray-100">Wire connections</h4>
+                        <div className="space-y-6">
+                          <div id={`field-${ppdPhotoIssueKey("redBattery")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("redBattery"))}>
+                              Red wire — battery positive (+) connection
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-redBattery"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("redBattery", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-redBattery"
+                              className={photoPickClass(ppdPhotoIssueKey("redBattery"), true, ppdPc.redBattery >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.redBattery} names={ppdPhotoFileNames.redBattery} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.redBattery}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("redBattery", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.redBattery >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.redBattery} />
+                            {requiredHint(ppdPhotoIssueKey("redBattery"))}
+                            <div id="field-ppd-redWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-redWireDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-redWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdRedWireDescription}
+                                onChange={(e) => {
+                                  setPpdRedWireDescription(e.target.value);
+                                  clearFieldHighlight("ppd-redWireDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-redWireDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${ppdPhotoIssueKey("blackBattery")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("blackBattery"))}>
+                              Black wire — battery negative (−) connection
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-blackBattery"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("blackBattery", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-blackBattery"
+                              className={photoPickClass(ppdPhotoIssueKey("blackBattery"), true, ppdPc.blackBattery >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.blackBattery} names={ppdPhotoFileNames.blackBattery} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.blackBattery}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("blackBattery", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.blackBattery >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.blackBattery} />
+                            {requiredHint(ppdPhotoIssueKey("blackBattery"))}
+                            <div id="field-ppd-blackWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-blackWireDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-blackWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdBlackWireDescription}
+                                onChange={(e) => {
+                                  setPpdBlackWireDescription(e.target.value);
+                                  clearFieldHighlight("ppd-blackWireDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-blackWireDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${ppdPhotoIssueKey("yellowIgnition")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("yellowIgnition"))}>
+                              Yellow wire — ignition / power trigger connection
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-yellowIgnition"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("yellowIgnition", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-yellowIgnition"
+                              className={photoPickClass(ppdPhotoIssueKey("yellowIgnition"), true, ppdPc.yellowIgnition >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.yellowIgnition} names={ppdPhotoFileNames.yellowIgnition} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.yellowIgnition}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("yellowIgnition", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.yellowIgnition >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.yellowIgnition} />
+                            {requiredHint(ppdPhotoIssueKey("yellowIgnition"))}
+                            <div id="field-ppd-yellowWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-yellowWireDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-yellowWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdYellowWireDescription}
+                                onChange={(e) => {
+                                  setPpdYellowWireDescription(e.target.value);
+                                  clearFieldHighlight("ppd-yellowWireDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-yellowWireDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${ppdPhotoIssueKey("greyMotion")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("greyMotion"))}>
+                              Grey wire — motion connection
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-greyMotion"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("greyMotion", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-greyMotion"
+                              className={photoPickClass(ppdPhotoIssueKey("greyMotion"), true, ppdPc.greyMotion >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.greyMotion} names={ppdPhotoFileNames.greyMotion} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.greyMotion}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("greyMotion", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.greyMotion >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.greyMotion} />
+                            {requiredHint(ppdPhotoIssueKey("greyMotion"))}
+                            <div id="field-ppd-greyWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-greyWireDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-greyWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdGreyWireDescription}
+                                onChange={(e) => {
+                                  setPpdGreyWireDescription(e.target.value);
+                                  clearFieldHighlight("ppd-greyWireDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-greyWireDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${ppdPhotoIssueKey("blueDirection")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("blueDirection"))}>
+                              Blue wire — direction connection
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-blueDirection"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("blueDirection", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-blueDirection"
+                              className={photoPickClass(ppdPhotoIssueKey("blueDirection"), true, ppdPc.blueDirection >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.blueDirection} names={ppdPhotoFileNames.blueDirection} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.blueDirection}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("blueDirection", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.blueDirection >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.blueDirection} />
+                            {requiredHint(ppdPhotoIssueKey("blueDirection"))}
+                            <div id="field-ppd-blueWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-blueWireDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-blueWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdBlueWireDescription}
+                                onChange={(e) => {
+                                  setPpdBlueWireDescription(e.target.value);
+                                  clearFieldHighlight("ppd-blueWireDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-blueWireDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {ppdShowPowerConverterMounting ? (
+                        <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 dark:border-amber-800 dark:bg-amber-950/30 sm:p-5">
+                          <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">
+                            Power converter mounting and wiring
+                            <RequiredMark />
+                          </h4>
+                          <p className="mb-4 text-sm text-gray-700 dark:text-gray-300">
+                            Shown because vehicle voltage is above 36 V (from Vehicle Information).
+                          </p>
+                          <div id={`field-${ppdPhotoIssueKey("powerConverter")}`}>
+                            <input
+                              id="ppd-photo-powerConverter"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("powerConverter", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-powerConverter"
+                              className={photoPickClass(ppdPhotoIssueKey("powerConverter"), true, ppdPc.powerConverter >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.powerConverter} names={ppdPhotoFileNames.powerConverter} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.powerConverter}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("powerConverter", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.powerConverter >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.powerConverter} />
+                            {requiredHint(ppdPhotoIssueKey("powerConverter"))}
+                            <div id="field-ppd-powerConverterDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-powerConverterDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-powerConverterDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdPowerConverterDescription}
+                                onChange={(e) => {
+                                  setPpdPowerConverterDescription(e.target.value);
+                                  clearFieldHighlight("ppd-powerConverterDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-powerConverterDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {ppdShowAlarmOutConnections ? (
+                        <div className="space-y-6 rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                          <h4 className="text-base font-bold text-gray-900 dark:text-gray-100">Alarm-out connections</h4>
+                          <div id={`field-${ppdPhotoIssueKey("redAlarmOut")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("redAlarmOut"))}>
+                              Red wire — alarm out connection(s)
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-redAlarmOut"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("redAlarmOut", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-redAlarmOut"
+                              className={photoPickClass(ppdPhotoIssueKey("redAlarmOut"), true, ppdPc.redAlarmOut >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.redAlarmOut} names={ppdPhotoFileNames.redAlarmOut} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.redAlarmOut}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("redAlarmOut", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.redAlarmOut >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.redAlarmOut} />
+                            {requiredHint(ppdPhotoIssueKey("redAlarmOut"))}
+                            <div id="field-ppd-redAlarmOutDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-redAlarmOutDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-redAlarmOutDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdRedAlarmOutDescription}
+                                onChange={(e) => {
+                                  setPpdRedAlarmOutDescription(e.target.value);
+                                  clearFieldHighlight("ppd-redAlarmOutDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-redAlarmOutDescription")}
+                            </div>
+                          </div>
+                          <div id={`field-${ppdPhotoIssueKey("yellowAlarmOut")}`}>
+                            <label className={fieldLabelClass(ppdPhotoIssueKey("yellowAlarmOut"))}>
+                              Yellow wire — alarm out connection(s)
+                              <RequiredMark />
+                            </label>
+                            <input
+                              id="ppd-photo-yellowAlarmOut"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("yellowAlarmOut", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-yellowAlarmOut"
+                              className={photoPickClass(ppdPhotoIssueKey("yellowAlarmOut"), true, ppdPc.yellowAlarmOut >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.yellowAlarmOut} names={ppdPhotoFileNames.yellowAlarmOut} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.yellowAlarmOut}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("yellowAlarmOut", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.yellowAlarmOut >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.yellowAlarmOut} />
+                            {requiredHint(ppdPhotoIssueKey("yellowAlarmOut"))}
+                            <div id="field-ppd-yellowAlarmOutDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-yellowAlarmOutDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-yellowAlarmOutDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdYellowAlarmOutDescription}
+                                onChange={(e) => {
+                                  setPpdYellowAlarmOutDescription(e.target.value);
+                                  clearFieldHighlight("ppd-yellowAlarmOutDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-yellowAlarmOutDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {ppdShowBlackAlarmGround ? (
+                        <div className="rounded-2xl border-2 border-slate-200 bg-slate-50/80 p-4 dark:border-slate-600 dark:bg-slate-900/50 sm:p-5">
+                          <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">
+                            Black wire — alarm out ground
+                            <RequiredMark />
+                          </h4>
+                          <div id={`field-${ppdPhotoIssueKey("blackAlarmGround")}`}>
+                            <input
+                              id="ppd-photo-blackAlarmGround"
+                              type="file"
+                              className="hidden"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => applyPpdPhotoUpload("blackAlarmGround", e, "single")}
+                            />
+                            <label
+                              htmlFor="ppd-photo-blackAlarmGround"
+                              className={photoPickClass(ppdPhotoIssueKey("blackAlarmGround"), true, ppdPc.blackAlarmGround >= 1)}
+                            >
+                              Take / upload photo
+                            </label>
+                            <PhotoUploadFeedback count={ppdPc.blackAlarmGround} names={ppdPhotoFileNames.blackAlarmGround} />
+                            <PhotoThumbnailGrid
+                              files={ppdPhotoFiles.blackAlarmGround}
+                              onRemoveLocal={(file) => removePpdLocalPhoto("blackAlarmGround", file)}
+                            />
+                            <PhotoUploadedBadge show={ppdPc.blackAlarmGround >= 1} />
+                            <PhotoFieldError message={ppdPhotoErrors.blackAlarmGround} />
+                            {requiredHint(ppdPhotoIssueKey("blackAlarmGround"))}
+                            <div id="field-ppd-blackAlarmGroundDescription" className="mt-3">
+                              <label className={fieldLabelClass("ppd-blackAlarmGroundDescription")}>
+                                Description
+                                <RequiredMark />
+                              </label>
+                              <textarea
+                                className={`${fieldInputClass("ppd-blackAlarmGroundDescription")} min-h-[80px] resize-y py-3`}
+                                value={ppdBlackAlarmGroundDescription}
+                                onChange={(e) => {
+                                  setPpdBlackAlarmGroundDescription(e.target.value);
+                                  clearFieldHighlight("ppd-blackAlarmGroundDescription");
+                                }}
+                              />
+                              {requiredHint("ppd-blackAlarmGroundDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              </section>
-            ))}
+                </section>
+              ) : (
+                <section key={section} className={cardClassName}>
+                  <FormSectionHeader title={`${section} Section`} tone="green" />
+
+                  <div className="space-y-5">
+                    <div>
+                      <label className={labelClassName}>Drive Type</label>
+                      <select className={selectClassName}>
+                        <option>Drive Type</option>
+                        <option>Electric</option>
+                        <option>Internal Combustion</option>
+                        <option>Other</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className={labelClassName}>Notes / Details</label>
+                      <input className={inputClassName} placeholder="exp: Customer requested wire loom" />
+                    </div>
+
+                    <div>
+                      <label className={labelClassName}>Attachments</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="min-h-[52px] w-full rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-base file:mr-4 file:rounded-xl file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                      />
+                    </div>
+                  </div>
+                </section>
+              )
+            )}
 
         <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
           <button
@@ -3740,15 +4687,104 @@ export function NewSubmissionForm() {
 
         {selectedSections
           .filter((s) => s !== "VAC4")
-          .map((section) => (
-            <section key={`review-hw-${section}`} className={cardClassName}>
-              <FormSectionHeader title={`${section} Section`} tone="green" />
-              <p className="text-sm leading-relaxed text-gray-600">
-                This hardware is selected for the job card. Detailed fields for this section are filled on the form; they are
-                not yet mirrored here.
-              </p>
-            </section>
-          ))}
+          .map((section) =>
+            section === "PPD" ? (
+              <section key={`review-hw-${section}`} className={cardClassName}>
+                <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
+                <div>
+                  <SummaryRow label="Hub serial" value={ppdHubSerial} />
+                  <SummaryRow label="Camera serial(s)" value={ppdCameraSerials} />
+                  <SummaryRow label="Client representative approval" value={ppdClientApproval} />
+                  <SummaryRow label="JSON file name (to PM)" value={ppdJsonFileName} />
+                  <SummaryRow label="Modifications or custom brackets needed?" value={ppdCustomBracketsNeeded} />
+                  {ppdCustomBracketsNeeded === "Yes" ? (
+                    <SummaryRow label="Notes (modifications / brackets)" value={ppdCustomBracketNotes} />
+                  ) : null}
+                  <SummaryRow label="Monitor installed?" value={ppdMonitorInstalled} />
+                  {ppdMonitorInstalled === "Yes" ? (
+                    <SummaryRow
+                      label="Monitor installation photo"
+                      value={reviewPhotoSummary(ppdPc.monitorInstalled, ppdPhotoFileNames.monitorInstalled)}
+                    />
+                  ) : null}
+                  {ppdShowRelaysSpeedControlQuestion ? (
+                    <SummaryRow label="Relays used for speed control?" value={ppdRelaysUsedForSpeedControl} />
+                  ) : null}
+                  <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(ppdVehicleVolts ?? "—")} />
+                  <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">PPD photos (local)</p>
+                    <SummaryRow
+                      label="Camera & hub mounting"
+                      value={reviewPhotoSummary(ppdPc.cameraHubMounting, ppdPhotoFileNames.cameraHubMounting)}
+                    />
+                    <SummaryRow label="Wire path" value={reviewPhotoSummary(ppdPc.wirePath, ppdPhotoFileNames.wirePath)} />
+                    <SummaryRow
+                      label="Red — battery +"
+                      value={reviewPhotoSummary(ppdPc.redBattery, ppdPhotoFileNames.redBattery)}
+                    />
+                    <SummaryRow label="Red wire description" value={ppdRedWireDescription} />
+                    <SummaryRow
+                      label="Black — battery −"
+                      value={reviewPhotoSummary(ppdPc.blackBattery, ppdPhotoFileNames.blackBattery)}
+                    />
+                    <SummaryRow label="Black wire description" value={ppdBlackWireDescription} />
+                    <SummaryRow
+                      label="Yellow — ignition / power trigger"
+                      value={reviewPhotoSummary(ppdPc.yellowIgnition, ppdPhotoFileNames.yellowIgnition)}
+                    />
+                    <SummaryRow label="Yellow wire description" value={ppdYellowWireDescription} />
+                    <SummaryRow label="Grey — motion" value={reviewPhotoSummary(ppdPc.greyMotion, ppdPhotoFileNames.greyMotion)} />
+                    <SummaryRow label="Grey wire description" value={ppdGreyWireDescription} />
+                    <SummaryRow
+                      label="Blue — direction"
+                      value={reviewPhotoSummary(ppdPc.blueDirection, ppdPhotoFileNames.blueDirection)}
+                    />
+                    <SummaryRow label="Blue wire description" value={ppdBlueWireDescription} />
+                    {ppdShowPowerConverterMounting ? (
+                      <>
+                        <SummaryRow
+                          label="Power converter"
+                          value={reviewPhotoSummary(ppdPc.powerConverter, ppdPhotoFileNames.powerConverter)}
+                        />
+                        <SummaryRow label="Power converter description" value={ppdPowerConverterDescription} />
+                      </>
+                    ) : null}
+                    {ppdShowAlarmOutConnections ? (
+                      <>
+                        <SummaryRow
+                          label="Red alarm out"
+                          value={reviewPhotoSummary(ppdPc.redAlarmOut, ppdPhotoFileNames.redAlarmOut)}
+                        />
+                        <SummaryRow label="Red alarm out description" value={ppdRedAlarmOutDescription} />
+                        <SummaryRow
+                          label="Yellow alarm out"
+                          value={reviewPhotoSummary(ppdPc.yellowAlarmOut, ppdPhotoFileNames.yellowAlarmOut)}
+                        />
+                        <SummaryRow label="Yellow alarm out description" value={ppdYellowAlarmOutDescription} />
+                      </>
+                    ) : null}
+                    {ppdShowBlackAlarmGround ? (
+                      <>
+                        <SummaryRow
+                          label="Black alarm out ground"
+                          value={reviewPhotoSummary(ppdPc.blackAlarmGround, ppdPhotoFileNames.blackAlarmGround)}
+                        />
+                        <SummaryRow label="Black alarm ground description" value={ppdBlackAlarmGroundDescription} />
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <section key={`review-hw-${section}`} className={cardClassName}>
+                <FormSectionHeader title={`${section} Section`} tone="green" />
+                <p className="text-sm leading-relaxed text-gray-600">
+                  This hardware is selected for the job card. Detailed fields for this section are filled on the form; they are
+                  not yet mirrored here.
+                </p>
+              </section>
+            )
+          )}
 
         {selectedSections.includes("VAC4") && (
           <section className={cardClassName}>
