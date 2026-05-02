@@ -42,14 +42,23 @@ export default function CompaniesPage() {
   }, []);
 
   const visibleCompanies = useMemo(() => {
-    // Safe fallback while auth context is still loading to avoid breaking app startup.
-    if (authLoading) return companies;
+    // Never show anything while auth is loading
+    if (authLoading) return [];
+
+    // Not logged in → show nothing
     if (!context.userId) return [];
+
+    // globalRole "admin" is treated as a super user with access to all companies
+    if (context.globalRole === "admin") {
+      return companies;
+    }
+
+    // Normal users → membership-based
     if (context.companyIds.length === 0) return [];
 
     const allowed = new Set(context.companyIds);
     return companies.filter((company) => allowed.has(company.id));
-  }, [authLoading, companies, context.companyIds, context.userId]);
+  }, [authLoading, companies, context]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
