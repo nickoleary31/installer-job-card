@@ -97,6 +97,28 @@ function generateSubmissionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** PPD text fields persisted on job card drafts (JSON). Local PPD photos are not included. */
+type StoredPpdDraftPayload = {
+  hubSerial: string;
+  cameraLocations: string[];
+  cameraSerialsByLocation: Record<string, string>;
+  monitorInstalled: string;
+  customBracketsNeeded: string;
+  customBracketNotes: string;
+  clientApproval: string;
+  jsonFileName: string;
+  relaysUsedForSpeedControl: string;
+  redWireDescription: string;
+  blackWireDescription: string;
+  yellowWireDescription: string;
+  greyWireDescription: string;
+  blueWireDescription: string;
+  powerConverterDescription: string;
+  redAlarmOutDescription: string;
+  yellowAlarmOutDescription: string;
+  blackAlarmGroundDescription: string;
+};
+
 type StoredJobCardDraft = {
   submissionId: string;
   id?: string;
@@ -107,6 +129,8 @@ type StoredJobCardDraft = {
     coreJob: CoreJobFields;
     hardwareSelection: { primary: string; hasAdditional: string; additional: string[] };
     vac4: Record<string, string | undefined>;
+    /** Present on drafts saved after PPD draft persistence; omit on older drafts. */
+    ppd?: StoredPpdDraftPayload;
     photoUploads?: UploadedPhotoMetadata[];
     photoSummary: {
       vac4PhotoFileNames: VacPhotoFileNames;
@@ -225,6 +249,8 @@ const PPD_PHOTO_KEYS = [
 ] as const;
 type PpdPhotoKey = (typeof PPD_PHOTO_KEYS)[number];
 
+const PPD_WIRE_PATH_MIN_PHOTOS = 3;
+
 function emptyPpdPhotoFiles(): Record<PpdPhotoKey, File[]> {
   const out = {} as Record<PpdPhotoKey, File[]>;
   for (const k of PPD_PHOTO_KEYS) out[k] = [];
@@ -268,6 +294,50 @@ function isSpeedControlAdditionalHardwareLabel(sectionLabel: string): boolean {
   if (lower.includes("transmon")) return true;
   if (lower.includes("ssc")) return true;
   return false;
+}
+
+type PpdCameraLocationKey = "front" | "rear" | "rightSide" | "leftSide";
+
+const PPD_CAMERA_LOCATION_OPTIONS: { key: PpdCameraLocationKey; label: string; serialLabel: string }[] = [
+  { key: "front", label: "Front", serialLabel: "Front Camera Serial Number" },
+  { key: "rear", label: "Rear", serialLabel: "Rear Camera Serial Number" },
+  { key: "rightSide", label: "Right Side", serialLabel: "Right Side Camera Serial Number" },
+  { key: "leftSide", label: "Left Side", serialLabel: "Left Side Camera Serial Number" },
+];
+
+const emptyPpdCameraSerialsByLocation = (): Record<PpdCameraLocationKey, string> => ({
+  front: "",
+  rear: "",
+  rightSide: "",
+  leftSide: "",
+});
+
+function sanitizePpdCameraLocationsFromDraft(raw: unknown): PpdCameraLocationKey[] {
+  if (!Array.isArray(raw)) return [];
+  const allowed = new Set<PpdCameraLocationKey>(PPD_CAMERA_LOCATION_OPTIONS.map((o) => o.key));
+  const out: PpdCameraLocationKey[] = [];
+  for (const x of raw) {
+    if (typeof x !== "string") continue;
+    if (!allowed.has(x as PpdCameraLocationKey)) continue;
+    const key = x as PpdCameraLocationKey;
+    if (!out.includes(key)) out.push(key);
+  }
+  return out;
+}
+
+function mergePpdCameraSerialsFromDraft(raw: unknown): Record<PpdCameraLocationKey, string> {
+  const base = emptyPpdCameraSerialsByLocation();
+  if (!raw || typeof raw !== "object") return base;
+  const o = raw as Record<string, unknown>;
+  for (const { key } of PPD_CAMERA_LOCATION_OPTIONS) {
+    const v = o[key];
+    if (typeof v === "string") base[key] = v;
+  }
+  return base;
+}
+
+function draftString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 const emptyVacPhotoFileNames = (): VacPhotoFileNames => ({
@@ -863,7 +933,10 @@ export function NewSubmissionForm() {
   const [relayAccessDescription, setRelayAccessDescription] = useState("");
   const [impactSensorDescription, setImpactSensorDescription] = useState("");
   const [ppdHubSerial, setPpdHubSerial] = useState("");
-  const [ppdCameraSerials, setPpdCameraSerials] = useState("");
+  const [ppdCameraLocations, setPpdCameraLocations] = useState<PpdCameraLocationKey[]>([]);
+  const [ppdCameraSerialsByLocation, setPpdCameraSerialsByLocation] = useState<Record<PpdCameraLocationKey, string>>(
+    () => emptyPpdCameraSerialsByLocation(),
+  );
   const [ppdMonitorInstalled, setPpdMonitorInstalled] = useState("");
   const [ppdCustomBracketsNeeded, setPpdCustomBracketsNeeded] = useState("");
   const [ppdCustomBracketNotes, setPpdCustomBracketNotes] = useState("");
@@ -990,6 +1063,13 @@ export function NewSubmissionForm() {
     for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].map((f) => f.name);
     return out;
   }, [ppdPhotoFiles]);
+
+  const ppdCameraSerialsReviewSummary = useMemo(() => {
+    const parts = PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(
+      (o) => `${o.label}: ${ppdCameraSerialsByLocation[o.key].trim() || "—"}`,
+    );
+    return parts.join("; ");
+  }, [ppdCameraLocations, ppdCameraSerialsByLocation]);
 
   const vacPhotoFileNames = useMemo((): VacPhotoFileNames => {
     const out = emptyVacPhotoFileNames();
@@ -1366,7 +1446,11 @@ export function NewSubmissionForm() {
 
     if (selectedSections.includes("PPD")) {
       if (!ppdHubSerial.trim()) issues.push("ppd-hubSerial");
-      if (!ppdCameraSerials.trim()) issues.push("ppd-cameraSerials");
+      for (const loc of ppdCameraLocations) {
+        if (!ppdCameraSerialsByLocation[loc]?.trim()) {
+          issues.push(`ppd-cameraSerial-${loc}`);
+        }
+      }
       if (!ppdClientApproval.trim()) issues.push("ppd-clientApproval");
       if (!ppdJsonFileName.trim()) issues.push("ppd-jsonFileName");
       if (ppdMonitorInstalled !== "Yes" && ppdMonitorInstalled !== "No") issues.push("ppd-monitorInstalled");
@@ -1383,7 +1467,7 @@ export function NewSubmissionForm() {
       }
 
       if (ppdPc.cameraHubMounting < 1) issues.push("photo-ppd-cameraHubMounting");
-      if (ppdPc.wirePath < 1) issues.push("photo-ppd-wirePath");
+      if (ppdPc.wirePath < PPD_WIRE_PATH_MIN_PHOTOS) issues.push("photo-ppd-wirePath");
 
       if (ppdPc.redBattery < 1) issues.push("photo-ppd-redBattery");
       if (!ppdRedWireDescription.trim()) issues.push("ppd-redWireDescription");
@@ -1506,6 +1590,17 @@ export function NewSubmissionForm() {
       next.delete(fieldKey);
       if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
       return next;
+    });
+  };
+
+  const togglePpdCameraLocation = (key: PpdCameraLocationKey) => {
+    setPpdCameraLocations((prev) => {
+      if (prev.includes(key)) {
+        setPpdCameraSerialsByLocation((s) => ({ ...s, [key]: "" }));
+        queueMicrotask(() => clearFieldHighlight(`ppd-cameraSerial-${key}`));
+        return prev.filter((k) => k !== key);
+      }
+      return [...prev, key];
     });
   };
 
@@ -1837,10 +1932,11 @@ export function NewSubmissionForm() {
   const removePpdLocalPhoto = (key: PpdPhotoKey, targetFile: File) => {
     const targetKey = localFileDedupeKey(targetFile);
     const photoKey = ppdPhotoIssueKey(key);
+    const minPhotos = key === "wirePath" ? PPD_WIRE_PATH_MIN_PHOTOS : 1;
     setPpdPhotoFiles((p) => {
       const nextList = p[key].filter((f) => localFileDedupeKey(f) !== targetKey);
       queueMicrotask(() => {
-        if (nextList.length < 1) {
+        if (nextList.length < minPhotos) {
           setReviewHighlights((prev) => {
             const next = new Set(prev);
             next.add(photoKey);
@@ -1904,9 +2000,12 @@ export function NewSubmissionForm() {
       return;
     }
 
+    const nextCount = currentCount + picked.length;
     setPpdPhotoFiles((p) => ({ ...p, [key]: [...p[key], ...picked] }));
     setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
-    clearFieldHighlight(photoKey);
+    if (key !== "wirePath" || nextCount >= PPD_WIRE_PATH_MIN_PHOTOS) {
+      clearFieldHighlight(photoKey);
+    }
   };
 
   const handleReviewClick = () => {
@@ -2115,8 +2214,51 @@ export function NewSubmissionForm() {
     setPurpleWireDescription(String(draft.vac4?.purpleWireDescription || ""));
     setRelayAccessDescription(String(draft.vac4?.relayAccessDescription || ""));
     setImpactSensorDescription(String(draft.vac4?.impactSensorDescription || ""));
+    const rawPpd = draft.ppd;
+    if (rawPpd !== undefined && rawPpd !== null && typeof rawPpd === "object" && !Array.isArray(rawPpd)) {
+      const p = rawPpd as Record<string, unknown>;
+      setPpdHubSerial(draftString(p.hubSerial));
+      setPpdCameraLocations(sanitizePpdCameraLocationsFromDraft(p.cameraLocations));
+      setPpdCameraSerialsByLocation(mergePpdCameraSerialsFromDraft(p.cameraSerialsByLocation));
+      setPpdMonitorInstalled(draftString(p.monitorInstalled));
+      setPpdCustomBracketsNeeded(draftString(p.customBracketsNeeded));
+      setPpdCustomBracketNotes(draftString(p.customBracketNotes));
+      setPpdClientApproval(draftString(p.clientApproval));
+      setPpdJsonFileName(draftString(p.jsonFileName));
+      setPpdRelaysUsedForSpeedControl(draftString(p.relaysUsedForSpeedControl));
+      setPpdRedWireDescription(draftString(p.redWireDescription));
+      setPpdBlackWireDescription(draftString(p.blackWireDescription));
+      setPpdYellowWireDescription(draftString(p.yellowWireDescription));
+      setPpdGreyWireDescription(draftString(p.greyWireDescription));
+      setPpdBlueWireDescription(draftString(p.blueWireDescription));
+      setPpdPowerConverterDescription(draftString(p.powerConverterDescription));
+      setPpdRedAlarmOutDescription(draftString(p.redAlarmOutDescription));
+      setPpdYellowAlarmOutDescription(draftString(p.yellowAlarmOutDescription));
+      setPpdBlackAlarmGroundDescription(draftString(p.blackAlarmGroundDescription));
+    } else {
+      setPpdHubSerial("");
+      setPpdCameraLocations([]);
+      setPpdCameraSerialsByLocation(emptyPpdCameraSerialsByLocation());
+      setPpdMonitorInstalled("");
+      setPpdCustomBracketsNeeded("");
+      setPpdCustomBracketNotes("");
+      setPpdClientApproval("");
+      setPpdJsonFileName("");
+      setPpdRelaysUsedForSpeedControl("");
+      setPpdRedWireDescription("");
+      setPpdBlackWireDescription("");
+      setPpdYellowWireDescription("");
+      setPpdGreyWireDescription("");
+      setPpdBlueWireDescription("");
+      setPpdPowerConverterDescription("");
+      setPpdRedAlarmOutDescription("");
+      setPpdYellowAlarmOutDescription("");
+      setPpdBlackAlarmGroundDescription("");
+    }
     // Files cannot be restored from localStorage; rebuild photo state from saved metadata.
     setVacPhotoFiles(emptyVacPhotoFiles());
+    setPpdPhotoFiles(emptyPpdPhotoFiles());
+    setPpdPhotoErrors(emptyPpdPhotoErrors());
     const restoredUploads = draft.photoUploads || draft.photoSummary?.photoUploads || [];
     const restoredMetadataByField = emptyPhotoMetadataByField();
     for (const photo of restoredUploads) {
@@ -2315,6 +2457,26 @@ export function NewSubmissionForm() {
         purpleWireDescription,
         relayAccessDescription,
         impactSensorDescription,
+      },
+      ppd: {
+        hubSerial: ppdHubSerial,
+        cameraLocations: [...ppdCameraLocations],
+        cameraSerialsByLocation: { ...ppdCameraSerialsByLocation },
+        monitorInstalled: ppdMonitorInstalled,
+        customBracketsNeeded: ppdCustomBracketsNeeded,
+        customBracketNotes: ppdCustomBracketNotes,
+        clientApproval: ppdClientApproval,
+        jsonFileName: ppdJsonFileName,
+        relaysUsedForSpeedControl: ppdRelaysUsedForSpeedControl,
+        redWireDescription: ppdRedWireDescription,
+        blackWireDescription: ppdBlackWireDescription,
+        yellowWireDescription: ppdYellowWireDescription,
+        greyWireDescription: ppdGreyWireDescription,
+        blueWireDescription: ppdBlueWireDescription,
+        powerConverterDescription: ppdPowerConverterDescription,
+        redAlarmOutDescription: ppdRedAlarmOutDescription,
+        yellowAlarmOutDescription: ppdYellowAlarmOutDescription,
+        blackAlarmGroundDescription: ppdBlackAlarmGroundDescription,
       },
       photoUploads: photoSnapshot.photoUploads,
       photoSummary: {
@@ -3027,7 +3189,7 @@ export function NewSubmissionForm() {
           </section>
         )}
 
-        {hasAnsweredAdditionalHardwareQuestion && primary === "VAC4" && (
+        {hasAnsweredAdditionalHardwareQuestion && selectedSections.includes("VAC4") && (
           <VAC4Section>
             <section className={`${cardClassName} space-y-5`}>
               <FormSectionHeader title="VAC4 Section" tone="purple" />
@@ -3868,7 +4030,7 @@ export function NewSubmissionForm() {
 
                   <div className="space-y-8">
                     <div className="grid gap-5 sm:grid-cols-2">
-                      <div id="field-ppd-hubSerial" className="sm:col-span-1">
+                      <div id="field-ppd-hubSerial" className="sm:col-span-2">
                         <label className={fieldLabelClass("ppd-hubSerial")}>
                           Hub serial number
                           <RequiredMark />
@@ -3884,22 +4046,41 @@ export function NewSubmissionForm() {
                         />
                         {requiredHint("ppd-hubSerial")}
                       </div>
-                      <div id="field-ppd-cameraSerials" className="sm:col-span-1">
-                        <label className={fieldLabelClass("ppd-cameraSerials")}>
-                          Camera serial number(s)
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("ppd-cameraSerials")}
-                          value={ppdCameraSerials}
-                          placeholder="One serial, or comma-separated / one per line"
-                          onChange={(e) => {
-                            setPpdCameraSerials(e.target.value);
-                            clearFieldHighlight("ppd-cameraSerials");
-                          }}
-                        />
-                        {requiredHint("ppd-cameraSerials")}
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className={labelClassName}>Camera install locations (check all that apply)</p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {PPD_CAMERA_LOCATION_OPTIONS.map(({ key, label }) => (
+                          <label key={key} className={checkboxRowClassName}>
+                            <input
+                              type="checkbox"
+                              className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              checked={ppdCameraLocations.includes(key)}
+                              onChange={() => togglePpdCameraLocation(key)}
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
                       </div>
+                      {PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(({ key, serialLabel }) => (
+                        <div key={key} id={`field-ppd-cameraSerial-${key}`}>
+                          <label className={fieldLabelClass(`ppd-cameraSerial-${key}`)}>
+                            {serialLabel}
+                            <RequiredMark />
+                          </label>
+                          <input
+                            className={fieldInputClass(`ppd-cameraSerial-${key}`)}
+                            value={ppdCameraSerialsByLocation[key]}
+                            placeholder="Scan or type serial"
+                            onChange={(e) => {
+                              setPpdCameraSerialsByLocation((prev) => ({ ...prev, [key]: e.target.value }));
+                              clearFieldHighlight(`ppd-cameraSerial-${key}`);
+                            }}
+                          />
+                          {requiredHint(`ppd-cameraSerial-${key}`)}
+                        </div>
+                      ))}
                     </div>
 
                     <div id="field-ppd-clientApproval" className="space-y-2">
@@ -4103,6 +4284,9 @@ export function NewSubmissionForm() {
                           Wire path
                           <RequiredMark />
                         </label>
+                        <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                          Minimum {PPD_WIRE_PATH_MIN_PHOTOS} photos required.
+                        </p>
                         <input
                           id="ppd-photo-wirePath"
                           type="file"
@@ -4114,7 +4298,11 @@ export function NewSubmissionForm() {
                         />
                         <label
                           htmlFor="ppd-photo-wirePath"
-                          className={photoPickClass(ppdPhotoIssueKey("wirePath"), true, ppdPc.wirePath >= 1)}
+                          className={photoPickClass(
+                            ppdPhotoIssueKey("wirePath"),
+                            true,
+                            ppdPc.wirePath >= PPD_WIRE_PATH_MIN_PHOTOS,
+                          )}
                         >
                           Take / upload photo(s)
                         </label>
@@ -4123,7 +4311,7 @@ export function NewSubmissionForm() {
                           files={ppdPhotoFiles.wirePath}
                           onRemoveLocal={(file) => removePpdLocalPhoto("wirePath", file)}
                         />
-                        <PhotoUploadedBadge show={ppdPc.wirePath >= 1} />
+                        <PhotoUploadedBadge show={ppdPc.wirePath >= PPD_WIRE_PATH_MIN_PHOTOS} />
                         <PhotoFieldError message={ppdPhotoErrors.wirePath} />
                         {requiredHint(ppdPhotoIssueKey("wirePath"))}
                       </div>
@@ -4693,7 +4881,7 @@ export function NewSubmissionForm() {
                 <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
                 <div>
                   <SummaryRow label="Hub serial" value={ppdHubSerial} />
-                  <SummaryRow label="Camera serial(s)" value={ppdCameraSerials} />
+                  <SummaryRow label="Camera serials by location" value={ppdCameraSerialsReviewSummary} />
                   <SummaryRow label="Client representative approval" value={ppdClientApproval} />
                   <SummaryRow label="JSON file name (to PM)" value={ppdJsonFileName} />
                   <SummaryRow label="Modifications or custom brackets needed?" value={ppdCustomBracketsNeeded} />
