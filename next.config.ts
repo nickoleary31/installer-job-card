@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["192.168.1.141", "10.199.96.137"],
+  allowedDevOrigins: ["192.168.1.141", "10.199.96.137", "192.168.1.217", "idiocy-untidy-fester.ngrok-free.dev"],
   async headers() {
     return [
       {

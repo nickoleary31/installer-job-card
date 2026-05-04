@@ -1013,7 +1013,7 @@ export function NewSubmissionForm() {
   const btnExitWithoutSaveClassName =
     "inline-flex min-h-[52px] items-center justify-center gap-2 rounded-xl border-2 border-gray-300 bg-white px-5 py-3.5 text-base font-semibold text-gray-800 shadow-sm hover:bg-gray-50 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700 sm:min-w-[160px]";
   const checkboxRowClassName =
-    "flex min-h-[52px] cursor-pointer items-center gap-3 rounded-2xl border-2 border-gray-100 bg-gray-50/80 px-4 py-3 text-base font-medium text-gray-900 active:bg-gray-100";
+    "flex min-h-[52px] cursor-pointer items-center gap-3 rounded-2xl border-2 border-gray-100 bg-gray-50/80 px-4 py-3 text-base font-medium text-gray-900 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:active:bg-gray-700";
   const isCombustionDrive = vac4DriveType === "Internal Combustion";
   const blueWireHelperText =
     vac4DriveType === "Electric"
@@ -1369,6 +1369,16 @@ export function NewSubmissionForm() {
   const hardwareSectionStatus: SectionStepStatus =
     !primary ? "Not Started" : hasAdditional === "Yes" || hasAdditional === "No" ? "Complete" : "In Progress";
   const hasAnsweredAdditionalHardwareQuestion = hasAdditional === "Yes" || hasAdditional === "No";
+  const isVehicleInfoComplete =
+    coreJob.equipmentMake.trim().length > 0 &&
+    coreJob.equipmentModel.trim().length > 0 &&
+    coreJob.equipmentSerial.trim().length > 0 &&
+    coreJob.unitNumber.trim().length > 0 &&
+    vac4VehicleType.trim().length > 0 &&
+    vac4DriveType.trim().length > 0 &&
+    (vac4VehicleType !== "Other" || vac4OtherVehicleType.trim().length > 0) &&
+    (vac4DriveType !== "Electric" ||
+      (vac4VehicleVoltage.trim().length > 0 && (vac4VehicleVoltage !== "Other" || vac4VehicleVoltageOther.trim().length > 0)));
 
   const hardwareStatusSections = [...new Set(selectedSections)];
 
@@ -3107,79 +3117,87 @@ export function NewSubmissionForm() {
         </section>
 
         {/* Hardware Selection */}
-        <section className={cardClassName}>
-          <FormSectionHeader title="Hardware Selection" tone="green" />
+        {isVehicleInfoComplete ? (
+          <section className={cardClassName}>
+            <FormSectionHeader title="Hardware Selection" tone="green" />
 
-          <div className="space-y-5">
-            <div id="field-hw-primary">
-              <label className={fieldLabelClass("hw-primary")}>
-                Primary Hardware / Install Type
-                <RequiredMark />
-              </label>
-              <select
-                className={fieldSelectClass("hw-primary")}
-                value={primary}
-                onChange={(e) => {
-                  setPrimary(e.target.value);
-                  clearFieldHighlight("hw-primary");
-                }}
-              >
-                <option value="" className="text-gray-400">
-                  Select Primary Hardware
-                </option>
-                <option value="VAC4">VAC4</option>
-                <option value="CP4">CP4</option>
-                <option value="PPD">PPD</option>
-                <option value="Speed Transmon">Speed Transmon</option>
-                <option value="Speed SSC">Speed SSC</option>
-                <option value="FTxw">FTxw</option>
-              </select>
-              {requiredHint("hw-primary")}
-            </div>
-
-            <div id="field-hw-hasAdditional">
-              <label className={fieldLabelClass("hw-hasAdditional")}>
-                Is any additional hardware being installed?
-                <RequiredMark />
-              </label>
-              <select
-                className={fieldSelectClass("hw-hasAdditional")}
-                value={hasAdditional}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setHasAdditional(value);
-                  if (value === "No") {
-                    setAdditional([]);
-                  }
-                  clearFieldHighlight("hw-hasAdditional");
-                }}
-              >
-                <option value="" className="text-gray-400">
-                  Any additional hardware?
-                </option>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
-              {requiredHint("hw-hasAdditional")}
-            </div>
-
-            {hasAdditional === "Yes" && primary && (
-              <div className="space-y-3 pt-1">
-                {availableAdditional.map((type) => (
-                  <label key={type} className={checkboxRowClassName}>
-                    <input
-                      type="checkbox"
-                      className="h-5 w-5 shrink-0 rounded border-2 border-gray-400 text-blue-600 focus:ring-blue-500"
-                      checked={additional.includes(type)}
-                      onChange={() => toggleAdditional(type)}
-                    />
-                    <span>{type}</span>
-                  </label>
-                ))}
+            <div className="space-y-5">
+              <div id="field-hw-primary">
+                <label className={fieldLabelClass("hw-primary")}>
+                  Primary Hardware / Install Type
+                  <RequiredMark />
+                </label>
+                <select
+                  className={fieldSelectClass("hw-primary")}
+                  value={primary}
+                  onChange={(e) => {
+                    setPrimary(e.target.value);
+                    clearFieldHighlight("hw-primary");
+                  }}
+                >
+                  <option value="" className="text-gray-400">
+                    Select Primary Hardware
+                  </option>
+                  <option value="VAC4">VAC4</option>
+                  <option value="CP4">CP4</option>
+                  <option value="PPD">PPD</option>
+                  <option value="Speed Transmon">Speed Transmon</option>
+                  <option value="Speed SSC">Speed SSC</option>
+                  <option value="FTxw">FTxw</option>
+                </select>
+                {requiredHint("hw-primary")}
               </div>
-            )}
-          </div>
-        </section>
+
+              <div id="field-hw-hasAdditional">
+                <label className={fieldLabelClass("hw-hasAdditional")}>
+                  Is any additional hardware being installed?
+                  <RequiredMark />
+                </label>
+                <select
+                  className={fieldSelectClass("hw-hasAdditional")}
+                  value={hasAdditional}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setHasAdditional(value);
+                    if (value === "No") {
+                      setAdditional([]);
+                    }
+                    clearFieldHighlight("hw-hasAdditional");
+                  }}
+                >
+                  <option value="" className="text-gray-400">
+                    Any additional hardware?
+                  </option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
+                {requiredHint("hw-hasAdditional")}
+              </div>
+
+              {hasAdditional === "Yes" && primary && (
+                <div className="space-y-3 pt-1">
+                  {availableAdditional.map((type) => (
+                    <label key={type} className={checkboxRowClassName}>
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5 shrink-0 rounded border-2 border-gray-400 text-blue-600 focus:ring-blue-500"
+                        checked={additional.includes(type)}
+                        onChange={() => toggleAdditional(type)}
+                      />
+                      <span>{type}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          <section className={cardClassName}>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              Complete all required Vehicle Information fields before selecting hardware.
+            </p>
+          </section>
+        )}
 
         {primary && !hasAnsweredAdditionalHardwareQuestion && (
           <section className={cardClassName}>
@@ -4335,6 +4353,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-redWireDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Battery + terminal post"
                                 value={ppdRedWireDescription}
                                 onChange={(e) => {
                                   setPpdRedWireDescription(e.target.value);
@@ -4378,6 +4397,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-blackWireDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Frame ground stud"
                                 value={ppdBlackWireDescription}
                                 onChange={(e) => {
                                   setPpdBlackWireDescription(e.target.value);
@@ -4421,6 +4441,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-yellowWireDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Ignition-on signal at key switch"
                                 value={ppdYellowWireDescription}
                                 onChange={(e) => {
                                   setPpdYellowWireDescription(e.target.value);
@@ -4464,6 +4485,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-greyWireDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Motion output at controller"
                                 value={ppdGreyWireDescription}
                                 onChange={(e) => {
                                   setPpdGreyWireDescription(e.target.value);
@@ -4507,6 +4529,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-blueWireDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Direction signal at traction controller"
                                 value={ppdBlueWireDescription}
                                 onChange={(e) => {
                                   setPpdBlueWireDescription(e.target.value);
@@ -4557,6 +4580,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-powerConverterDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Converter mounted on frame rail near battery box"
                                 value={ppdPowerConverterDescription}
                                 onChange={(e) => {
                                   setPpdPowerConverterDescription(e.target.value);
@@ -4605,6 +4629,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-redAlarmOutDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Alarm out red tied to relay coil input"
                                 value={ppdRedAlarmOutDescription}
                                 onChange={(e) => {
                                   setPpdRedAlarmOutDescription(e.target.value);
@@ -4647,6 +4672,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-yellowAlarmOutDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Alarm out yellow tied to strobe trigger input"
                                 value={ppdYellowAlarmOutDescription}
                                 onChange={(e) => {
                                   setPpdYellowAlarmOutDescription(e.target.value);
@@ -4694,6 +4720,7 @@ export function NewSubmissionForm() {
                               </label>
                               <textarea
                                 className={`${fieldInputClass("ppd-blackAlarmGroundDescription")} min-h-[80px] resize-y py-3`}
+                                placeholder="exp: Alarm ground tied to chassis ground stud"
                                 value={ppdBlackAlarmGroundDescription}
                                 onChange={(e) => {
                                   setPpdBlackAlarmGroundDescription(e.target.value);
