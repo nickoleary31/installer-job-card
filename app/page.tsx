@@ -3279,8 +3279,7 @@ export function NewSubmissionForm() {
                       id="vacMountingPhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       onChange={(e) => applyVacPhotoUpload("vacMounting", e, "single")}
                     />
                     <label
@@ -3309,8 +3308,7 @@ export function NewSubmissionForm() {
                       id="wirePathPhotos"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       multiple
                       onChange={(e) => applyVacPhotoUpload("wirePath", e, "multi")}
                     />
@@ -3345,8 +3343,7 @@ export function NewSubmissionForm() {
                       id="redWirePhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       onChange={(e) => applyVacPhotoUpload("redWire", e, "single")}
                     />
                     <label
@@ -3392,8 +3389,7 @@ export function NewSubmissionForm() {
                       id="blackWirePhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       onChange={(e) => applyVacPhotoUpload("blackWire", e, "single")}
                     />
                     <label
@@ -3439,8 +3435,7 @@ export function NewSubmissionForm() {
                       id="blueWirePhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       onChange={(e) => applyVacPhotoUpload("blueWire", e, "single")}
                     />
                     <label
@@ -3487,8 +3482,7 @@ export function NewSubmissionForm() {
                       id="purpleWirePhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       onChange={(e) => applyVacPhotoUpload("purpleWire", e, "single")}
                     />
                     <label
@@ -3537,8 +3531,7 @@ export function NewSubmissionForm() {
                         id="brownWirePhoto"
                         type="file"
                         className="hidden"
-                        accept="image/*"
-                        capture="environment"
+                        accept="image/png,image/jpeg,image/jpg"
                         onChange={(e) => applyVacPhotoUpload("brownWire", e, "single")}
                       />
                       <label
@@ -3585,8 +3578,7 @@ export function NewSubmissionForm() {
                       id="relayAccessControlPhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       required
                       onChange={(e) => applyVacPhotoUpload("relayAccess", e, "single")}
                     />
@@ -3625,8 +3617,7 @@ export function NewSubmissionForm() {
                       id="impactSensorMountingPhoto"
                       type="file"
                       className="hidden"
-                      accept="image/*"
-                      capture="environment"
+                      accept="image/png,image/jpeg,image/jpg"
                       required
                       onChange={(e) => applyVacPhotoUpload("impactSensor", e, "single")}
                     />
@@ -3712,8 +3703,7 @@ export function NewSubmissionForm() {
                         id="sensorHubMountingPhoto"
                         type="file"
                         className="hidden"
-                        accept="image/*"
-                        capture="environment"
+                        accept="image/png,image/jpeg,image/jpg"
                         onChange={(e) => applyVacPhotoUpload("sensorHubMounting", e, "single")}
                       />
                       <label
@@ -3806,8 +3796,7 @@ export function NewSubmissionForm() {
                             id="speedSensePhoto"
                             type="file"
                             className="hidden"
-                            accept="image/*"
-                            capture="environment"
+                            accept="image/png,image/jpeg,image/jpg"
                             onChange={(e) => applyVacPhotoUpload("speedSense", e, "single")}
                           />
                           <label
@@ -3874,8 +3863,7 @@ export function NewSubmissionForm() {
                             id="loadSensePhoto"
                             type="file"
                             className="hidden"
-                            accept="image/*"
-                            capture="environment"
+                            accept="image/png,image/jpeg,image/jpg"
                             onChange={(e) => applyVacPhotoUpload("loadSense", e, "single")}
                           />
                           <label
@@ -3926,8 +3914,7 @@ export function NewSubmissionForm() {
                             id="gpsMountingPhoto"
                             type="file"
                             className="hidden"
-                            accept="image/*"
-                            capture="environment"
+                            accept="image/png,image/jpeg,image/jpg"
                             onChange={(e) => applyVacPhotoUpload("gps", e, "single")}
                           />
                           <label
@@ -3962,8 +3949,7 @@ export function NewSubmissionForm() {
                             id="externalIndicatorPhoto"
                             type="file"
                             className="hidden"
-                            accept="image/*"
-                            capture="environment"
+                            accept="image/png,image/jpeg,image/jpg"
                             onChange={(e) => applyVacPhotoUpload("externalIndicator", e, "single")}
                           />
                           <label
@@ -4194,8 +4180,7 @@ export function NewSubmissionForm() {
                           id="ppd-photo-monitorInstalled"
                           type="file"
                           className="hidden"
-                          accept="image/*"
-                          capture="environment"
+                          accept="image/png,image/jpeg,image/jpg"
                           onChange={(e) => applyPpdPhotoUpload("monitorInstalled", e, "single")}
                         />
                         <label
@@ -4258,8 +4243,7 @@ export function NewSubmissionForm() {
                           id="ppd-photo-cameraHubMounting"
                           type="file"
                           className="hidden"
-                          accept="image/*"
-                          capture="environment"
+                          accept="image/png,image/jpeg,image/jpg"
                           multiple
                           onChange={(e) => applyPpdPhotoUpload("cameraHubMounting", e, "multi")}
                         />
@@ -4291,8 +4275,7 @@ export function NewSubmissionForm() {
                           id="ppd-photo-wirePath"
                           type="file"
                           className="hidden"
-                          accept="image/*"
-                          capture="environment"
+                          accept="image/png,image/jpeg,image/jpg"
                           multiple
                           onChange={(e) => applyPpdPhotoUpload("wirePath", e, "multi")}
                         />
@@ -4328,8 +4311,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-redBattery"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("redBattery", e, "single")}
                             />
                             <label
@@ -4372,8 +4354,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-blackBattery"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("blackBattery", e, "single")}
                             />
                             <label
@@ -4416,8 +4397,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-yellowIgnition"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("yellowIgnition", e, "single")}
                             />
                             <label
@@ -4460,8 +4440,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-greyMotion"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("greyMotion", e, "single")}
                             />
                             <label
@@ -4504,8 +4483,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-blueDirection"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("blueDirection", e, "single")}
                             />
                             <label
@@ -4555,8 +4533,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-powerConverter"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("powerConverter", e, "single")}
                             />
                             <label
@@ -4604,8 +4581,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-redAlarmOut"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("redAlarmOut", e, "single")}
                             />
                             <label
@@ -4647,8 +4623,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-yellowAlarmOut"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("yellowAlarmOut", e, "single")}
                             />
                             <label
@@ -4695,8 +4670,7 @@ export function NewSubmissionForm() {
                               id="ppd-photo-blackAlarmGround"
                               type="file"
                               className="hidden"
-                              accept="image/*"
-                              capture="environment"
+                              accept="image/png,image/jpeg,image/jpg"
                               onChange={(e) => applyPpdPhotoUpload("blackAlarmGround", e, "single")}
                             />
                             <label
