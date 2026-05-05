@@ -107,6 +107,11 @@ export default function CompanyProjectsPage() {
     let cancelled = false;
     const loadCompanyName = async () => {
       if (!companyId) return;
+      if (authLoading) return;
+      if (!userContext.userId) {
+        if (!cancelled) setCompanyName("—");
+        return;
+      }
       try {
         const { data, error } = await supabase.from("companies").select("name").eq("id", companyId).maybeSingle<CompanyRow>();
         if (error || cancelled || !data?.name) return;
@@ -119,7 +124,7 @@ export default function CompanyProjectsPage() {
     return () => {
       cancelled = true;
     };
-  }, [companyId]);
+  }, [authLoading, companyId, userContext.userId]);
 
   const loadProjects = useCallback(async () => {
     if (!companyId) return;
@@ -174,6 +179,16 @@ export default function CompanyProjectsPage() {
     let cancelled = false;
     const load = async () => {
       if (!companyId) return;
+      if (authLoading) return;
+      if (!userContext.userId) {
+        if (!cancelled) {
+          setProjects([]);
+          setLoadError(null);
+          setLoading(false);
+        }
+        return;
+      }
+      if (!cancelled) setLoading(true);
       try {
         await loadProjects();
       } catch (e) {
@@ -190,7 +205,7 @@ export default function CompanyProjectsPage() {
     return () => {
       cancelled = true;
     };
-  }, [companyId, loadProjects]);
+  }, [authLoading, companyId, loadProjects, userContext.userId]);
 
   const companyRole = userContext.companyRolesById[companyId];
   const isAdminForCompany = companyRole === "admin";
@@ -222,8 +237,8 @@ export default function CompanyProjectsPage() {
   }, [authLoading, companyRole, userContext.userId]);
 
   const visibleProjects = useMemo(() => {
-    if (authLoading) return projects;
-    if (!userContext.userId) return projects;
+    if (authLoading) return [];
+    if (!userContext.userId) return [];
     if (companyRole === "admin") return projects;
     if (companyRole === "technician") {
       if (isLoadingAssignments) return projects;
@@ -550,17 +565,23 @@ export default function CompanyProjectsPage() {
           </div>
         </header>
 
-        {loading ? <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">Loading projects...</section> : null}
+        {loading || authLoading ? (
+          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
+            {authLoading ? "Checking sign-in…" : "Loading projects…"}
+          </section>
+        ) : null}
         {loadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
             Could not load projects: {loadError}
           </section>
         ) : null}
 
-        {!loading && !loadError ? (
+        {!loading && !loadError && !authLoading ? (
           visibleProjects.length === 0 ? (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
-              No projects found for this company.
+              {!userContext.userId
+                ? "Log in to view projects for this company."
+                : "No projects found for this company."}
             </section>
           ) : (
             visibleProjects.map((project) => (

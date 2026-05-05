@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
@@ -75,6 +76,7 @@ const displayCell = (value: string | null | undefined) => {
 
 export default function ProjectDashboardPage() {
   const params = useParams<{ companyId: string; projectId: string }>();
+  const { loading: authLoading, context: userContext } = useAuthUserContext();
   const companyId = String(params.companyId || "");
   const projectId = String(params.projectId || "");
   const [projectContext, setProjectContext] = useState<ProjectContext>({
@@ -101,6 +103,21 @@ export default function ProjectDashboardPage() {
     let cancelled = false;
     const loadProjectContext = async () => {
       if (!companyId || !projectId) return;
+      if (authLoading) return;
+      if (!userContext.userId) {
+        if (!cancelled) {
+          setProjectContext({
+            companyName: "—",
+            projectName: "—",
+            customerName: "—",
+            location: "—",
+          });
+          setHasLinkedCustomer(false);
+          setSiteInfo(emptySiteInfo);
+          setShowWifiPassword(false);
+        }
+        return;
+      }
       try {
         const [{ data: companyRow, error: companyError }, { data: projectRow, error: projectError }] = await Promise.all([
           supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
@@ -160,7 +177,7 @@ export default function ProjectDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [companyId, projectId]);
+  }, [authLoading, companyId, projectId, userContext.userId]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
@@ -177,6 +194,24 @@ export default function ProjectDashboardPage() {
           </Link>
         </header>
 
+        {authLoading ? (
+          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+            Checking sign-in…
+          </section>
+        ) : null}
+
+        {!authLoading && !userContext.userId ? (
+          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-700 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+            <p className="font-semibold text-gray-900">Sign in required</p>
+            <p className="mt-2 text-gray-600">Log in to view this project and job card tools.</p>
+            <Link href="/login" className="mt-4 inline-flex text-sm font-semibold text-blue-700 hover:underline">
+              Go to login
+            </Link>
+          </section>
+        ) : null}
+
+        {!authLoading && userContext.userId ? (
+          <>
         <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
           <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Current Project</h2>
           <div className="mt-3 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
@@ -272,6 +307,8 @@ export default function ProjectDashboardPage() {
             <p className="mt-1 text-sm text-gray-600">View completed submissions.</p>
           </Link>
         </section>
+          </>
+        ) : null}
       </div>
     </main>
   );
