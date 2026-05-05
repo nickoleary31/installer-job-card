@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { useAuthUserContext } from "./AuthUserContextProvider";
 
@@ -12,6 +12,29 @@ export default function AuthStatusBar() {
   const { loading, context } = useAuthUserContext();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof window === "undefined" ? true : window.navigator.onLine,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.register("/sw.js").catch((registerError) => {
+      console.warn("Service worker registration failed:", registerError);
+    });
+  }, []);
 
   const handleLogout = async () => {
     setIsSigningOut(true);
@@ -30,6 +53,11 @@ export default function AuthStatusBar() {
 
   return (
     <div className="border-b border-gray-200 bg-white px-4 py-2 text-xs text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+      {!isOnline ? (
+        <p className="mx-auto mb-2 w-full max-w-6xl rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
+          Offline — changes will be saved locally when supported.
+        </p>
+      ) : null}
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3">
         <div className="truncate">
           {loading

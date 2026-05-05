@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import AuthStatusBar from "./providers/AuthStatusBar";
 import { AuthUserContextProvider } from "./providers/AuthUserContextProvider";
@@ -15,8 +15,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TKP Installer",
-  description: "%s | TKP Installer",
+  title: "Installer Sheetz",
+  description: "Installer Sheetz mobile app shell",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Installer Sheetz",
+  },
+  icons: {
+    apple: "/icon.png",
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0f172a",
 };
 
 export default function RootLayout({
