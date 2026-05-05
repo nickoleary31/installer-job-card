@@ -93,12 +93,13 @@ const DEFAULT_COMPANY_NAME = "Powerfleet";
 const DEFAULT_PROJECT_NAME = "Default Project";
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
+const generateId = () =>
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 function generateSubmissionId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return generateId();
 }
 
 /** PPD text fields persisted on job card drafts (JSON). PPD photos use `photoUploads` like VAC. */
