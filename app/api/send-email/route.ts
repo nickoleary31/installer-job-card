@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import {
+  type JobCardCp4Payload,
+  type JobCardPpdPayload,
   type JobCardSubmissionPayload,
   DEFAULT_JOB_CARD_EMAIL_TO,
   formatEmailBodyFromPayload,
@@ -19,6 +21,64 @@ function stringOrEmpty(v: unknown) {
   return typeof v === "string" ? v : "";
 }
 
+function normalizePpdPayload(raw: unknown): JobCardPpdPayload | undefined {
+  if (!isRecord(raw)) return undefined;
+  const serialsRaw = isRecord(raw.cameraSerialsByLocation) ? raw.cameraSerialsByLocation : {};
+  const cameraSerialsByLocation: Record<string, string> = {};
+  for (const [k, v] of Object.entries(serialsRaw)) {
+    if (typeof v === "string") cameraSerialsByLocation[k] = v;
+  }
+  const cameraLocations = Array.isArray(raw.cameraLocations)
+    ? raw.cameraLocations.filter((x): x is string => typeof x === "string")
+    : [];
+  return {
+    hubSerial: stringOrEmpty(raw.hubSerial),
+    cameraLocations,
+    cameraSerialsByLocation,
+    monitorInstalled: stringOrEmpty(raw.monitorInstalled),
+    customBracketsNeeded: stringOrEmpty(raw.customBracketsNeeded),
+    customBracketNotes: stringOrEmpty(raw.customBracketNotes),
+    clientApproval: stringOrEmpty(raw.clientApproval),
+    jsonFileName: stringOrEmpty(raw.jsonFileName),
+    relaysUsedForSpeedControl: stringOrEmpty(raw.relaysUsedForSpeedControl),
+    redWireDescription: stringOrEmpty(raw.redWireDescription),
+    blackWireDescription: stringOrEmpty(raw.blackWireDescription),
+    yellowWireDescription: stringOrEmpty(raw.yellowWireDescription),
+    greyWireDescription: stringOrEmpty(raw.greyWireDescription),
+    blueWireDescription: stringOrEmpty(raw.blueWireDescription),
+    powerConverterDescription: stringOrEmpty(raw.powerConverterDescription),
+    redAlarmOutDescription: stringOrEmpty(raw.redAlarmOutDescription),
+    yellowAlarmOutDescription: stringOrEmpty(raw.yellowAlarmOutDescription),
+    blackAlarmGroundDescription: stringOrEmpty(raw.blackAlarmGroundDescription),
+  };
+}
+
+function normalizeCp4Payload(raw: unknown): JobCardCp4Payload | undefined {
+  if (!isRecord(raw)) return undefined;
+  return {
+    drid: stringOrEmpty(raw.drid),
+    serial: stringOrEmpty(raw.serial),
+    cameraQuantity: stringOrEmpty(raw.cameraQuantity),
+    monitorInstalled: stringOrEmpty(raw.monitorInstalled),
+    clientApproval: stringOrEmpty(raw.clientApproval),
+    customBracketsNeeded: stringOrEmpty(raw.customBracketsNeeded),
+    customBracketNotes: stringOrEmpty(raw.customBracketNotes),
+    alarmIn1RelayInstalled: stringOrEmpty(raw.alarmIn1RelayInstalled),
+    alarmIn1Description: stringOrEmpty(raw.alarmIn1Description),
+    alarmIn2RelayInstalled: stringOrEmpty(raw.alarmIn2RelayInstalled),
+    alarmIn2Description: stringOrEmpty(raw.alarmIn2Description),
+    hubMountingDescription: stringOrEmpty(raw.hubMountingDescription),
+    microphoneMountingDescription: stringOrEmpty(raw.microphoneMountingDescription),
+    remoteControlMountingDescription: stringOrEmpty(raw.remoteControlMountingDescription),
+    gpsSensorMountingDescription: stringOrEmpty(raw.gpsSensorMountingDescription),
+    redWireDescription: stringOrEmpty(raw.redWireDescription),
+    blackWireDescription: stringOrEmpty(raw.blackWireDescription),
+    whiteWireDescription: stringOrEmpty(raw.whiteWireDescription),
+    monitorMountingDescription: stringOrEmpty(raw.monitorMountingDescription),
+    powerConverterDescription: stringOrEmpty(raw.powerConverterDescription),
+  };
+}
+
 function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null {
   if (!isRecord(p)) return null;
   const core = isRecord(p.coreJobInfo) ? p.coreJobInfo : {};
@@ -30,6 +90,10 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   const selectedSections = Array.isArray(p.selectedSections) ? p.selectedSections.filter((x) => typeof x === "string") : [];
   const additional = Array.isArray(hw.additional) ? hw.additional.filter((x) => typeof x === "string") : [];
   const photoUploads = Array.isArray(p.photoUploads) ? p.photoUploads.filter((x) => isRecord(x)) : [];
+  const ppd =
+    p.ppd !== undefined ? normalizePpdPayload(p.ppd) : undefined;
+  const cp4 =
+    p.cp4 !== undefined ? normalizeCp4Payload(p.cp4) : undefined;
   const projectRecipientEmails = Array.isArray(p.projectRecipientEmails)
     ? p.projectRecipientEmails.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean)
     : [];
@@ -59,6 +123,8 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
     },
     selectedSections,
     photoUploads: photoUploads as JobCardSubmissionPayload["photoUploads"],
+    ...(ppd ? { ppd } : {}),
+    ...(cp4 ? { cp4 } : {}),
     vac4: {
       vehicleType: stringOrEmpty(vac.vehicleType),
       otherVehicleType: stringOrEmpty(vac.otherVehicleType),

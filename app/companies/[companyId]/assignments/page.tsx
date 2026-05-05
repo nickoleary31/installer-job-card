@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
@@ -39,6 +39,15 @@ type TechnicianAssignmentView = {
   assignedProjectIds: Set<string>;
 };
 
+type CompanyUserView = {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: "admin" | "technician";
+  isMembershipActive: boolean;
+  profileIsActive: boolean;
+};
+
 function formatUserLabel(profile: UserProfileRow | null, fallbackUserId: string) {
   const displayName = profile?.display_name?.trim() || "";
   const email = profile?.email?.trim() || "";
@@ -64,11 +73,16 @@ export default function ProjectAssignmentsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
+  const [membershipSavingKeys, setMembershipSavingKeys] = useState<Set<string>>(new Set());
+  const [assignEmailInput, setAssignEmailInput] = useState("");
+  const [inviteDisplayNameInput, setInviteDisplayNameInput] = useState("");
+  const [assignRoleInput, setAssignRoleInput] = useState<"admin" | "technician">("technician");
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [recentlyChangedKey, setRecentlyChangedKey] = useState<string | null>(null);
 
   const companyRole = context.companyRolesById[companyId];
-  const isAdminForCompany = companyRole === "admin";
+  const isGlobalAdmin = context.globalRole === "admin";
+  const isAdminForCompany = companyRole === "admin" || isGlobalAdmin;
   const canReadPage = !!context.userId && (isAdminForCompany || companyRole === "technician");
 
   useEffect(() => {
@@ -89,6 +103,53 @@ export default function ProjectAssignmentsPage() {
     };
   }, [companyId]);
 
+  const loadPageData = useCallback(async () => {
+    const [{ data: projectData, error: projectError }, { data: membershipData, error: membershipError }] = await Promise.all([
+      supabase.from("projects").select("id, project_name, active").eq("company_id", companyId).order("project_name", { ascending: true }),
+      supabase.from("company_memberships").select("user_id, role, is_active").eq("company_id", companyId),
+    ]);
+    if (projectError) throw projectError;
+    if (membershipError) throw membershipError;
+
+    const projectRows = (projectData as ProjectRow[]) || [];
+    const membershipRows = (membershipData as CompanyMembershipRow[]) || [];
+    const userIds = Array.from(new Set(membershipRows.map((row) => row.user_id).filter(Boolean)));
+    const projectIds = projectRows.map((row) => row.id);
+
+    let profileRows: UserProfileRow[] = [];
+    if (userIds.length > 0) {
+      const { data: profileData, error: profileError } = await supabase
+        .from("user_profiles")
+        .select("id, email, display_name, is_active")
+        .in("id", userIds);
+      if (profileError) throw profileError;
+      profileRows = (profileData as UserProfileRow[]) || [];
+    }
+
+    let assignmentRows: ProjectAssignmentRow[] = [];
+    if (projectIds.length > 0 && userIds.length > 0) {
+      const { data: assignmentData, error: assignmentError } = await supabase
+        .from("project_assignments")
+        .select("user_id, project_id, is_active")
+        .in("project_id", projectIds)
+        .in("user_id", userIds)
+        .eq("is_active", true);
+      if (assignmentError) throw assignmentError;
+      assignmentRows = (assignmentData as ProjectAssignmentRow[]) || [];
+    }
+
+    const profileMap = profileRows.reduce<Record<string, UserProfileRow>>((acc, row) => {
+      acc[row.id] = row;
+      return acc;
+    }, {});
+
+    setProjects(projectRows);
+    setMemberships(membershipRows);
+    setProfilesById(profileMap);
+    setAssignments(assignmentRows);
+    setLoadError(null);
+  }, [companyId]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -100,52 +161,7 @@ export default function ProjectAssignmentsPage() {
       }
 
       try {
-        const [{ data: projectData, error: projectError }, { data: membershipData, error: membershipError }] = await Promise.all([
-          supabase.from("projects").select("id, project_name, active").eq("company_id", companyId).order("project_name", { ascending: true }),
-          supabase.from("company_memberships").select("user_id, role, is_active").eq("company_id", companyId).eq("is_active", true),
-        ]);
-        if (projectError) throw projectError;
-        if (membershipError) throw membershipError;
-
-        const projectRows = (projectData as ProjectRow[]) || [];
-        const membershipRows = (membershipData as CompanyMembershipRow[]) || [];
-        const userIds = Array.from(new Set(membershipRows.map((row) => row.user_id).filter(Boolean)));
-        const projectIds = projectRows.map((row) => row.id);
-
-        let profileRows: UserProfileRow[] = [];
-        if (userIds.length > 0) {
-          const { data: profileData, error: profileError } = await supabase
-            .from("user_profiles")
-            .select("id, email, display_name, is_active")
-            .in("id", userIds);
-          if (profileError) throw profileError;
-          profileRows = (profileData as UserProfileRow[]) || [];
-        }
-
-        let assignmentRows: ProjectAssignmentRow[] = [];
-        if (projectIds.length > 0 && userIds.length > 0) {
-          const { data: assignmentData, error: assignmentError } = await supabase
-            .from("project_assignments")
-            .select("user_id, project_id, is_active")
-            .in("project_id", projectIds)
-            .in("user_id", userIds)
-            .eq("is_active", true);
-          if (assignmentError) throw assignmentError;
-          assignmentRows = (assignmentData as ProjectAssignmentRow[]) || [];
-        }
-
-        if (cancelled) return;
-
-        const profileMap = profileRows.reduce<Record<string, UserProfileRow>>((acc, row) => {
-          acc[row.id] = row;
-          return acc;
-        }, {});
-
-        setProjects(projectRows);
-        setMemberships(membershipRows);
-        setProfilesById(profileMap);
-        setAssignments(assignmentRows);
-        setLoadError(null);
+        await loadPageData();
       } catch (e) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : "Failed to load assignments";
@@ -164,7 +180,7 @@ export default function ProjectAssignmentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, canReadPage, companyId]);
+  }, [authLoading, canReadPage, companyId, loadPageData]);
 
   const assignmentSet = useMemo(() => {
     const keySet = new Set<string>();
@@ -177,7 +193,7 @@ export default function ProjectAssignmentsPage() {
 
   const technicians = useMemo<TechnicianAssignmentView[]>(() => {
     return memberships
-      .filter((row) => row.role === "technician")
+      .filter((row) => row.role === "technician" && row.is_active)
       .map((row) => {
         const profile = profilesById[row.user_id] || null;
         const { displayName, email } = formatUserLabel(profile, row.user_id);
@@ -195,8 +211,42 @@ export default function ProjectAssignmentsPage() {
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [assignments, memberships, profilesById]);
 
+  const companyUsers = useMemo<CompanyUserView[]>(() => {
+    return memberships
+      .map((row) => {
+        const profile = profilesById[row.user_id] || null;
+        const { displayName, email } = formatUserLabel(profile, row.user_id);
+        return {
+          userId: row.user_id,
+          displayName,
+          email,
+          role: row.role,
+          isMembershipActive: row.is_active,
+          profileIsActive: profile?.is_active ?? true,
+        };
+      })
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [memberships, profilesById]);
+
+  const currentUserAdminMembership = useMemo(
+    () => memberships.find((row) => row.user_id === context.userId && row.role === "admin" && row.is_active),
+    [context.userId, memberships],
+  );
+  const isActiveCompanyAdmin = !!currentUserAdminMembership;
+  const canManageCompanyUsers = isGlobalAdmin || isActiveCompanyAdmin;
+  const canManageAssignments = canManageCompanyUsers;
+
   const setSavingKey = (key: string, active: boolean) => {
     setSavingKeys((prev) => {
+      const next = new Set(prev);
+      if (active) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const setMembershipSavingKey = (key: string, active: boolean) => {
+    setMembershipSavingKeys((prev) => {
       const next = new Set(prev);
       if (active) next.add(key);
       else next.delete(key);
@@ -212,11 +262,8 @@ export default function ProjectAssignmentsPage() {
 
   const handleAssignmentToggle = async (userId: string, projectId: string, shouldAssign: boolean) => {
     const currentUserId = context.userId;
-    const currentUserAdminMembership = memberships.find(
-      (row) => row.user_id === currentUserId && row.role === "admin" && row.is_active,
-    );
-    if (!currentUserId || !isAdminForCompany || !currentUserAdminMembership) {
-      setSaveError("Only active company admins can update assignments.");
+    if (!currentUserId || !canManageAssignments) {
+      setSaveError("Only global admins or active company admins can update assignments.");
       setSaveNotice(null);
       return;
     }
@@ -284,6 +331,150 @@ export default function ProjectAssignmentsPage() {
       setSaveNotice(null);
     } finally {
       setSavingKey(key, false);
+    }
+  };
+
+  const handleMembershipRoleChange = async (userId: string, role: "admin" | "technician") => {
+    if (!context.userId || !canManageCompanyUsers) {
+      setSaveError("Only global admins or active company admins can manage company users.");
+      setSaveNotice(null);
+      return;
+    }
+    const targetMembership = memberships.find((row) => row.user_id === userId);
+    const activeAdminCount = memberships.filter((row) => row.role === "admin" && row.is_active).length;
+    const isRemovingLastActiveAdmin =
+      !isGlobalAdmin &&
+      !!targetMembership &&
+      targetMembership.role === "admin" &&
+      targetMembership.is_active &&
+      role === "technician" &&
+      activeAdminCount <= 1;
+    if (isRemovingLastActiveAdmin) {
+      setSaveError("At least one admin is required for this company");
+      setSaveNotice(null);
+      return;
+    }
+    const key = `user-role::${userId}`;
+    setMembershipSavingKey(key, true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const { error } = await supabase
+        .from("company_memberships")
+        .update({ role, updated_at: new Date().toISOString() })
+        .eq("company_id", companyId)
+        .eq("user_id", userId);
+      if (error) throw error;
+      await loadPageData();
+      setSaveNotice("User role updated");
+      setLastUpdatedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to update user role");
+      setSaveNotice(null);
+    } finally {
+      setMembershipSavingKey(key, false);
+    }
+  };
+
+  const handleMembershipActiveToggle = async (userId: string, shouldBeActive: boolean) => {
+    if (!context.userId || !canManageCompanyUsers) {
+      setSaveError("Only global admins or active company admins can manage company users.");
+      setSaveNotice(null);
+      return;
+    }
+    const targetMembership = memberships.find((row) => row.user_id === userId);
+    const activeAdminCount = memberships.filter((row) => row.role === "admin" && row.is_active).length;
+    const isRemovingLastActiveAdmin =
+      !isGlobalAdmin &&
+      !!targetMembership &&
+      targetMembership.role === "admin" &&
+      targetMembership.is_active &&
+      !shouldBeActive &&
+      activeAdminCount <= 1;
+    if (isRemovingLastActiveAdmin) {
+      setSaveError("At least one admin is required for this company");
+      setSaveNotice(null);
+      return;
+    }
+    const key = `user-active::${userId}`;
+    setMembershipSavingKey(key, true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const { error } = await supabase
+        .from("company_memberships")
+        .update({ is_active: shouldBeActive, updated_at: new Date().toISOString() })
+        .eq("company_id", companyId)
+        .eq("user_id", userId);
+      if (error) throw error;
+      await loadPageData();
+      setSaveNotice(shouldBeActive ? "User reactivated" : "User deactivated");
+      setLastUpdatedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to update user status");
+      setSaveNotice(null);
+    } finally {
+      setMembershipSavingKey(key, false);
+    }
+  };
+
+  const handleInviteOrCreateUser = async () => {
+    const email = assignEmailInput.trim().toLowerCase();
+    const displayName = inviteDisplayNameInput.trim();
+    if (!email) {
+      setSaveError("Enter a user email to assign.");
+      setSaveNotice(null);
+      return;
+    }
+    if (!context.userId || !canManageCompanyUsers) {
+      setSaveError("Only global admins or active company admins can manage company users.");
+      setSaveNotice(null);
+      return;
+    }
+
+    const key = `invite-user::${email}`;
+    setMembershipSavingKey(key, true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const accessToken = session?.access_token?.trim() || "";
+      if (!accessToken) {
+        setSaveError("You must be signed in to invite or create users.");
+        setSaveNotice(null);
+        return;
+      }
+      const res = await fetch("/api/company-users/invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          companyId,
+          email,
+          displayName,
+          role: assignRoleInput,
+        }),
+      });
+      const json = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) {
+        throw new Error(json.error || `Request failed (${res.status})`);
+      }
+
+      await loadPageData();
+      setAssignEmailInput("");
+      setInviteDisplayNameInput("");
+      setAssignRoleInput("technician");
+      setSaveNotice(json.message || "User invite processed.");
+      setLastUpdatedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to invite or create user");
+      setSaveNotice(null);
+    } finally {
+      setMembershipSavingKey(key, false);
     }
   };
 
@@ -376,7 +567,7 @@ export default function ProjectAssignmentsPage() {
                                 <input
                                   type="checkbox"
                                   checked={isChecked}
-                                  disabled={!isAdminForCompany || isSaving || !tech.isMembershipActive}
+                                  disabled={!canManageAssignments || isSaving || !tech.isMembershipActive}
                                   onChange={(e) => void handleAssignmentToggle(tech.userId, project.id, e.target.checked)}
                                   aria-busy={isSaving}
                                   className="h-4 w-4 accent-blue-600"
@@ -393,6 +584,116 @@ export default function ProjectAssignmentsPage() {
               </div>
             </section>
           )
+        ) : null}
+
+        {!loading && !loadError && canReadPage && canManageCompanyUsers ? (
+          <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+            <h2 className="text-lg font-bold tracking-tight text-gray-900">Company Users</h2>
+            <p className="mt-1 text-sm text-gray-600">Manage company memberships, roles, and active status.</p>
+
+            <div className="mt-4 grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:grid-cols-[1fr_1fr_180px_auto]">
+              <input
+                type="email"
+                value={assignEmailInput}
+                onChange={(e) => setAssignEmailInput(e.target.value)}
+                placeholder="user email"
+                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+              />
+              <input
+                type="text"
+                value={inviteDisplayNameInput}
+                onChange={(e) => setInviteDisplayNameInput(e.target.value)}
+                placeholder="display name (optional)"
+                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+              />
+              <select
+                value={assignRoleInput}
+                onChange={(e) => setAssignRoleInput(e.target.value as "admin" | "technician")}
+                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+              >
+                <option value="technician">technician</option>
+                <option value="admin">admin</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => void handleInviteOrCreateUser()}
+                disabled={membershipSavingKeys.has(`invite-user::${assignEmailInput.trim().toLowerCase()}`)}
+                className="min-h-[44px] rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                Invite / Create User
+              </button>
+            </div>
+
+            {companyUsers.length === 0 ? (
+              <p className="mt-4 text-sm text-gray-600">No company users found yet.</p>
+            ) : (
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr>
+                      <th className="border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">User</th>
+                      <th className="border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">Role</th>
+                      <th className="border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">Status</th>
+                      <th className="border border-gray-200 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-800">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {companyUsers.map((user) => {
+                      const roleSavingKey = `user-role::${user.userId}`;
+                      const activeSavingKey = `user-active::${user.userId}`;
+                      const isSavingRole = membershipSavingKeys.has(roleSavingKey);
+                      const isSavingActive = membershipSavingKeys.has(activeSavingKey);
+                      return (
+                        <tr key={user.userId}>
+                          <td className="border border-gray-200 px-3 py-2 align-top">
+                            <div className="font-semibold text-gray-900">{user.displayName}</div>
+                            <div className="text-xs text-gray-600">{user.email}</div>
+                            {!user.profileIsActive ? (
+                              <div className="mt-1 text-xs font-medium text-amber-700">Profile inactive</div>
+                            ) : null}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 align-top">
+                            <select
+                              value={user.role}
+                              disabled={isSavingRole || isSavingActive}
+                              onChange={(e) => void handleMembershipRoleChange(user.userId, e.target.value as "admin" | "technician")}
+                              className="min-h-[40px] rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900"
+                            >
+                              <option value="admin">admin</option>
+                              <option value="technician">technician</option>
+                            </select>
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 align-top">
+                            <span
+                              className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
+                                user.isMembershipActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-200 text-gray-700"
+                              }`}
+                            >
+                              {user.isMembershipActive ? "active" : "inactive"}
+                            </span>
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 align-top">
+                            <button
+                              type="button"
+                              disabled={isSavingRole || isSavingActive}
+                              onClick={() => void handleMembershipActiveToggle(user.userId, !user.isMembershipActive)}
+                              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-60"
+                            >
+                              {isSavingActive
+                                ? "Saving..."
+                                : user.isMembershipActive
+                                  ? "Deactivate"
+                                  : "Reactivate"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         ) : null}
       </div>
     </main>

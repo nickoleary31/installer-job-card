@@ -208,7 +208,9 @@ export default function CompanyProjectsPage() {
   }, [authLoading, companyId, loadProjects, userContext.userId]);
 
   const companyRole = userContext.companyRolesById[companyId];
-  const isAdminForCompany = companyRole === "admin";
+  const isGlobalAdmin = userContext.globalRole === "admin";
+  const isActiveCompanyAdmin = companyRole === "admin";
+  const canManageCompanyData = isGlobalAdmin || isActiveCompanyAdmin;
 
   useEffect(() => {
     if (authLoading || !userContext.userId || companyRole !== "technician") return;
@@ -308,8 +310,8 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddProjectModal = () => {
-    if (!isAdminForCompany) {
-      setAddProjectError("Only company admins can create projects.");
+    if (!canManageCompanyData) {
+      setAddProjectError("Only global admins or active company admins can create projects.");
       return;
     }
     resetAddProjectForm();
@@ -327,8 +329,8 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddCustomerModal = () => {
-    if (!isAdminForCompany) {
-      setNewCustomerError("Only company admins can create customers/sites from project setup.");
+    if (!canManageCompanyData) {
+      setNewCustomerError("Only global admins or active company admins can create customers/sites from project setup.");
       return;
     }
     setNewCustomerForm({
@@ -350,8 +352,8 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewCustomer = async () => {
-    if (!isAdminForCompany) {
-      setNewCustomerError("Only company admins can create customers/sites from project setup.");
+    if (!canManageCompanyData) {
+      setNewCustomerError("Only global admins or active company admins can create customers/sites from project setup.");
       return;
     }
     const name = newCustomerForm.customer_name.trim();
@@ -453,8 +455,8 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewProject = async () => {
-    if (!isAdminForCompany) {
-      setAddProjectError("Only company admins can create projects.");
+    if (!canManageCompanyData) {
+      setAddProjectError("Only global admins or active company admins can create projects.");
       return;
     }
     const projectName = projectNameInput.trim();
@@ -544,7 +546,7 @@ export default function CompanyProjectsPage() {
               >
                 Customers / Sites
               </Link>
-              {companyRole === "admin" ? (
+              {canManageCompanyData ? (
                 <Link
                   href={`/companies/${encodeURIComponent(companyId)}/assignments`}
                   className="inline-flex text-sm font-semibold text-blue-700 hover:underline"
@@ -553,7 +555,7 @@ export default function CompanyProjectsPage() {
                 </Link>
               ) : null}
             </div>
-            {isAdminForCompany ? (
+            {canManageCompanyData ? (
               <button
                 type="button"
                 onClick={openAddProjectModal}
@@ -579,9 +581,34 @@ export default function CompanyProjectsPage() {
         {!loading && !loadError && !authLoading ? (
           visibleProjects.length === 0 ? (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
-              {!userContext.userId
-                ? "Log in to view projects for this company."
-                : "No projects found for this company."}
+              <p>
+                {!userContext.userId
+                  ? "Log in to view projects for this company."
+                  : "No projects found for this company."}
+              </p>
+              {canManageCompanyData ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Link
+                    href={`/companies/${encodeURIComponent(companyId)}/assignments`}
+                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Manage Users / Assignments
+                  </Link>
+                  <Link
+                    href={`/companies/${encodeURIComponent(companyId)}/customers`}
+                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Customers / Sites
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={openAddProjectModal}
+                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Add Project
+                  </button>
+                </div>
+              ) : null}
             </section>
           ) : (
             visibleProjects.map((project) => (
@@ -661,7 +688,7 @@ export default function CompanyProjectsPage() {
                               {customer.customer_name?.trim() || "Unnamed customer"}
                             </button>
                           ))}
-                          {isAdminForCompany ? (
+                          {canManageCompanyData ? (
                             <button
                               type="button"
                               onClick={openAddCustomerModal}
@@ -672,7 +699,7 @@ export default function CompanyProjectsPage() {
                           ) : null}
                         </div>
                       ) : null}
-                      {isAdminForCompany && customerSiteInput.trim() && filteredCustomers.length === 0 ? (
+                      {canManageCompanyData && customerSiteInput.trim() && filteredCustomers.length === 0 ? (
                         <button
                           type="button"
                           onClick={openAddCustomerModal}

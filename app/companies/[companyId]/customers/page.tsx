@@ -37,7 +37,9 @@ export default function CompanyCustomersPage() {
   const [loading, setLoading] = useState(() => companyId.length > 0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const companyRole = userContext.companyRolesById[companyId];
-  const isAdminForCompany = companyRole === "admin";
+  const isGlobalAdmin = userContext.globalRole === "admin";
+  const isActiveCompanyAdmin = companyRole === "admin";
+  const canManageCompanyData = isGlobalAdmin || isActiveCompanyAdmin;
 
   useEffect(() => {
     if (!companyId) return;
@@ -150,7 +152,7 @@ export default function CompanyCustomersPage() {
                 Back to Projects
               </Link>
             </div>
-            {isAdminForCompany ? (
+            {canManageCompanyData ? (
               <Link
                 href={`/companies/${encodeURIComponent(companyId)}/customers/new`}
                 className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
@@ -197,6 +199,16 @@ export default function CompanyCustomersPage() {
               {customers.length === 0
                 ? "No customers/sites yet. Add one or create one while adding a project."
                 : "No customers match your search."}
+              {canManageCompanyData ? (
+                <div className="mt-3">
+                  <Link
+                    href={`/companies/${encodeURIComponent(companyId)}/customers/new`}
+                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Add Customer / Site
+                  </Link>
+                </div>
+              ) : null}
             </section>
           ) : (
             <div className="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)]">

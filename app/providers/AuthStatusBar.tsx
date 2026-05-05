@@ -19,7 +19,7 @@ export default function AuthStatusBar() {
     try {
       const { error: signOutError } = await supabase.auth.signOut();
       if (signOutError) throw signOutError;
-      router.refresh();
+      router.replace("/login");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to log out";
       setError(msg);
