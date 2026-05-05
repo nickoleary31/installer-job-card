@@ -23,20 +23,25 @@ type CompanyRow = {
 /** NewSubmissionForm reads these keys before fetching default company/project online. */
 function OfflineStartJobCardLink({ companyId, projectId }: { companyId: string; projectId: string }) {
   return (
-    <a
-      href="/new-submission"
-      className="mt-2 inline-flex rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
-      onClick={() => {
-        try {
-          window.localStorage.setItem(SELECTED_COMPANY_ID_KEY, companyId);
-          window.localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId);
-        } catch {
-          // ignore storage failures
-        }
-      }}
-    >
-      Start local job card
-    </a>
+    <div className="mt-2">
+      <a
+        href="/new-submission"
+        className="inline-flex rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
+        onClick={() => {
+          try {
+            window.localStorage.setItem(SELECTED_COMPANY_ID_KEY, companyId);
+            window.localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId);
+          } catch {
+            // ignore storage failures
+          }
+        }}
+      >
+        Start local job card
+      </a>
+      <p className="mt-1 max-w-[20rem] text-xs text-gray-600">
+        If this does not load: offline app shell could not load. Open New Submission once online before using offline.
+      </p>
+    </div>
   );
 }
 
