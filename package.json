@@ -12,7 +12,7 @@
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
     "@zxing/browser": "^0.2.0",
-    "@zxing/library": "^0.23.0",
+    "@zxing/library": "^0.22.0",
     "browser-image-compression": "^2.0.2",
     "next": "16.2.4",
     "react": "19.2.4",
