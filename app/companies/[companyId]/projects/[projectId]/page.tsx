@@ -69,6 +69,7 @@ type ExpenseRow = {
   lost_receipt: boolean | null;
   needs_review: boolean | null;
   review_reason: string | null;
+  review_status: string | null;
 };
 
 type UserProfileLookupRow = {
@@ -163,6 +164,8 @@ export default function ProjectDashboardPage() {
   const [expensesError, setExpensesError] = useState<string | null>(null);
   const [savingExpense, setSavingExpense] = useState(false);
   const [saveExpenseError, setSaveExpenseError] = useState<string | null>(null);
+  const [reviewToast, setReviewToast] = useState<string | null>(null);
+  const [reviewActionExpenseId, setReviewActionExpenseId] = useState<string | null>(null);
   const [amountInput, setAmountInput] = useState("");
   const [categoryInput, setCategoryInput] = useState("");
   const [notesInput, setNotesInput] = useState("");
@@ -311,7 +314,7 @@ export default function ProjectDashboardPage() {
       try {
         const { data, error } = await supabase
           .from("expenses")
-          .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason")
+          .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason, review_status")
           .eq("project_id", projectId)
           .order("created_at", { ascending: false });
         if (error) throw error;
@@ -374,6 +377,11 @@ export default function ProjectDashboardPage() {
     () => expenses.filter((row) => row.needs_review === true).length,
     [expenses],
   );
+  const flaggedExpenses = useMemo(
+    () => expenses.filter((row) => row.needs_review === true),
+    [expenses],
+  );
+  const canReviewExpenses = isGlobalAdmin || companyRole === "admin";
 
   const handleReceiptFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -472,7 +480,7 @@ export default function ProjectDashboardPage() {
       const { data: insertedExpense, error: insertError } = await supabase
         .from("expenses")
         .insert(expenseInsertPayload)
-        .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason")
+        .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason, review_status")
         .single<ExpenseRow>();
       if (insertError) {
         console.error("Expense insert failed", {
@@ -503,7 +511,7 @@ export default function ProjectDashboardPage() {
               .from("expenses")
               .update({ receipt_url: uploadedReceiptUrl })
               .eq("id", insertedExpense.id)
-              .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason")
+              .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason, review_status")
               .single<ExpenseRow>();
             if (updateError) throw updateError;
             nextExpense = updatedExpense;
@@ -526,6 +534,40 @@ export default function ProjectDashboardPage() {
       setSavingExpense(false);
     }
   };
+
+  const handleReviewAction = async (expenseId: string, action: "approved" | "rejected") => {
+    if (!userContext.userId) return;
+    if (!canReviewExpenses) return;
+    setReviewActionExpenseId(expenseId);
+    try {
+      const nowIso = new Date().toISOString();
+      const { data: updatedExpense, error } = await supabase
+        .from("expenses")
+        .update({
+          review_status: action,
+          reviewed_by: userContext.userId,
+          reviewed_at: nowIso,
+          needs_review: false,
+        })
+        .eq("id", expenseId)
+        .eq("project_id", projectId)
+        .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason, review_status")
+        .single<ExpenseRow>();
+      if (error) throw error;
+      setExpenses((prev) => prev.map((expense) => (expense.id === expenseId ? updatedExpense : expense)));
+      setReviewToast(action === "approved" ? "Expense approved" : "Expense rejected");
+    } catch (error) {
+      setSaveExpenseError(error instanceof Error ? error.message : "Failed to update expense review status.");
+    } finally {
+      setReviewActionExpenseId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!reviewToast) return;
+    const timeoutId = window.setTimeout(() => setReviewToast(null), 2500);
+    return () => window.clearTimeout(timeoutId);
+  }, [reviewToast]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
@@ -780,6 +822,7 @@ export default function ProjectDashboardPage() {
               </div>
 
               {saveExpenseError ? <p className="mt-3 text-sm font-semibold text-amber-700">{saveExpenseError}</p> : null}
+              {reviewToast ? <p className="mt-3 text-sm font-semibold text-emerald-700">{reviewToast}</p> : null}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
@@ -876,6 +919,70 @@ export default function ProjectDashboardPage() {
                       );
                     })
                   : null}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+              <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Flagged Expenses</h2>
+              <p className="mt-1 text-sm text-gray-600">Expenses that need admin review.</p>
+              <div className="mt-4 space-y-3">
+                {flaggedExpenses.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                    No flagged expenses for this project.
+                  </p>
+                ) : null}
+                {flaggedExpenses.map((expense) => {
+                  const amountValue = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
+                  return (
+                    <article key={expense.id} className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-base font-bold text-gray-900">
+                            {Number.isFinite(amountValue) ? formatCurrency(amountValue) : "—"}
+                          </p>
+                          <p className="text-sm font-semibold text-gray-700">{displayCell(expense.category)}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700">
+                              Needs Review
+                            </span>
+                            {expense.receipt_url ? (
+                              <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                                Receipt attached
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500">{formatTimestamp(expense.created_at)}</p>
+                      </div>
+                      {expense.review_reason ? (
+                        <p className="mt-2 text-xs font-semibold text-rose-700">Reason: {expense.review_reason}</p>
+                      ) : null}
+                      {expense.notes?.trim() ? (
+                        <p className="mt-2 whitespace-pre-wrap text-sm text-gray-700">{expense.notes.trim()}</p>
+                      ) : null}
+                      {canReviewExpenses ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleReviewAction(expense.id, "approved")}
+                            disabled={reviewActionExpenseId === expense.id}
+                            className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleReviewAction(expense.id, "rejected")}
+                            disabled={reviewActionExpenseId === expense.id}
+                            className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
               </div>
             </section>
 
