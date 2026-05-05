@@ -23,6 +23,7 @@ import {
   saveOfflineJobCardDraft,
   type OfflineJobCardDraftRecord,
 } from "@/lib/offline-job-card-drafts";
+import { getBestStarterSnapshotForOffline } from "@/lib/starter-data-cache";
 import {
   formatServiceAppointment,
   formatUpper,
@@ -1186,6 +1187,7 @@ export function NewSubmissionForm() {
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
   const [localDeviceSaveError, setLocalDeviceSaveError] = useState<string | null>(null);
+  const [offlineProjectDetailsWarning, setOfflineProjectDetailsWarning] = useState<string | null>(null);
   const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
     if (typeof window === "undefined") return null;
     const hasManualResumeRequest =
@@ -1203,6 +1205,8 @@ export function NewSubmissionForm() {
   const [offlineRestorePayload, setOfflineRestorePayload] = useState<OfflineJobCardDraftPayload | null>(null);
   const [isOffline, setIsOffline] = useState(false);
   const offlineDraftIdRef = useRef<string | null>(null);
+  /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
+  const saveToDeviceGenerationRef = useRef(0);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
   const autosaveCheckedRef = useRef(false);
 
@@ -1571,6 +1575,29 @@ export function NewSubmissionForm() {
     const selected = await resolveSelectedOrDefaultContextIds();
     let projectName = "";
     let projectRecipientEmails: string[] = [];
+
+    if (typeof window !== "undefined" && !window.navigator.onLine) {
+      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const projectId = selected.projectId;
+      if (companyId && projectId) {
+        try {
+          const snap = await getBestStarterSnapshotForOffline();
+          const list = snap?.projectsByCompanyId[companyId] || [];
+          const row = list.find((p) => p.id === projectId);
+          if (row) {
+            projectName = row.project_name?.trim() || "";
+          }
+        } catch {
+          // offline: keep empty projectName
+        }
+      }
+      return {
+        companyId: selected.companyId,
+        projectId: selected.projectId,
+        projectName,
+        projectRecipientEmails: [],
+      };
+    }
 
     try {
       const { data, error } = await supabase
@@ -3039,7 +3066,11 @@ export function NewSubmissionForm() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const sync = () => setIsOffline(!window.navigator.onLine);
+    const sync = () => {
+      const offline = !window.navigator.onLine;
+      setIsOffline(offline);
+      if (!offline) setOfflineProjectDetailsWarning(null);
+    };
     sync();
     window.addEventListener("online", sync);
     window.addEventListener("offline", sync);
@@ -3073,9 +3104,45 @@ export function NewSubmissionForm() {
     if (restoredFromDraftRef.current) return;
 
     let cancelled = false;
+    const offlineCacheWarning =
+      "Project details were not cached. Open this project online once before using offline.";
+
     const applyProjectAutofill = async () => {
       const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      const selectedCompanyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
       if (!selectedProjectId) return;
+
+      if (!window.navigator.onLine) {
+        try {
+          const snap = await getBestStarterSnapshotForOffline();
+          const list = snap?.projectsByCompanyId[selectedCompanyId] || [];
+          const cached = list.find((p) => p.id === selectedProjectId);
+          if (cancelled) return;
+          if (!cached) {
+            setOfflineProjectDetailsWarning(offlineCacheWarning);
+            return;
+          }
+          let projectCustomer = cached.displayCustomerName?.trim() || "";
+          if (projectCustomer === "—") projectCustomer = "";
+          const projectLocation = cached.displayLocation?.trim() || "";
+          if (!projectCustomer && !projectLocation) {
+            setOfflineProjectDetailsWarning(offlineCacheWarning);
+            return;
+          }
+          setOfflineProjectDetailsWarning(null);
+          setCoreJob((prev) => {
+            if (restoredFromDraftRef.current) return prev;
+            const nextCustomer = prev.customer.trim() ? prev.customer : projectCustomer;
+            const nextLocation = prev.location.trim() ? prev.location : projectLocation;
+            if (nextCustomer === prev.customer && nextLocation === prev.location) return prev;
+            return { ...prev, customer: nextCustomer, location: nextLocation };
+          });
+        } catch {
+          if (!cancelled) setOfflineProjectDetailsWarning(offlineCacheWarning);
+        }
+        return;
+      }
+
       try {
         const { data, error } = await supabase
           .from("projects")
@@ -3123,6 +3190,10 @@ export function NewSubmissionForm() {
     let cancelled = false;
     const loadProjectExternalRecipients = async () => {
       try {
+        if (typeof window !== "undefined" && !window.navigator.onLine) {
+          if (!cancelled) setProjectExternalRecipientEmails([]);
+          return;
+        }
         const { projectId } = await resolveSelectedOrDefaultContextIds();
         if (!projectId || cancelled) return;
         const { data, error } = await supabase
@@ -3265,6 +3336,10 @@ export function NewSubmissionForm() {
   });
 
   const handleSaveDraft = async () => {
+    if (isOffline) {
+      setDraftNoticeMessage("Offline mode: cloud draft save disabled. Use 'Save to this device'.");
+      return;
+    }
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const draftData = buildCurrentDraftData(photoSnapshot);
@@ -3313,10 +3388,12 @@ export function NewSubmissionForm() {
   const handleSaveToDevice = async (event?: MouseEvent<HTMLButtonElement>) => {
     event?.preventDefault();
     event?.stopPropagation();
+    const generation = ++saveToDeviceGenerationRef.current;
     console.log("[Offline draft] Save to device started", {
       submissionId,
       selectedSectionsCount: selectedSections.length,
       isOffline,
+      generation,
     });
     setLocalDeviceSaveError(null);
     const photoSnapshot = getPhotoPersistenceSnapshot();
@@ -3333,14 +3410,27 @@ export function NewSubmissionForm() {
     };
     try {
       await saveOfflineJobCardDraft(payload);
-      console.log("[Offline draft] IndexedDB save succeeded", {
-        offlineDraftId,
+      if (generation !== saveToDeviceGenerationRef.current) {
+        console.log("[Offline draft] Ignoring stale save success", { offlineDraftId, generation });
+        return;
+      }
+      console.log("[Offline draft] IndexedDB save succeeded — draft id:", offlineDraftId, {
+        submissionId,
         savedAt,
       });
+      setLocalDeviceSaveError(null);
       offlineDraftIdRef.current = offlineDraftId;
       setOfflineRestorePayload(payload);
       setDraftNoticeMessage("Saved on this device");
     } catch (error) {
+      if (generation !== saveToDeviceGenerationRef.current) {
+        console.log("[Offline draft] Ignoring stale save failure", {
+          offlineDraftId,
+          generation,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
       console.error("[Offline draft] IndexedDB save failed", {
         message: error instanceof Error ? error.message : String(error),
         error,
@@ -3449,6 +3539,11 @@ export function NewSubmissionForm() {
             {draftNoticeMessage}
           </div>
         )}
+        {offlineProjectDetailsWarning ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950" role="status">
+            {offlineProjectDetailsWarning}
+          </div>
+        ) : null}
         {localDeviceSaveError ? (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-900" role="alert">
             {localDeviceSaveError}
@@ -6303,9 +6398,10 @@ export function NewSubmissionForm() {
             type="button"
             className={btnSecondaryClassName}
             onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
+            disabled={isOffline}
           >
               <IconFloppy className="h-5 w-5" />
-            {hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}
+            {hasCoreOrVehicleInfo ? (isOffline ? "Save Draft (online only)" : "Save Draft and Exit") : "Exit"}
           </button>
           {hasCoreOrVehicleInfo ? (
             <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingRequest}>
@@ -6679,9 +6775,12 @@ export function NewSubmissionForm() {
                     type="button"
                     className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
                     onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
+                    disabled={isOffline}
                   >
                     <IconFloppy className="h-5 w-5 shrink-0" />
-                    <span className="truncate">{hasCoreOrVehicleInfo ? "Save Draft and Exit" : "Exit"}</span>
+                    <span className="truncate">
+                      {hasCoreOrVehicleInfo ? (isOffline ? "Save Draft (online only)" : "Save Draft and Exit") : "Exit"}
+                    </span>
                   </button>
                   <button
                     type="button"

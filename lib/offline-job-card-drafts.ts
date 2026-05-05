@@ -37,9 +37,11 @@ export async function saveOfflineJobCardDraft<TDraftData>(
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
-    store.put(record);
+    const req = store.put(record);
+    req.onerror = () => reject(req.error || new Error("Failed to put offline draft"));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error("Failed to save offline draft"));
+    tx.onabort = () => reject(new Error("Offline draft save transaction aborted"));
   });
   db.close();
 }

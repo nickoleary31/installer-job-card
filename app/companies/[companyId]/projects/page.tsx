@@ -19,6 +19,7 @@ type ProjectCardRow = {
   project_name: string;
   active: boolean;
   displayCustomerName: string;
+  displayLocation: string;
   completedSubmissionCount: number;
 };
 
@@ -26,9 +27,13 @@ type ProjectQueryRow = {
   id: string;
   project_name: string;
   active: boolean;
+  location: string | null;
   customer_id: string | null;
   customer_name: string | null;
-  customers: { customer_name: string | null } | { customer_name: string | null }[] | null;
+  customers:
+    | { customer_name: string | null; full_address: string | null }
+    | { customer_name: string | null; full_address: string | null }[]
+    | null;
 };
 
 type CompanyRow = {
@@ -153,7 +158,7 @@ export default function CompanyProjectsPage() {
     const { data: projData, error: projError } = await supabase
       .from("projects")
       .select(
-        "id, project_name, active, customer_id, customer_name, customers:customer_id(customer_name)",
+        "id, project_name, active, location, customer_id, customer_name, customers:customer_id(customer_name, full_address)",
       )
       .eq("company_id", companyId)
       .order("project_name", { ascending: true });
@@ -184,11 +189,14 @@ export default function CompanyProjectsPage() {
       const linked = Array.isArray(row.customers) ? row.customers[0] : row.customers;
       const fromCustomer = linked?.customer_name?.trim() || "";
       const fromProject = row.customer_name?.trim() || "";
+      const addressFromCustomer = linked?.full_address?.trim() || "";
+      const fromProjectLocation = row.location?.trim() || "";
       return {
         id: row.id,
         project_name: row.project_name,
         active: row.active,
         displayCustomerName: fromCustomer || fromProject || "—",
+        displayLocation: addressFromCustomer || fromProjectLocation || "",
         completedSubmissionCount: countByProject.get(row.id) ?? 0,
       };
     });
@@ -225,7 +233,16 @@ export default function CompanyProjectsPage() {
             setOfflineSnapshot(snap);
             const miss = cachedProjects.length === 0;
             setOfflineProjectsCacheMiss(miss);
-            setProjects(cachedProjects as ProjectCardRow[]);
+            setProjects(
+              cachedProjects.map((p) => ({
+                id: p.id,
+                project_name: p.project_name,
+                active: p.active,
+                displayCustomerName: p.displayCustomerName,
+                displayLocation: p.displayLocation ?? "",
+                completedSubmissionCount: p.completedSubmissionCount,
+              })),
+            );
             setCompanyName(cachedCompany?.name?.trim() || "—");
             setCachedAt(snap.cachedAt);
           }
@@ -656,6 +673,7 @@ export default function CompanyProjectsPage() {
           project_name: project.project_name,
           active: project.active,
           displayCustomerName: project.displayCustomerName,
+          displayLocation: project.displayLocation,
           completedSubmissionCount: project.completedSubmissionCount,
         })),
       },

@@ -9,6 +9,8 @@ export type CachedProjectItem = {
   project_name: string;
   active: boolean;
   displayCustomerName: string;
+  /** Site / project address when cached from online project list */
+  displayLocation?: string;
   completedSubmissionCount: number;
 };
 
