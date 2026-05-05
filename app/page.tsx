@@ -131,6 +131,8 @@ type StoredJobCardDraft = {
     vac4: Record<string, string | undefined>;
     /** Present on drafts saved after PPD draft persistence; omit on older drafts. */
     ppd?: StoredPpdDraftPayload;
+    /** CP4 text/select fields only (local photos are not in draft JSON). Omit when CP4 not selected or on older drafts. */
+    cp4?: StoredCp4DraftPayload;
     photoUploads?: UploadedPhotoMetadata[];
     photoSummary: {
       vac4PhotoFileNames: VacPhotoFileNames;
@@ -251,6 +253,48 @@ type PpdPhotoKey = (typeof PPD_PHOTO_KEYS)[number];
 
 const PPD_WIRE_PATH_MIN_PHOTOS = 3;
 
+/** CP4 local-only photo slots (no Supabase upload in this phase). */
+const CP4_PHOTO_KEYS = [
+  "cameraMounting",
+  "wirePath",
+  "hubMounting",
+  "microphoneMounting",
+  "remoteControlMounting",
+  "gpsSensorMounting",
+  "redBattery",
+  "blackBattery",
+  "whiteIgnition",
+  "monitorMounting",
+  "powerConverter",
+  "alarmIn1",
+  "alarmIn2",
+] as const;
+type Cp4PhotoKey = (typeof CP4_PHOTO_KEYS)[number];
+
+/** CP4 text/select fields persisted on job card drafts (JSON). Local CP4 photos are not included. */
+type StoredCp4DraftPayload = {
+  drid: string;
+  serial: string;
+  cameraQuantity: string;
+  monitorInstalled: string;
+  clientApproval: string;
+  customBracketsNeeded: string;
+  customBracketNotes: string;
+  alarmIn1RelayInstalled: string;
+  alarmIn1Description: string;
+  alarmIn2RelayInstalled: string;
+  alarmIn2Description: string;
+  hubMountingDescription: string;
+  microphoneMountingDescription: string;
+  remoteControlMountingDescription: string;
+  gpsSensorMountingDescription: string;
+  redWireDescription: string;
+  blackWireDescription: string;
+  whiteWireDescription: string;
+  monitorMountingDescription: string;
+  powerConverterDescription: string;
+};
+
 function emptyPpdPhotoFiles(): Record<PpdPhotoKey, File[]> {
   const out = {} as Record<PpdPhotoKey, File[]>;
   for (const k of PPD_PHOTO_KEYS) out[k] = [];
@@ -260,6 +304,18 @@ function emptyPpdPhotoFiles(): Record<PpdPhotoKey, File[]> {
 function emptyPpdPhotoErrors(): Record<PpdPhotoKey, string | null> {
   const out = {} as Record<PpdPhotoKey, string | null>;
   for (const k of PPD_PHOTO_KEYS) out[k] = null;
+  return out;
+}
+
+function emptyCp4PhotoFiles(): Record<Cp4PhotoKey, File[]> {
+  const out = {} as Record<Cp4PhotoKey, File[]>;
+  for (const k of CP4_PHOTO_KEYS) out[k] = [];
+  return out;
+}
+
+function emptyCp4PhotoErrors(): Record<Cp4PhotoKey, string | null> {
+  const out = {} as Record<Cp4PhotoKey, string | null>;
+  for (const k of CP4_PHOTO_KEYS) out[k] = null;
   return out;
 }
 
@@ -954,6 +1010,28 @@ export function NewSubmissionForm() {
   const [ppdBlackAlarmGroundDescription, setPpdBlackAlarmGroundDescription] = useState("");
   const [ppdPhotoFiles, setPpdPhotoFiles] = useState<Record<PpdPhotoKey, File[]>>(() => emptyPpdPhotoFiles());
   const [ppdPhotoErrors, setPpdPhotoErrors] = useState<Record<PpdPhotoKey, string | null>>(() => emptyPpdPhotoErrors());
+  const [cp4Drid, setCp4Drid] = useState("");
+  const [cp4Serial, setCp4Serial] = useState("");
+  const [cp4CameraQuantity, setCp4CameraQuantity] = useState("");
+  const [cp4MonitorInstalled, setCp4MonitorInstalled] = useState("");
+  const [cp4ClientApproval, setCp4ClientApproval] = useState("");
+  const [cp4CustomBracketsNeeded, setCp4CustomBracketsNeeded] = useState("");
+  const [cp4CustomBracketNotes, setCp4CustomBracketNotes] = useState("");
+  const [cp4AlarmIn1RelayInstalled, setCp4AlarmIn1RelayInstalled] = useState("");
+  const [cp4AlarmIn1Description, setCp4AlarmIn1Description] = useState("");
+  const [cp4AlarmIn2RelayInstalled, setCp4AlarmIn2RelayInstalled] = useState("");
+  const [cp4AlarmIn2Description, setCp4AlarmIn2Description] = useState("");
+  const [cp4HubMountingDescription, setCp4HubMountingDescription] = useState("");
+  const [cp4MicrophoneMountingDescription, setCp4MicrophoneMountingDescription] = useState("");
+  const [cp4RemoteControlMountingDescription, setCp4RemoteControlMountingDescription] = useState("");
+  const [cp4GpsSensorMountingDescription, setCp4GpsSensorMountingDescription] = useState("");
+  const [cp4RedWireDescription, setCp4RedWireDescription] = useState("");
+  const [cp4BlackWireDescription, setCp4BlackWireDescription] = useState("");
+  const [cp4WhiteWireDescription, setCp4WhiteWireDescription] = useState("");
+  const [cp4MonitorMountingDescription, setCp4MonitorMountingDescription] = useState("");
+  const [cp4PowerConverterDescription, setCp4PowerConverterDescription] = useState("");
+  const [cp4PhotoFiles, setCp4PhotoFiles] = useState<Record<Cp4PhotoKey, File[]>>(() => emptyCp4PhotoFiles());
+  const [cp4PhotoErrors, setCp4PhotoErrors] = useState<Record<Cp4PhotoKey, string | null>>(() => emptyCp4PhotoErrors());
   const [vacPhotoFiles, setVacPhotoFiles] = useState<VacPhotoFilesState>(() => emptyVacPhotoFiles());
   const [vacPhotoUrls, setVacPhotoUrls] = useState<VacPhotoUrlsState>(() => emptyVacPhotoUrls());
   const [photoMetadataByField, setPhotoMetadataByField] = useState<PhotoMetadataByFieldState>(() =>
@@ -1041,6 +1119,14 @@ export function NewSubmissionForm() {
     () => parseVehicleVoltageVolts(vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther),
     [vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther],
   );
+  const cp4VehicleVolts = useMemo(
+    () => parseVehicleVoltageVolts(vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther),
+    [vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther],
+  );
+  const cp4ShowPowerConverterMounting = cp4VehicleVolts !== null && cp4VehicleVolts > 24;
+  const cp4ShowMonitorMounting = cp4MonitorInstalled === "Yes";
+  const cp4ShowAlarmIn1 = cp4AlarmIn1RelayInstalled === "Yes";
+  const cp4ShowAlarmIn2 = cp4AlarmIn2RelayInstalled === "Yes";
   const ppdShowPowerConverterMounting = ppdVehicleVolts !== null && ppdVehicleVolts > 36;
   const ppdShowAlarmOutConnections = useMemo(
     () => selectedSections.some((s) => hardwareSectionTriggersPpdAlarmOut(s)),
@@ -1063,6 +1149,18 @@ export function NewSubmissionForm() {
     for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].map((f) => f.name);
     return out;
   }, [ppdPhotoFiles]);
+
+  const cp4Pc = useMemo(() => {
+    const out = {} as Record<Cp4PhotoKey, number>;
+    for (const k of CP4_PHOTO_KEYS) out[k] = cp4PhotoFiles[k].length;
+    return out;
+  }, [cp4PhotoFiles]);
+
+  const cp4PhotoFileNames = useMemo(() => {
+    const out = {} as Record<Cp4PhotoKey, string[]>;
+    for (const k of CP4_PHOTO_KEYS) out[k] = cp4PhotoFiles[k].map((f) => f.name);
+    return out;
+  }, [cp4PhotoFiles]);
 
   const ppdCameraSerialsReviewSummary = useMemo(() => {
     const parts = PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(
@@ -1503,6 +1601,51 @@ export function NewSubmissionForm() {
       if (ppdShowBlackAlarmGround) {
         if (ppdPc.blackAlarmGround < 1) issues.push("photo-ppd-blackAlarmGround");
         if (!ppdBlackAlarmGroundDescription.trim()) issues.push("ppd-blackAlarmGroundDescription");
+      }
+    }
+
+    if (selectedSections.includes("CP4")) {
+      const cameraQty = Number.parseInt(cp4CameraQuantity, 10);
+      if (!cp4Drid.trim()) issues.push("cp4-drid");
+      if (!cp4Serial.trim()) issues.push("cp4-serial");
+      if (!Number.isFinite(cameraQty) || cameraQty < 1) issues.push("cp4-cameraQuantity");
+      if (cp4MonitorInstalled !== "Yes" && cp4MonitorInstalled !== "No") issues.push("cp4-monitorInstalled");
+      if (!cp4ClientApproval.trim()) issues.push("cp4-clientApproval");
+      if (cp4CustomBracketsNeeded !== "Yes" && cp4CustomBracketsNeeded !== "No") issues.push("cp4-customBracketsNeeded");
+      if (cp4CustomBracketsNeeded === "Yes" && !cp4CustomBracketNotes.trim()) issues.push("cp4-customBracketNotes");
+
+      if (cp4Pc.cameraMounting < 1) issues.push("photo-cp4-cameraMounting");
+      if (cp4Pc.wirePath < 1) issues.push("photo-cp4-wirePath");
+      if (cp4Pc.hubMounting < 1) issues.push("photo-cp4-hubMounting");
+      if (!cp4HubMountingDescription.trim()) issues.push("cp4-hubMountingDescription");
+      if (cp4Pc.microphoneMounting < 1) issues.push("photo-cp4-microphoneMounting");
+      if (!cp4MicrophoneMountingDescription.trim()) issues.push("cp4-microphoneMountingDescription");
+      if (cp4Pc.remoteControlMounting < 1) issues.push("photo-cp4-remoteControlMounting");
+      if (!cp4RemoteControlMountingDescription.trim()) issues.push("cp4-remoteControlMountingDescription");
+      if (cp4Pc.gpsSensorMounting < 1) issues.push("photo-cp4-gpsSensorMounting");
+      if (!cp4GpsSensorMountingDescription.trim()) issues.push("cp4-gpsSensorMountingDescription");
+      if (cp4Pc.redBattery < 1) issues.push("photo-cp4-redBattery");
+      if (!cp4RedWireDescription.trim()) issues.push("cp4-redWireDescription");
+      if (cp4Pc.blackBattery < 1) issues.push("photo-cp4-blackBattery");
+      if (!cp4BlackWireDescription.trim()) issues.push("cp4-blackWireDescription");
+      if (cp4Pc.whiteIgnition < 1) issues.push("photo-cp4-whiteIgnition");
+      if (!cp4WhiteWireDescription.trim()) issues.push("cp4-whiteWireDescription");
+
+      if (cp4ShowMonitorMounting) {
+        if (cp4Pc.monitorMounting < 1) issues.push("photo-cp4-monitorMounting");
+        if (!cp4MonitorMountingDescription.trim()) issues.push("cp4-monitorMountingDescription");
+      }
+      if (cp4ShowPowerConverterMounting) {
+        if (cp4Pc.powerConverter < 1) issues.push("photo-cp4-powerConverter");
+        if (!cp4PowerConverterDescription.trim()) issues.push("cp4-powerConverterDescription");
+      }
+      if (cp4ShowAlarmIn1) {
+        if (cp4Pc.alarmIn1 < 1) issues.push("photo-cp4-alarmIn1");
+        if (!cp4AlarmIn1Description.trim()) issues.push("cp4-alarmIn1Description");
+      }
+      if (cp4ShowAlarmIn2) {
+        if (cp4Pc.alarmIn2 < 1) issues.push("photo-cp4-alarmIn2");
+        if (!cp4AlarmIn2Description.trim()) issues.push("cp4-alarmIn2Description");
       }
     }
 
@@ -2018,6 +2161,82 @@ export function NewSubmissionForm() {
     }
   };
 
+  const cp4PhotoIssueKey = (key: Cp4PhotoKey) => `photo-cp4-${key}`;
+
+  const removeCp4LocalPhoto = (key: Cp4PhotoKey, targetFile: File) => {
+    const targetKey = localFileDedupeKey(targetFile);
+    const photoKey = cp4PhotoIssueKey(key);
+    setCp4PhotoFiles((p) => {
+      const nextList = p[key].filter((f) => localFileDedupeKey(f) !== targetKey);
+      queueMicrotask(() => {
+        if (nextList.length < 1) {
+          setReviewHighlights((prev) => {
+            const next = new Set(prev);
+            next.add(photoKey);
+            return next;
+          });
+        } else {
+          setReviewHighlights((prev) => {
+            if (!prev.has(photoKey)) return prev;
+            const next = new Set(prev);
+            next.delete(photoKey);
+            if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+            return next;
+          });
+        }
+      });
+      return { ...p, [key]: nextList };
+    });
+  };
+
+  const applyCp4PhotoUpload = (key: Cp4PhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType && picked.length > 0) {
+      setCp4PhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setCp4PhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    const photoKey = cp4PhotoIssueKey(key);
+    if (picked.length === 0) {
+      setCp4PhotoFiles((p) => ({ ...p, [key]: [] }));
+      setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      return;
+    }
+
+    if (mode === "single") {
+      setCp4PhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+      setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      return;
+    }
+
+    const currentCount = cp4PhotoFiles[key].length;
+    if (currentCount + picked.length > MAX_PHOTOS_PER_FIELD) {
+      setCp4PhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
+      return;
+    }
+
+    setCp4PhotoFiles((p) => ({ ...p, [key]: [...p[key], ...picked] }));
+    setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
+    clearFieldHighlight(photoKey);
+  };
+
   const handleReviewClick = () => {
     setSubmitSuccessMessage(null);
     setEmailSubmissionPreview(null);
@@ -2265,10 +2484,59 @@ export function NewSubmissionForm() {
       setPpdYellowAlarmOutDescription("");
       setPpdBlackAlarmGroundDescription("");
     }
-    // Files cannot be restored from localStorage; rebuild photo state from saved metadata.
+
+    const rawCp4 = draft.cp4;
+    if (rawCp4 !== undefined && rawCp4 !== null && typeof rawCp4 === "object" && !Array.isArray(rawCp4)) {
+      const c = rawCp4 as Record<string, unknown>;
+      setCp4Drid(draftString(c.drid));
+      setCp4Serial(draftString(c.serial));
+      setCp4CameraQuantity(draftString(c.cameraQuantity));
+      setCp4MonitorInstalled(draftString(c.monitorInstalled));
+      setCp4ClientApproval(draftString(c.clientApproval));
+      setCp4CustomBracketsNeeded(draftString(c.customBracketsNeeded));
+      setCp4CustomBracketNotes(draftString(c.customBracketNotes));
+      setCp4AlarmIn1RelayInstalled(draftString(c.alarmIn1RelayInstalled));
+      setCp4AlarmIn1Description(draftString(c.alarmIn1Description));
+      setCp4AlarmIn2RelayInstalled(draftString(c.alarmIn2RelayInstalled));
+      setCp4AlarmIn2Description(draftString(c.alarmIn2Description));
+      setCp4HubMountingDescription(draftString(c.hubMountingDescription));
+      setCp4MicrophoneMountingDescription(draftString(c.microphoneMountingDescription));
+      setCp4RemoteControlMountingDescription(draftString(c.remoteControlMountingDescription));
+      setCp4GpsSensorMountingDescription(draftString(c.gpsSensorMountingDescription));
+      setCp4RedWireDescription(draftString(c.redWireDescription));
+      setCp4BlackWireDescription(draftString(c.blackWireDescription));
+      setCp4WhiteWireDescription(draftString(c.whiteWireDescription));
+      setCp4MonitorMountingDescription(draftString(c.monitorMountingDescription));
+      setCp4PowerConverterDescription(draftString(c.powerConverterDescription));
+    } else {
+      setCp4Drid("");
+      setCp4Serial("");
+      setCp4CameraQuantity("");
+      setCp4MonitorInstalled("");
+      setCp4ClientApproval("");
+      setCp4CustomBracketsNeeded("");
+      setCp4CustomBracketNotes("");
+      setCp4AlarmIn1RelayInstalled("");
+      setCp4AlarmIn1Description("");
+      setCp4AlarmIn2RelayInstalled("");
+      setCp4AlarmIn2Description("");
+      setCp4HubMountingDescription("");
+      setCp4MicrophoneMountingDescription("");
+      setCp4RemoteControlMountingDescription("");
+      setCp4GpsSensorMountingDescription("");
+      setCp4RedWireDescription("");
+      setCp4BlackWireDescription("");
+      setCp4WhiteWireDescription("");
+      setCp4MonitorMountingDescription("");
+      setCp4PowerConverterDescription("");
+    }
+
+    // VAC/vehicle photos: rebuild from saved upload metadata. PPD/CP4 local photos stay empty (not in draft JSON).
     setVacPhotoFiles(emptyVacPhotoFiles());
     setPpdPhotoFiles(emptyPpdPhotoFiles());
     setPpdPhotoErrors(emptyPpdPhotoErrors());
+    setCp4PhotoFiles(emptyCp4PhotoFiles());
+    setCp4PhotoErrors(emptyCp4PhotoErrors());
     const restoredUploads = draft.photoUploads || draft.photoSummary?.photoUploads || [];
     const restoredMetadataByField = emptyPhotoMetadataByField();
     for (const photo of restoredUploads) {
@@ -2439,6 +2707,30 @@ export function NewSubmissionForm() {
   const handleSaveDraft = async () => {
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
+    const cp4DraftPayload: StoredCp4DraftPayload | undefined = selectedSections.includes("CP4")
+      ? {
+          drid: cp4Drid,
+          serial: cp4Serial,
+          cameraQuantity: cp4CameraQuantity,
+          monitorInstalled: cp4MonitorInstalled,
+          clientApproval: cp4ClientApproval,
+          customBracketsNeeded: cp4CustomBracketsNeeded,
+          customBracketNotes: cp4CustomBracketNotes,
+          alarmIn1RelayInstalled: cp4AlarmIn1RelayInstalled,
+          alarmIn1Description: cp4AlarmIn1Description,
+          alarmIn2RelayInstalled: cp4AlarmIn2RelayInstalled,
+          alarmIn2Description: cp4AlarmIn2Description,
+          hubMountingDescription: cp4HubMountingDescription,
+          microphoneMountingDescription: cp4MicrophoneMountingDescription,
+          remoteControlMountingDescription: cp4RemoteControlMountingDescription,
+          gpsSensorMountingDescription: cp4GpsSensorMountingDescription,
+          redWireDescription: cp4RedWireDescription,
+          blackWireDescription: cp4BlackWireDescription,
+          whiteWireDescription: cp4WhiteWireDescription,
+          monitorMountingDescription: cp4MonitorMountingDescription,
+          powerConverterDescription: cp4PowerConverterDescription,
+        }
+      : undefined;
     const draftData: StoredJobCardDraft["data"] = {
       coreJob: normalizedCoreJob,
       hardwareSelection: { primary, hasAdditional, additional },
@@ -2488,6 +2780,7 @@ export function NewSubmissionForm() {
         yellowAlarmOutDescription: ppdYellowAlarmOutDescription,
         blackAlarmGroundDescription: ppdBlackAlarmGroundDescription,
       },
+      ...(cp4DraftPayload ? { cp4: cp4DraftPayload } : {}),
       photoUploads: photoSnapshot.photoUploads,
       photoSummary: {
         vac4PhotoFileNames: vacPhotoFileNames,
@@ -4000,7 +4293,542 @@ export function NewSubmissionForm() {
           selectedSections
             .filter((section) => section !== "VAC4")
             .map((section) =>
-              section === "PPD" ? (
+              section === "CP4" ? (
+                <section key={section} className={cardClassName}>
+                  <FormSectionHeader title="CP4 hardware" tone="green" />
+                  <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
+                    <p className="font-semibold">Uses Vehicle Information from this card</p>
+                    <p className="mt-1 text-emerald-900/90 dark:text-emerald-200/90">
+                      Drive type: <span className="font-medium">{vac4DriveType.trim() || "—"}</span>
+                      {vac4DriveType === "Electric" ? (
+                        <>
+                          {" "}
+                          · Voltage:{" "}
+                          <span className="font-medium">
+                            {vac4VehicleVoltage === "Other"
+                              ? vac4VehicleVoltageOther.trim() || "Other (not specified)"
+                              : vac4VehicleVoltage.trim() || "—"}
+                          </span>
+                          {cp4ShowPowerConverterMounting ? (
+                            <span className="block pt-1 text-xs font-normal text-emerald-800 dark:text-emerald-300">
+                              Power converter section required (&gt;24 V).
+                            </span>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </p>
+                  </div>
+
+                  <div className="space-y-8">
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <div id="field-cp4-drid">
+                        <label className={fieldLabelClass("cp4-drid")}>
+                          DRID
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("cp4-drid")}
+                          value={cp4Drid}
+                          placeholder="exp: DRID-8FBE20U01 (manual / scan later)"
+                          onChange={(e) => {
+                            setCp4Drid(e.target.value);
+                            clearFieldHighlight("cp4-drid");
+                          }}
+                        />
+                        {requiredHint("cp4-drid")}
+                      </div>
+                      <div id="field-cp4-serial">
+                        <label className={fieldLabelClass("cp4-serial")}>
+                          CP4 serial number
+                          <RequiredMark />
+                        </label>
+                        <input
+                          className={fieldInputClass("cp4-serial")}
+                          value={cp4Serial}
+                          placeholder="Scan or type serial"
+                          onChange={(e) => {
+                            setCp4Serial(e.target.value);
+                            clearFieldHighlight("cp4-serial");
+                          }}
+                        />
+                        {requiredHint("cp4-serial")}
+                      </div>
+                      <div id="field-cp4-cameraQuantity">
+                        <label className={fieldLabelClass("cp4-cameraQuantity")}>
+                          Quantity of cameras
+                          <RequiredMark />
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          className={fieldInputClass("cp4-cameraQuantity")}
+                          value={cp4CameraQuantity}
+                          placeholder="exp: 4"
+                          onChange={(e) => {
+                            setCp4CameraQuantity(e.target.value);
+                            clearFieldHighlight("cp4-cameraQuantity");
+                          }}
+                        />
+                        {requiredHint("cp4-cameraQuantity")}
+                      </div>
+                      <div id="field-cp4-monitorInstalled">
+                        <label className={fieldLabelClass("cp4-monitorInstalled")}>
+                          Is monitor installed?
+                          <RequiredMark />
+                        </label>
+                        <select
+                          className={fieldSelectClass("cp4-monitorInstalled")}
+                          value={cp4MonitorInstalled}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setCp4MonitorInstalled(value);
+                            clearFieldHighlight("cp4-monitorInstalled");
+                            if (value !== "Yes") {
+                              setCp4PhotoFiles((p) => ({ ...p, monitorMounting: [] }));
+                              setCp4PhotoErrors((er) => ({ ...er, monitorMounting: null }));
+                              setCp4MonitorMountingDescription("");
+                              clearFieldHighlight(cp4PhotoIssueKey("monitorMounting"));
+                              clearFieldHighlight("cp4-monitorMountingDescription");
+                            }
+                          }}
+                        >
+                          <option value="">Select</option>
+                          <option value="Yes">Yes</option>
+                          <option value="No">No</option>
+                        </select>
+                        {requiredHint("cp4-monitorInstalled")}
+                      </div>
+                    </div>
+
+                    <div id="field-cp4-clientApproval">
+                      <label className={fieldLabelClass("cp4-clientApproval")}>
+                        Client representative that approved monitor/camera mounting locations and camera views
+                        <RequiredMark />
+                      </label>
+                      <textarea
+                        className={`${fieldInputClass("cp4-clientApproval")} min-h-[88px] resize-y py-3`}
+                        value={cp4ClientApproval}
+                        placeholder="exp: Jane Doe, approved 5/04 2:15 PM"
+                        onChange={(e) => {
+                          setCp4ClientApproval(e.target.value);
+                          clearFieldHighlight("cp4-clientApproval");
+                        }}
+                      />
+                      {requiredHint("cp4-clientApproval")}
+                    </div>
+
+                    <div id="field-cp4-customBracketsNeeded">
+                      <label className={fieldLabelClass("cp4-customBracketsNeeded")}>
+                        Were any modifications or custom brackets needed to install cameras?
+                        <RequiredMark />
+                      </label>
+                      <select
+                        className={fieldSelectClass("cp4-customBracketsNeeded")}
+                        value={cp4CustomBracketsNeeded}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setCp4CustomBracketsNeeded(value);
+                          clearFieldHighlight("cp4-customBracketsNeeded");
+                          if (value !== "Yes") {
+                            setCp4CustomBracketNotes("");
+                            clearFieldHighlight("cp4-customBracketNotes");
+                          }
+                        }}
+                      >
+                        <option value="">Select</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                      {requiredHint("cp4-customBracketsNeeded")}
+                    </div>
+
+                    {cp4CustomBracketsNeeded === "Yes" ? (
+                      <div id="field-cp4-customBracketNotes">
+                        <label className={fieldLabelClass("cp4-customBracketNotes")}>
+                          Modification / custom bracket notes
+                          <RequiredMark />
+                        </label>
+                        <textarea
+                          className={`${fieldInputClass("cp4-customBracketNotes")} min-h-[88px] resize-y py-3`}
+                          value={cp4CustomBracketNotes}
+                          placeholder="exp: Custom L-bracket on overhead guard, painted to match"
+                          onChange={(e) => {
+                            setCp4CustomBracketNotes(e.target.value);
+                            clearFieldHighlight("cp4-customBracketNotes");
+                          }}
+                        />
+                        {requiredHint("cp4-customBracketNotes")}
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-6 border-t border-gray-100 pt-6 dark:border-gray-700">
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">CP4 photos</h3>
+
+                      <div id={`field-${cp4PhotoIssueKey("cameraMounting")}`}>
+                        <label className={fieldLabelClass(cp4PhotoIssueKey("cameraMounting"))}>
+                          Camera mounting photos
+                          <RequiredMark />
+                        </label>
+                        <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                          Include brackets and safety cable on mounts where applicable.
+                        </p>
+                        <input
+                          id="cp4-photo-cameraMounting"
+                          type="file"
+                          className="hidden"
+                          accept="image/png,image/jpeg,image/jpg"
+                          multiple
+                          onChange={(e) => applyCp4PhotoUpload("cameraMounting", e, "multi")}
+                        />
+                        <label
+                          htmlFor="cp4-photo-cameraMounting"
+                          className={photoPickClass(cp4PhotoIssueKey("cameraMounting"), true, cp4Pc.cameraMounting >= 1)}
+                        >
+                          Take / upload photo(s)
+                        </label>
+                        <PhotoUploadFeedback count={cp4Pc.cameraMounting} names={cp4PhotoFileNames.cameraMounting} />
+                        <PhotoThumbnailGrid files={cp4PhotoFiles.cameraMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("cameraMounting", file)} />
+                        <PhotoUploadedBadge show={cp4Pc.cameraMounting >= 1} />
+                        <PhotoFieldError message={cp4PhotoErrors.cameraMounting} />
+                        {requiredHint(cp4PhotoIssueKey("cameraMounting"))}
+                      </div>
+
+                      <div id={`field-${cp4PhotoIssueKey("wirePath")}`}>
+                        <label className={fieldLabelClass(cp4PhotoIssueKey("wirePath"))}>
+                          Wire path photos
+                          <RequiredMark />
+                        </label>
+                        <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                          Add multiple angles if the harness changes direction or passes through panels.
+                        </p>
+                        <input
+                          id="cp4-photo-wirePath"
+                          type="file"
+                          className="hidden"
+                          accept="image/png,image/jpeg,image/jpg"
+                          multiple
+                          onChange={(e) => applyCp4PhotoUpload("wirePath", e, "multi")}
+                        />
+                        <label
+                          htmlFor="cp4-photo-wirePath"
+                          className={photoPickClass(cp4PhotoIssueKey("wirePath"), true, cp4Pc.wirePath >= 1)}
+                        >
+                          Take / upload photo(s)
+                        </label>
+                        <PhotoUploadFeedback count={cp4Pc.wirePath} names={cp4PhotoFileNames.wirePath} />
+                        <PhotoThumbnailGrid files={cp4PhotoFiles.wirePath} onRemoveLocal={(file) => removeCp4LocalPhoto("wirePath", file)} />
+                        <PhotoUploadedBadge show={cp4Pc.wirePath >= 1} />
+                        <PhotoFieldError message={cp4PhotoErrors.wirePath} />
+                        {requiredHint(cp4PhotoIssueKey("wirePath"))}
+                      </div>
+
+                      <div className="rounded-2xl border border-gray-100 bg-gray-50/50 p-4 dark:border-gray-700 dark:bg-gray-900/40 sm:p-5">
+                        <h4 className="mb-4 text-base font-bold text-gray-900 dark:text-gray-100">Mounting locations</h4>
+                        <div className="space-y-6">
+                          <div id={`field-${cp4PhotoIssueKey("hubMounting")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("hubMounting"))}>DVR Mounting Location<RequiredMark /></label>
+                            <input id="cp4-photo-hubMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("hubMounting", e, "single")} />
+                            <label htmlFor="cp4-photo-hubMounting" className={photoPickClass(cp4PhotoIssueKey("hubMounting"), true, cp4Pc.hubMounting >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.hubMounting} names={cp4PhotoFileNames.hubMounting} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.hubMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("hubMounting", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.hubMounting >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.hubMounting} />
+                            {requiredHint(cp4PhotoIssueKey("hubMounting"))}
+                            <div id="field-cp4-hubMountingDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-hubMountingDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-hubMountingDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4HubMountingDescription}
+                                placeholder="exp: DVR bracketed to dash center, harness exits left kick panel"
+                                onChange={(e) => {
+                                  setCp4HubMountingDescription(e.target.value);
+                                  clearFieldHighlight("cp4-hubMountingDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-hubMountingDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${cp4PhotoIssueKey("microphoneMounting")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("microphoneMounting"))}>Microphone mounting location<RequiredMark /></label>
+                            <input id="cp4-photo-microphoneMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("microphoneMounting", e, "single")} />
+                            <label htmlFor="cp4-photo-microphoneMounting" className={photoPickClass(cp4PhotoIssueKey("microphoneMounting"), true, cp4Pc.microphoneMounting >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.microphoneMounting} names={cp4PhotoFileNames.microphoneMounting} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.microphoneMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("microphoneMounting", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.microphoneMounting >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.microphoneMounting} />
+                            {requiredHint(cp4PhotoIssueKey("microphoneMounting"))}
+                            <div id="field-cp4-microphoneMountingDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-microphoneMountingDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-microphoneMountingDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4MicrophoneMountingDescription}
+                                placeholder="exp: Mic on A-pillar clip, cable tucked in headliner to DVR"
+                                onChange={(e) => {
+                                  setCp4MicrophoneMountingDescription(e.target.value);
+                                  clearFieldHighlight("cp4-microphoneMountingDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-microphoneMountingDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${cp4PhotoIssueKey("remoteControlMounting")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("remoteControlMounting"))}>Remote control mounting location<RequiredMark /></label>
+                            <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Include illuminated lights.</p>
+                            <input id="cp4-photo-remoteControlMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("remoteControlMounting", e, "single")} />
+                            <label htmlFor="cp4-photo-remoteControlMounting" className={photoPickClass(cp4PhotoIssueKey("remoteControlMounting"), true, cp4Pc.remoteControlMounting >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.remoteControlMounting} names={cp4PhotoFileNames.remoteControlMounting} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.remoteControlMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("remoteControlMounting", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.remoteControlMounting >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.remoteControlMounting} />
+                            {requiredHint(cp4PhotoIssueKey("remoteControlMounting"))}
+                            <div id="field-cp4-remoteControlMountingDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-remoteControlMountingDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-remoteControlMountingDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4RemoteControlMountingDescription}
+                                placeholder="exp: Handset in dash cubby; green/red status LEDs visible in photo"
+                                onChange={(e) => {
+                                  setCp4RemoteControlMountingDescription(e.target.value);
+                                  clearFieldHighlight("cp4-remoteControlMountingDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-remoteControlMountingDescription")}
+                            </div>
+                          </div>
+
+                          <div id={`field-${cp4PhotoIssueKey("gpsSensorMounting")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("gpsSensorMounting"))}>GPS sensor mounting location<RequiredMark /></label>
+                            <input id="cp4-photo-gpsSensorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("gpsSensorMounting", e, "single")} />
+                            <label htmlFor="cp4-photo-gpsSensorMounting" className={photoPickClass(cp4PhotoIssueKey("gpsSensorMounting"), true, cp4Pc.gpsSensorMounting >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.gpsSensorMounting} names={cp4PhotoFileNames.gpsSensorMounting} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.gpsSensorMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("gpsSensorMounting", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.gpsSensorMounting >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.gpsSensorMounting} />
+                            {requiredHint(cp4PhotoIssueKey("gpsSensorMounting"))}
+                            <div id="field-cp4-gpsSensorMountingDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-gpsSensorMountingDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-gpsSensorMountingDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4GpsSensorMountingDescription}
+                                placeholder="exp: GPS puck on roof center, 12 in. from cab obstruction"
+                                onChange={(e) => {
+                                  setCp4GpsSensorMountingDescription(e.target.value);
+                                  clearFieldHighlight("cp4-gpsSensorMountingDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-gpsSensorMountingDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-gray-100 bg-gray-50/50 p-4 dark:border-gray-700 dark:bg-gray-900/40 sm:p-5">
+                        <h4 className="mb-4 text-base font-bold text-gray-900 dark:text-gray-100">Wire connections</h4>
+                        <div className="space-y-6">
+                          <div id={`field-${cp4PhotoIssueKey("redBattery")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("redBattery"))}>Red wire — battery positive (+) connection<RequiredMark /></label>
+                            <input id="cp4-photo-redBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("redBattery", e, "single")} />
+                            <label htmlFor="cp4-photo-redBattery" className={photoPickClass(cp4PhotoIssueKey("redBattery"), true, cp4Pc.redBattery >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.redBattery} names={cp4PhotoFileNames.redBattery} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.redBattery} onRemoveLocal={(file) => removeCp4LocalPhoto("redBattery", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.redBattery >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.redBattery} />
+                            {requiredHint(cp4PhotoIssueKey("redBattery"))}
+                            <div id="field-cp4-redWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-redWireDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-redWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4RedWireDescription}
+                                placeholder="exp: Battery + terminal post, fused link to CP4 red"
+                                onChange={(e) => {
+                                  setCp4RedWireDescription(e.target.value);
+                                  clearFieldHighlight("cp4-redWireDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-redWireDescription")}
+                            </div>
+                          </div>
+                          <div id={`field-${cp4PhotoIssueKey("blackBattery")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("blackBattery"))}>Black wire — battery negative (−) connection<RequiredMark /></label>
+                            <input id="cp4-photo-blackBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("blackBattery", e, "single")} />
+                            <label htmlFor="cp4-photo-blackBattery" className={photoPickClass(cp4PhotoIssueKey("blackBattery"), true, cp4Pc.blackBattery >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.blackBattery} names={cp4PhotoFileNames.blackBattery} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.blackBattery} onRemoveLocal={(file) => removeCp4LocalPhoto("blackBattery", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.blackBattery >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.blackBattery} />
+                            {requiredHint(cp4PhotoIssueKey("blackBattery"))}
+                            <div id="field-cp4-blackWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-blackWireDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-blackWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4BlackWireDescription}
+                                placeholder="exp: Frame ground stud near battery box, ring terminal crimped"
+                                onChange={(e) => {
+                                  setCp4BlackWireDescription(e.target.value);
+                                  clearFieldHighlight("cp4-blackWireDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-blackWireDescription")}
+                            </div>
+                          </div>
+                          <div id={`field-${cp4PhotoIssueKey("whiteIgnition")}`}>
+                            <label className={fieldLabelClass(cp4PhotoIssueKey("whiteIgnition"))}>White wire — ignition / power trigger connection<RequiredMark /></label>
+                            <input id="cp4-photo-whiteIgnition" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("whiteIgnition", e, "single")} />
+                            <label htmlFor="cp4-photo-whiteIgnition" className={photoPickClass(cp4PhotoIssueKey("whiteIgnition"), true, cp4Pc.whiteIgnition >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.whiteIgnition} names={cp4PhotoFileNames.whiteIgnition} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.whiteIgnition} onRemoveLocal={(file) => removeCp4LocalPhoto("whiteIgnition", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.whiteIgnition >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.whiteIgnition} />
+                            {requiredHint(cp4PhotoIssueKey("whiteIgnition"))}
+                            <div id="field-cp4-whiteWireDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-whiteWireDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-whiteWireDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4WhiteWireDescription}
+                                placeholder="exp: Ignition-on at key switch, 12 V when engine running only"
+                                onChange={(e) => {
+                                  setCp4WhiteWireDescription(e.target.value);
+                                  clearFieldHighlight("cp4-whiteWireDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-whiteWireDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {cp4ShowMonitorMounting ? (
+                        <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/60 p-4 dark:border-indigo-800 dark:bg-indigo-950/30 sm:p-5">
+                          <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Monitor mounting location<RequiredMark /></h4>
+                          <div id={`field-${cp4PhotoIssueKey("monitorMounting")}`}>
+                            <input id="cp4-photo-monitorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("monitorMounting", e, "single")} />
+                            <label htmlFor="cp4-photo-monitorMounting" className={photoPickClass(cp4PhotoIssueKey("monitorMounting"), true, cp4Pc.monitorMounting >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.monitorMounting} names={cp4PhotoFileNames.monitorMounting} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.monitorMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("monitorMounting", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.monitorMounting >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.monitorMounting} />
+                            {requiredHint(cp4PhotoIssueKey("monitorMounting"))}
+                            <div id="field-cp4-monitorMountingDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-monitorMountingDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-monitorMountingDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4MonitorMountingDescription}
+                                placeholder="exp: 7 in. monitor RAM-mounted left of column, power from keyed fuse"
+                                onChange={(e) => {
+                                  setCp4MonitorMountingDescription(e.target.value);
+                                  clearFieldHighlight("cp4-monitorMountingDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-monitorMountingDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {cp4ShowPowerConverterMounting ? (
+                        <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 dark:border-amber-800 dark:bg-amber-950/30 sm:p-5">
+                          <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Power converter mounting and wiring<RequiredMark /></h4>
+                          <div id={`field-${cp4PhotoIssueKey("powerConverter")}`}>
+                            <input id="cp4-photo-powerConverter" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("powerConverter", e, "single")} />
+                            <label htmlFor="cp4-photo-powerConverter" className={photoPickClass(cp4PhotoIssueKey("powerConverter"), true, cp4Pc.powerConverter >= 1)}>Take / upload photo</label>
+                            <PhotoUploadFeedback count={cp4Pc.powerConverter} names={cp4PhotoFileNames.powerConverter} />
+                            <PhotoThumbnailGrid files={cp4PhotoFiles.powerConverter} onRemoveLocal={(file) => removeCp4LocalPhoto("powerConverter", file)} />
+                            <PhotoUploadedBadge show={cp4Pc.powerConverter >= 1} />
+                            <PhotoFieldError message={cp4PhotoErrors.powerConverter} />
+                            {requiredHint(cp4PhotoIssueKey("powerConverter"))}
+                            <div id="field-cp4-powerConverterDescription" className="mt-3">
+                              <label className={fieldLabelClass("cp4-powerConverterDescription")}>Description<RequiredMark /></label>
+                              <textarea
+                                className={`${fieldInputClass("cp4-powerConverterDescription")} min-h-[80px] resize-y py-3`}
+                                value={cp4PowerConverterDescription}
+                                placeholder="exp: 48-to-12 V converter on frame rail, fused input, short run to DVR"
+                                onChange={(e) => {
+                                  setCp4PowerConverterDescription(e.target.value);
+                                  clearFieldHighlight("cp4-powerConverterDescription");
+                                }}
+                              />
+                              {requiredHint("cp4-powerConverterDescription")}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-600 dark:bg-gray-900 sm:p-5">
+                        <h4 className="mb-3 text-base font-bold text-gray-900 dark:text-gray-100">Alarm IN relay connections</h4>
+                        <div className="space-y-6">
+                          <div id="field-cp4-alarmIn1RelayInstalled">
+                            <label className={fieldLabelClass("cp4-alarmIn1RelayInstalled")}>Relay installed for ALARM IN 1?<RequiredMark /></label>
+                            <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Usually tied to VAC4 impact trigger.</p>
+                            <select className={fieldSelectClass("cp4-alarmIn1RelayInstalled")} value={cp4AlarmIn1RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn1RelayInstalled(value); clearFieldHighlight("cp4-alarmIn1RelayInstalled"); if (value !== "Yes") { setCp4PhotoFiles((p) => ({ ...p, alarmIn1: [] })); setCp4PhotoErrors((er) => ({ ...er, alarmIn1: null })); setCp4AlarmIn1Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn1")); clearFieldHighlight("cp4-alarmIn1Description"); } }}>
+                              <option value="">Select</option><option value="Yes">Yes</option><option value="No">No</option>
+                            </select>
+                            {requiredHint("cp4-alarmIn1RelayInstalled")}
+                          </div>
+                          {cp4ShowAlarmIn1 ? (
+                            <div id={`field-${cp4PhotoIssueKey("alarmIn1")}`}>
+                              <input id="cp4-photo-alarmIn1" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("alarmIn1", e, "single")} />
+                              <label htmlFor="cp4-photo-alarmIn1" className={photoPickClass(cp4PhotoIssueKey("alarmIn1"), true, cp4Pc.alarmIn1 >= 1)}>Take / upload photo</label>
+                              <PhotoUploadFeedback count={cp4Pc.alarmIn1} names={cp4PhotoFileNames.alarmIn1} />
+                              <PhotoThumbnailGrid files={cp4PhotoFiles.alarmIn1} onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn1", file)} />
+                              <PhotoUploadedBadge show={cp4Pc.alarmIn1 >= 1} />
+                              <PhotoFieldError message={cp4PhotoErrors.alarmIn1} />
+                              {requiredHint(cp4PhotoIssueKey("alarmIn1"))}
+                              <div id="field-cp4-alarmIn1Description" className="mt-3">
+                                <label className={fieldLabelClass("cp4-alarmIn1Description")}>Description<RequiredMark /></label>
+                                <textarea
+                                  className={`${fieldInputClass("cp4-alarmIn1Description")} min-h-[80px] resize-y py-3`}
+                                  value={cp4AlarmIn1Description}
+                                  placeholder="exp: VAC4 impact NO to ALARM IN 1, common at chassis ground"
+                                  onChange={(e) => {
+                                    setCp4AlarmIn1Description(e.target.value);
+                                    clearFieldHighlight("cp4-alarmIn1Description");
+                                  }}
+                                />
+                                {requiredHint("cp4-alarmIn1Description")}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div id="field-cp4-alarmIn2RelayInstalled">
+                            <label className={fieldLabelClass("cp4-alarmIn2RelayInstalled")}>Relay installed for ALARM IN 2?<RequiredMark /></label>
+                            <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Used for second trigger such as PPD.</p>
+                            <select className={fieldSelectClass("cp4-alarmIn2RelayInstalled")} value={cp4AlarmIn2RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn2RelayInstalled(value); clearFieldHighlight("cp4-alarmIn2RelayInstalled"); if (value !== "Yes") { setCp4PhotoFiles((p) => ({ ...p, alarmIn2: [] })); setCp4PhotoErrors((er) => ({ ...er, alarmIn2: null })); setCp4AlarmIn2Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn2")); clearFieldHighlight("cp4-alarmIn2Description"); } }}>
+                              <option value="">Select</option><option value="Yes">Yes</option><option value="No">No</option>
+                            </select>
+                            {requiredHint("cp4-alarmIn2RelayInstalled")}
+                          </div>
+                          {cp4ShowAlarmIn2 ? (
+                            <div id={`field-${cp4PhotoIssueKey("alarmIn2")}`}>
+                              <input id="cp4-photo-alarmIn2" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("alarmIn2", e, "single")} />
+                              <label htmlFor="cp4-photo-alarmIn2" className={photoPickClass(cp4PhotoIssueKey("alarmIn2"), true, cp4Pc.alarmIn2 >= 1)}>Take / upload photo</label>
+                              <PhotoUploadFeedback count={cp4Pc.alarmIn2} names={cp4PhotoFileNames.alarmIn2} />
+                              <PhotoThumbnailGrid files={cp4PhotoFiles.alarmIn2} onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn2", file)} />
+                              <PhotoUploadedBadge show={cp4Pc.alarmIn2 >= 1} />
+                              <PhotoFieldError message={cp4PhotoErrors.alarmIn2} />
+                              {requiredHint(cp4PhotoIssueKey("alarmIn2"))}
+                              <div id="field-cp4-alarmIn2Description" className="mt-3">
+                                <label className={fieldLabelClass("cp4-alarmIn2Description")}>Description<RequiredMark /></label>
+                                <textarea
+                                  className={`${fieldInputClass("cp4-alarmIn2Description")} min-h-[80px] resize-y py-3`}
+                                  value={cp4AlarmIn2Description}
+                                  placeholder="exp: PPD alarm output tied to ALARM IN 2 per install sheet"
+                                  onChange={(e) => {
+                                    setCp4AlarmIn2Description(e.target.value);
+                                    clearFieldHighlight("cp4-alarmIn2Description");
+                                  }}
+                                />
+                                {requiredHint("cp4-alarmIn2Description")}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              ) : section === "PPD" ? (
                 <section key={section} className={cardClassName}>
                   <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
                   <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
@@ -4877,7 +5705,84 @@ export function NewSubmissionForm() {
         {selectedSections
           .filter((s) => s !== "VAC4")
           .map((section) =>
-            section === "PPD" ? (
+            section === "CP4" ? (
+              <section key={`review-hw-${section}`} className={cardClassName}>
+                <FormSectionHeader title="CP4 hardware" tone="green" />
+                <div>
+                  <SummaryRow label="DRID" value={cp4Drid} />
+                  <SummaryRow label="CP4 serial number" value={cp4Serial} />
+                  <SummaryRow label="Quantity of cameras" value={cp4CameraQuantity} />
+                  <SummaryRow label="Monitor installed?" value={cp4MonitorInstalled} />
+                  <SummaryRow
+                    label="Client representative approval"
+                    value={cp4ClientApproval}
+                  />
+                  <SummaryRow label="Custom brackets needed?" value={cp4CustomBracketsNeeded} />
+                  {cp4CustomBracketsNeeded === "Yes" ? <SummaryRow label="Custom bracket notes" value={cp4CustomBracketNotes} /> : null}
+                  <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(cp4VehicleVolts ?? "—")} />
+                  <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">CP4 photos (local)</p>
+                    <SummaryRow label="Camera mounting" value={reviewPhotoSummary(cp4Pc.cameraMounting, cp4PhotoFileNames.cameraMounting)} />
+                    <SummaryRow label="Wire path" value={reviewPhotoSummary(cp4Pc.wirePath, cp4PhotoFileNames.wirePath)} />
+                    <SummaryRow label="DVR Mounting Location" value={reviewPhotoSummary(cp4Pc.hubMounting, cp4PhotoFileNames.hubMounting)} />
+                    <SummaryRow label="DVR Mounting Location description" value={cp4HubMountingDescription} />
+                    <SummaryRow
+                      label="Microphone mounting"
+                      value={reviewPhotoSummary(cp4Pc.microphoneMounting, cp4PhotoFileNames.microphoneMounting)}
+                    />
+                    <SummaryRow label="Microphone mounting description" value={cp4MicrophoneMountingDescription} />
+                    <SummaryRow
+                      label="Remote control mounting"
+                      value={reviewPhotoSummary(cp4Pc.remoteControlMounting, cp4PhotoFileNames.remoteControlMounting)}
+                    />
+                    <SummaryRow label="Remote control mounting description" value={cp4RemoteControlMountingDescription} />
+                    <SummaryRow
+                      label="GPS sensor mounting"
+                      value={reviewPhotoSummary(cp4Pc.gpsSensorMounting, cp4PhotoFileNames.gpsSensorMounting)}
+                    />
+                    <SummaryRow label="GPS sensor mounting description" value={cp4GpsSensorMountingDescription} />
+                    <SummaryRow label="Red battery connection" value={reviewPhotoSummary(cp4Pc.redBattery, cp4PhotoFileNames.redBattery)} />
+                    <SummaryRow label="Red wire description" value={cp4RedWireDescription} />
+                    <SummaryRow
+                      label="Black battery connection"
+                      value={reviewPhotoSummary(cp4Pc.blackBattery, cp4PhotoFileNames.blackBattery)}
+                    />
+                    <SummaryRow label="Black wire description" value={cp4BlackWireDescription} />
+                    <SummaryRow
+                      label="White ignition / trigger connection"
+                      value={reviewPhotoSummary(cp4Pc.whiteIgnition, cp4PhotoFileNames.whiteIgnition)}
+                    />
+                    <SummaryRow label="White wire description" value={cp4WhiteWireDescription} />
+                    {cp4ShowMonitorMounting ? (
+                      <>
+                        <SummaryRow label="Monitor mounting" value={reviewPhotoSummary(cp4Pc.monitorMounting, cp4PhotoFileNames.monitorMounting)} />
+                        <SummaryRow label="Monitor mounting description" value={cp4MonitorMountingDescription} />
+                      </>
+                    ) : null}
+                    {cp4ShowPowerConverterMounting ? (
+                      <>
+                        <SummaryRow label="Power converter" value={reviewPhotoSummary(cp4Pc.powerConverter, cp4PhotoFileNames.powerConverter)} />
+                        <SummaryRow label="Power converter description" value={cp4PowerConverterDescription} />
+                      </>
+                    ) : null}
+                    <SummaryRow label="Relay installed for ALARM IN 1?" value={cp4AlarmIn1RelayInstalled} />
+                    {cp4ShowAlarmIn1 ? (
+                      <>
+                        <SummaryRow label="Alarm IN 1 relay photo" value={reviewPhotoSummary(cp4Pc.alarmIn1, cp4PhotoFileNames.alarmIn1)} />
+                        <SummaryRow label="Alarm IN 1 description" value={cp4AlarmIn1Description} />
+                      </>
+                    ) : null}
+                    <SummaryRow label="Relay installed for ALARM IN 2?" value={cp4AlarmIn2RelayInstalled} />
+                    {cp4ShowAlarmIn2 ? (
+                      <>
+                        <SummaryRow label="Alarm IN 2 relay photo" value={reviewPhotoSummary(cp4Pc.alarmIn2, cp4PhotoFileNames.alarmIn2)} />
+                        <SummaryRow label="Alarm IN 2 description" value={cp4AlarmIn2Description} />
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : section === "PPD" ? (
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
                 <div>
