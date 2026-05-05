@@ -1,7 +1,16 @@
-const CACHE_NAME = "installer-shell-v5";
+const CACHE_NAME = "installer-shell-v6";
 
 /** Same-origin shells — open each route online once for freshest offline replay */
-const APP_SHELL_URLS = ["/", "/companies", "/new-submission", "/offline", "/manifest.webmanifest", "/icon.png", "/icon.svg"];
+const APP_SHELL_URLS = [
+  "/",
+  "/companies",
+  "/new-submission",
+  "/offline-drafts",
+  "/offline",
+  "/manifest.webmanifest",
+  "/icon.png",
+  "/icon.svg",
+];
 
 self.addEventListener("install", (event) => {
   console.log("[SW] install", CACHE_NAME);

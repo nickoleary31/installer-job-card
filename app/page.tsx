@@ -19,7 +19,8 @@ import {
 import { supabase } from "@/lib/supabase/client";
 import {
   deleteOfflineJobCardDraft,
-  getLatestOfflineJobCardDraft,
+  getOfflineJobCardDraftById,
+  INSTALLER_OFFLINE_DRAFT_ID_KEY,
   saveOfflineJobCardDraft,
   type OfflineJobCardDraftRecord,
 } from "@/lib/offline-job-card-drafts";
@@ -1191,7 +1192,9 @@ export function NewSubmissionForm() {
   const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
     if (typeof window === "undefined") return null;
     const hasManualResumeRequest =
-      !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY) || !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY) ||
+      !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY) ||
+      !!window.localStorage.getItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
     if (hasManualResumeRequest) return null;
     try {
       const raw = window.localStorage.getItem(JOB_CARD_AUTOSAVE_KEY);
@@ -1202,7 +1205,6 @@ export function NewSubmissionForm() {
       return null;
     }
   });
-  const [offlineRestorePayload, setOfflineRestorePayload] = useState<OfflineJobCardDraftPayload | null>(null);
   const [isOffline, setIsOffline] = useState(false);
   const offlineDraftIdRef = useRef<string | null>(null);
   /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
@@ -2787,7 +2789,6 @@ export function NewSubmissionForm() {
         if (offlineDraftIdRef.current) {
           await deleteOfflineJobCardDraft(offlineDraftIdRef.current);
           offlineDraftIdRef.current = null;
-          setOfflineRestorePayload(null);
         }
       } catch {
         // ignore localStorage cleanup errors
@@ -2978,6 +2979,7 @@ export function NewSubmissionForm() {
 
   const handleResumeAutosave = () => {
     if (!autosaveRestorePayload) return;
+    console.log("[restore] source: autosave");
     restoreFromDraftData(autosaveRestorePayload.data, autosaveRestorePayload.submissionId || generateSubmissionId());
     try {
       window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
@@ -2997,67 +2999,86 @@ export function NewSubmissionForm() {
     setAutosaveRestorePayload(null);
   };
 
-  const handleResumeOfflineDraft = () => {
-    if (!offlineRestorePayload) return;
-    offlineDraftIdRef.current = offlineRestorePayload.offlineDraftId;
-    restoreFromDraftData(offlineRestorePayload.data, offlineRestorePayload.submissionId || generateSubmissionId());
-    setOfflineRestorePayload(null);
-    setDraftNoticeMessage("Offline draft restored (text fields). Re-upload photos before submitting.");
-  };
-
-  const handleDiscardOfflineDraft = async () => {
-    const targetId = offlineRestorePayload?.offlineDraftId || offlineDraftIdRef.current;
-    if (!targetId) {
-      setOfflineRestorePayload(null);
-      return;
-    }
-    try {
-      await deleteOfflineJobCardDraft(targetId);
-    } catch {
-      // ignore IndexedDB delete errors
-    }
-    if (offlineDraftIdRef.current === targetId) {
-      offlineDraftIdRef.current = null;
-    }
-    setOfflineRestorePayload(null);
-  };
-
   useEffect(() => {
     if (typeof window === "undefined") return;
+    let cancelled = false;
 
-    const resumePayloadRaw = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
-    if (resumePayloadRaw) {
-      try {
-        const parsed = JSON.parse(resumePayloadRaw) as {
-          submissionId?: string;
-          data?: StoredJobCardDraft["data"];
-        };
-        const resumePayload = parsed?.data;
-        if (resumePayload) {
-          const restoredId = parsed.submissionId || generateSubmissionId();
-          setTimeout(() => restoreFromDraftData(resumePayload, restoredId), 0);
+    void (async () => {
+      const offlineResumeId = window.localStorage.getItem(INSTALLER_OFFLINE_DRAFT_ID_KEY)?.trim();
+      if (offlineResumeId) {
+        let restoredOffline = false;
+        try {
+          const draft = await getOfflineJobCardDraftById<StoredJobCardDraft["data"]>(offlineResumeId);
+          if (!cancelled && draft) {
+            try {
+              window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+            } catch {
+              // ignore
+            }
+            setAutosaveRestorePayload(null);
+            try {
+              window.localStorage.removeItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
+            } catch {
+              // ignore
+            }
+            setTimeout(() => {
+              console.log("[restore] source: offline-draft");
+              offlineDraftIdRef.current = draft.offlineDraftId;
+              restoreFromDraftData(draft.data, draft.submissionId || generateSubmissionId());
+              setDraftNoticeMessage("Offline draft restored (text fields). Re-upload photos before submitting.");
+            }, 0);
+            restoredOffline = true;
+          }
+        } catch {
+          // fall through to cloud resume / autosave
         }
-      } catch {
-        // ignore parse errors and continue with legacy resume id path
+        if (restoredOffline) return;
       }
-      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
-      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
-      return;
-    }
 
-    const resumeDraftId = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
-    if (!resumeDraftId) return;
-    try {
-      const drafts = readMigratedDraftsFromStorage();
-      const match = drafts.find((d) => (d.submissionId || d.id) === resumeDraftId);
-      if (match) {
-        const restoredId = match.submissionId || match.id || generateSubmissionId();
-        setTimeout(() => restoreFromDraftData(match.data, restoredId), 0);
+      const resumePayloadRaw = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+      if (resumePayloadRaw) {
+        try {
+          const parsed = JSON.parse(resumePayloadRaw) as {
+            submissionId?: string;
+            data?: StoredJobCardDraft["data"];
+          };
+          const resumePayload = parsed?.data;
+          if (resumePayload) {
+            const restoredId = parsed.submissionId || generateSubmissionId();
+            setTimeout(() => {
+              console.log("[restore] source: supabase");
+              restoreFromDraftData(resumePayload, restoredId);
+            }, 0);
+          }
+        } catch {
+          // ignore parse errors and continue with legacy resume id path
+        }
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+        return;
       }
-      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
-    } catch {
-      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
-    }
+
+      const resumeDraftId = window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      if (!resumeDraftId) return;
+      try {
+        const drafts = readMigratedDraftsFromStorage();
+        const match = drafts.find((d) => (d.submissionId || d.id) === resumeDraftId);
+        if (match) {
+          const restoredId = match.submissionId || match.id || generateSubmissionId();
+          setTimeout(() => {
+            console.log("[restore] source: supabase");
+            restoreFromDraftData(match.data, restoredId);
+          }, 0);
+        }
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      } catch {
+        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -3077,25 +3098,6 @@ export function NewSubmissionForm() {
     return () => {
       window.removeEventListener("online", sync);
       window.removeEventListener("offline", sync);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    let cancelled = false;
-    const loadOfflineDraft = async () => {
-      try {
-        const latest = await getLatestOfflineJobCardDraft<StoredJobCardDraft["data"]>();
-        if (cancelled || !latest) return;
-        setOfflineRestorePayload(latest);
-        offlineDraftIdRef.current = latest.offlineDraftId;
-      } catch {
-        // ignore IndexedDB read errors
-      }
-    };
-    void loadOfflineDraft();
-    return () => {
-      cancelled = true;
     };
   }, []);
 
@@ -3400,6 +3402,23 @@ export function NewSubmissionForm() {
     const draftData = buildCurrentDraftData(photoSnapshot);
     const savedAt = new Date().toISOString();
     const offlineDraftId = offlineDraftIdRef.current || `offline-${generateId()}`;
+    const normalizedCore = normalizeUppercaseCoreJob(coreJob);
+    const companyId =
+      typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "" : "";
+    const projectId =
+      typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "" : "";
+    let companyName = "";
+    let projectName = "";
+    try {
+      const snap = await getBestStarterSnapshotForOffline();
+      if (snap && companyId) {
+        companyName = snap.companies.find((c) => c.id === companyId)?.name?.trim() || "";
+        const projects = snap.projectsByCompanyId[companyId] || [];
+        projectName = projects.find((p) => p.id === projectId)?.project_name?.trim() || "";
+      }
+    } catch {
+      // ignore starter snapshot errors; metadata stays partial
+    }
     const payload: OfflineJobCardDraftPayload = {
       offlineDraftId,
       submissionId,
@@ -3407,6 +3426,14 @@ export function NewSubmissionForm() {
       selectedSections: [...selectedSections],
       data: draftData,
       photoRestoreSupported: false,
+      companyId,
+      projectId,
+      companyName: companyName || undefined,
+      projectName: projectName || undefined,
+      customer: normalizedCore.customer.trim(),
+      location: normalizedCore.location.trim(),
+      unitNumber: normalizedCore.unitNumber.trim(),
+      workOrderNumber: normalizedCore.workOrder.trim(),
     };
     try {
       await saveOfflineJobCardDraft(payload);
@@ -3420,8 +3447,13 @@ export function NewSubmissionForm() {
       });
       setLocalDeviceSaveError(null);
       offlineDraftIdRef.current = offlineDraftId;
-      setOfflineRestorePayload(payload);
-      setDraftNoticeMessage("Saved on this device");
+      try {
+        window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+      } catch {
+        // ignore
+      }
+      setAutosaveRestorePayload(null);
+      setDraftNoticeMessage("Saved to this device");
     } catch (error) {
       if (generation !== saveToDeviceGenerationRef.current) {
         console.log("[Offline draft] Ignoring stale save failure", {
@@ -3531,6 +3563,11 @@ export function NewSubmissionForm() {
               </span>
             </div>
             <p className="text-base font-medium leading-tight text-gray-600">Digital Job Cards for Field Technicians</p>
+            <p className="mt-2">
+              <a href="/offline-drafts" className="text-sm font-semibold text-blue-700 hover:underline">
+                Saved on this device
+              </a>
+            </p>
           </div>
         </header>
 
@@ -3571,31 +3608,6 @@ export function NewSubmissionForm() {
                 type="button"
                 onClick={handleDiscardAutosave}
                 className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
-              >
-                Discard
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {offlineRestorePayload ? (
-          <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
-            <p className="font-semibold">Offline draft found</p>
-            <p className="mt-1 text-xs text-indigo-700">
-              Saved {new Date(offlineRestorePayload.savedAt).toLocaleString()} on this device.
-            </p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleResumeOfflineDraft}
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-              >
-                Resume
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDiscardOfflineDraft()}
-                className="rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-900 hover:bg-indigo-100"
               >
                 Discard
               </button>

@@ -5,10 +5,25 @@ export type OfflineJobCardDraftRecord<TDraftData> = {
   selectedSections: string[];
   data: TDraftData;
   photoRestoreSupported: boolean;
+  companyId?: string;
+  projectId?: string;
+  companyName?: string;
+  projectName?: string;
+  customer?: string;
+  location?: string;
+  unitNumber?: string;
+  workOrderNumber?: string;
+  /** @deprecated Legacy rows — prefer workOrderNumber */
+  workOrder?: string;
+  /** @deprecated Legacy rows — listing uses selectedSections */
+  hardwareSummary?: string;
 };
 
+/** Set before navigating to /new-submission to resume a specific IndexedDB draft (offline-safe). */
+export const INSTALLER_OFFLINE_DRAFT_ID_KEY = "installer-offline-draft-id";
+
 const DB_NAME = "installer-sheetz-offline";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "job-card-offline-drafts";
 
 function openOfflineDb(): Promise<IDBDatabase> {
@@ -46,7 +61,8 @@ export async function saveOfflineJobCardDraft<TDraftData>(
   db.close();
 }
 
-export async function getLatestOfflineJobCardDraft<TDraftData>(): Promise<OfflineJobCardDraftRecord<TDraftData> | null> {
+/** All drafts, newest first. Legacy records missing metadata are still returned. */
+export async function getAllOfflineJobCardDrafts<TDraftData>(): Promise<OfflineJobCardDraftRecord<TDraftData>[]> {
   const db = await openOfflineDb();
   const all = await new Promise<OfflineJobCardDraftRecord<TDraftData>[]>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readonly");
@@ -56,9 +72,34 @@ export async function getLatestOfflineJobCardDraft<TDraftData>(): Promise<Offlin
     request.onerror = () => reject(request.error || new Error("Failed to read offline drafts"));
   });
   db.close();
-  if (all.length === 0) return null;
   all.sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
-  return all[0] || null;
+  return all;
+}
+
+/** @deprecated Use getAllOfflineJobCardDrafts */
+export async function listOfflineJobCardDrafts<TDraftData>(): Promise<OfflineJobCardDraftRecord<TDraftData>[]> {
+  return getAllOfflineJobCardDrafts<TDraftData>();
+}
+
+/** @deprecated Prefer getAllOfflineJobCardDrafts — kept for any legacy callers */
+export async function getLatestOfflineJobCardDraft<TDraftData>(): Promise<OfflineJobCardDraftRecord<TDraftData> | null> {
+  const rows = await getAllOfflineJobCardDrafts<TDraftData>();
+  return rows[0] || null;
+}
+
+export async function getOfflineJobCardDraftById<TDraftData>(
+  offlineDraftId: string,
+): Promise<OfflineJobCardDraftRecord<TDraftData> | null> {
+  const db = await openOfflineDb();
+  const row = await new Promise<OfflineJobCardDraftRecord<TDraftData> | null>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(offlineDraftId);
+    request.onsuccess = () => resolve((request.result as OfflineJobCardDraftRecord<TDraftData> | undefined) || null);
+    request.onerror = () => reject(request.error || new Error("Failed to read offline draft"));
+  });
+  db.close();
+  return row;
 }
 
 export async function deleteOfflineJobCardDraft(offlineDraftId: string): Promise<void> {

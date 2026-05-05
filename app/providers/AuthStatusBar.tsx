@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { deleteStarterDataSnapshot } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 import { useAuthUserContext } from "./AuthUserContextProvider";
 
@@ -45,6 +46,13 @@ export default function AuthStatusBar() {
     setIsSigningOut(true);
     setError(null);
     try {
+      if (context.userId) {
+        try {
+          await deleteStarterDataSnapshot(context.userId);
+        } catch {
+          // ignore cache cleanup errors on logout
+        }
+      }
       const { error: signOutError } = await supabase.auth.signOut();
       if (signOutError) throw signOutError;
       router.replace("/login");
@@ -99,6 +107,12 @@ export default function AuthStatusBar() {
             </Link>
             <Link href="/drafts" className="font-semibold text-blue-700 hover:underline dark:text-blue-300">
               Drafts
+            </Link>
+            <Link
+              href="/offline-drafts"
+              className="font-semibold text-blue-700 hover:underline dark:text-blue-300"
+            >
+              Saved on this device
             </Link>
             <Link href="/submitted" className="font-semibold text-blue-700 hover:underline dark:text-blue-300">
               Submitted
