@@ -59,6 +59,34 @@ export async function getStarterDataSnapshot(userId: string): Promise<StarterDat
   return result;
 }
 
+/**
+ * Prefer the snapshot for the signed-in user; otherwise use the newest snapshot in the store
+ * (single-device / last cached account) so the Companies page can render before auth finishes offline.
+ */
+export async function getBestStarterSnapshotForOffline(preferredUserId?: string | null): Promise<StarterDataSnapshot | null> {
+  if (preferredUserId) {
+    const exact = await getStarterDataSnapshot(preferredUserId);
+    if (exact) return exact;
+  }
+
+  const db = await openStarterDb();
+  try {
+    const rows = await new Promise<StarterDataSnapshot[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = () => resolve((request.result as StarterDataSnapshot[]) || []);
+      request.onerror = () => reject(request.error || new Error("Failed to list starter data cache"));
+    });
+    if (rows.length === 0) return null;
+    return rows.reduce((best, cur) =>
+      new Date(cur.cachedAt).getTime() >= new Date(best.cachedAt).getTime() ? cur : best,
+    );
+  } finally {
+    db.close();
+  }
+}
+
 export async function upsertStarterDataSnapshot(
   userId: string,
   updater: (prev: StarterDataSnapshot | null) => StarterDataSnapshot,

@@ -3,6 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import {
+  type StarterDataSnapshot,
+  getBestStarterSnapshotForOffline,
+  upsertStarterDataSnapshot,
+} from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 
 type CompanyRow = {
@@ -23,8 +28,32 @@ export default function CompaniesPage() {
   const [managementError, setManagementError] = useState<string | null>(null);
   const [managementNotice, setManagementNotice] = useState<string | null>(null);
   const [savingCompanyKey, setSavingCompanyKey] = useState<string | null>(null);
+  const [isOffline, setIsOffline] = useState(() => (typeof window !== "undefined" ? !window.navigator.onLine : false));
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  const [offlineSnapshot, setOfflineSnapshot] = useState<StarterDataSnapshot | null>(null);
+  const [offlineCacheMiss, setOfflineCacheMiss] = useState(false);
 
-  const isGlobalAdmin = context.globalRole === "admin";
+  const isGlobalAdmin = useMemo(() => {
+    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.globalRole === "admin";
+    return context.globalRole === "admin";
+  }, [context.globalRole, isOffline, offlineSnapshot]);
+
+  const companyRolesForDisplay = useMemo(() => {
+    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.companyRolesById;
+    return context.companyRolesById;
+  }, [context.companyRolesById, isOffline, offlineSnapshot]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => setIsOffline(!window.navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
 
   const loadCompanies = async () => {
     try {
@@ -45,9 +74,67 @@ export default function CompaniesPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      if (typeof window === "undefined") return;
+
+      /** Immediate offline path: IndexedDB only, no Supabase (avoids long network timeouts). */
+      if (!window.navigator.onLine) {
+        console.log("[companies] offline detected");
+        setLoadError(null);
+        try {
+          const snap = await getBestStarterSnapshotForOffline(context.userId);
+          if (cancelled) return;
+          if (!snap) {
+            console.log("[companies] cached snapshot: not found");
+            setOfflineSnapshot(null);
+            setOfflineCacheMiss(true);
+            setCompanies([]);
+            setCachedAt(null);
+            setSupportsCompanyActive(null);
+            console.log("[companies] cached company count", 0);
+          } else {
+            console.log("[companies] cached snapshot found", { userId: snap.userId });
+            console.log("[companies] cached company count", snap.companies.length);
+            setOfflineSnapshot(snap);
+            setOfflineCacheMiss(false);
+            setCompanies(snap.companies as CompanyRow[]);
+            setCachedAt(snap.cachedAt);
+            setSupportsCompanyActive(snap.companies.some((c) => typeof c.active === "boolean"));
+          }
+        } catch (e) {
+          if (!cancelled) {
+            console.warn("[companies] offline IndexedDB read failed", e);
+            setLoadError("Could not read offline company cache.");
+            setCompanies([]);
+            setOfflineSnapshot(null);
+            setOfflineCacheMiss(false);
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+        return;
+      }
+
+      setOfflineSnapshot(null);
+      setOfflineCacheMiss(false);
+
+      if (authLoading) return;
+
+      if (!context.userId) {
+        if (!cancelled) {
+          setCompanies([]);
+          setLoading(false);
+          setCachedAt(null);
+          setLoadError(null);
+        }
+        return;
+      }
+
+      if (!cancelled) setLoading(true);
       try {
         await loadCompanies();
+        if (!cancelled) setCachedAt(null);
         if (cancelled) return;
+        if (!cancelled) setLoadError(null);
       } catch (e) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : "Failed to load companies";
@@ -62,26 +149,25 @@ export default function CompaniesPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading, context.userId, isOffline]);
 
   const visibleCompanies = useMemo(() => {
-    // Never show anything while auth is loading
-    if (authLoading) return [];
-
-    // Not logged in → show nothing
-    if (!context.userId) return [];
-
-    // globalRole "admin" is treated as a super user with access to all companies
-    if (isGlobalAdmin) {
-      return companies;
+    if (isOffline && offlineSnapshot) {
+      const list = companies;
+      if (offlineSnapshot.profile.globalRole === "admin") return list;
+      const ids = offlineSnapshot.profile.companyIds;
+      if (ids.length === 0) return [];
+      const allowed = new Set(ids);
+      return list.filter((company) => allowed.has(company.id));
     }
 
-    // Normal users → membership-based
+    if (authLoading) return [];
+    if (!context.userId) return [];
+    if (isGlobalAdmin) return companies;
     if (context.companyIds.length === 0) return [];
-
     const allowed = new Set(context.companyIds);
     return companies.filter((company) => allowed.has(company.id));
-  }, [authLoading, companies, context, isGlobalAdmin]);
+  }, [authLoading, companies, context.companyIds, context.userId, isGlobalAdmin, isOffline, offlineSnapshot]);
 
   const handleCreateCompany = async () => {
     const name = companyNameInput.trim();
@@ -92,6 +178,11 @@ export default function CompaniesPage() {
     }
     if (!context.userId || !isGlobalAdmin) {
       setManagementError("Only global admins can create companies.");
+      setManagementNotice(null);
+      return;
+    }
+    if (isOffline) {
+      setManagementError("Offline mode: company creation requires connection.");
       setManagementNotice(null);
       return;
     }
@@ -140,6 +231,11 @@ export default function CompaniesPage() {
       setManagementNotice(null);
       return;
     }
+    if (isOffline) {
+      setManagementError("Offline mode: company edits require connection.");
+      setManagementNotice(null);
+      return;
+    }
     setSavingCompanyKey(`edit::${companyId}`);
     setManagementError(null);
     setManagementNotice(null);
@@ -165,6 +261,11 @@ export default function CompaniesPage() {
       return;
     }
     if (!supportsCompanyActive) return;
+    if (isOffline) {
+      setManagementError("Offline mode: company status updates require connection.");
+      setManagementNotice(null);
+      return;
+    }
     const nextActive = !company.active;
     setSavingCompanyKey(`active::${company.id}`);
     setManagementError(null);
@@ -182,6 +283,27 @@ export default function CompaniesPage() {
     }
   };
 
+  useEffect(() => {
+    if (!context.userId || authLoading || isOffline) return;
+    void upsertStarterDataSnapshot(context.userId, (prev) => ({
+      userId: context.userId!,
+      cachedAt: new Date().toISOString(),
+      profile: {
+        globalRole: context.globalRole,
+        companyIds: [...context.companyIds],
+        companyRolesById: { ...context.companyRolesById },
+      },
+      companies: visibleCompanies.map((company) => ({
+        id: company.id,
+        name: company.name,
+        active: company.active,
+      })),
+      projectsByCompanyId: prev?.projectsByCompanyId || {},
+    })).catch(() => {
+      // ignore IndexedDB cache write errors
+    });
+  }, [authLoading, context, isOffline, visibleCompanies]);
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
@@ -192,6 +314,17 @@ export default function CompaniesPage() {
         </header>
 
         {loading ? <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">Loading companies...</section> : null}
+        {!loading && isOffline && offlineSnapshot ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+            <p className="font-semibold">Offline — showing cached companies</p>
+            {cachedAt ? <p className="mt-1 text-xs">Cached data from {new Date(cachedAt).toLocaleString()}</p> : null}
+          </section>
+        ) : null}
+        {!loading && isOffline && offlineCacheMiss && !loadError ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+            <p className="font-semibold">No cached companies found. Open this page online once before using offline.</p>
+          </section>
+        ) : null}
         {loadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
             Could not load companies: {loadError}
@@ -223,7 +356,7 @@ export default function CompaniesPage() {
               <button
                 type="button"
                 onClick={() => void handleCreateCompany()}
-                disabled={savingCompanyKey === "create"}
+                disabled={savingCompanyKey === "create" || isOffline}
                 className="inline-flex min-h-[40px] items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
               >
                 {savingCompanyKey === "create" ? "Creating..." : "Create Company"}
@@ -234,18 +367,22 @@ export default function CompaniesPage() {
 
         {!loading && !loadError ? (
           visibleCompanies.length === 0 ? (
-            <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
-              {!authLoading && !context.userId
-                ? "No companies available. Log in to view your assigned companies."
-                : !authLoading && context.userId && context.companyIds.length === 0
-                  ? "No companies assigned to your account yet."
-                  : "No companies found."}
-            </section>
+            isOffline && offlineCacheMiss ? null : (
+              <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
+                {isOffline && offlineSnapshot
+                  ? "No companies match your cached access for this account."
+                  : !authLoading && !context.userId
+                    ? "No companies available. Log in to view your assigned companies."
+                    : !authLoading && context.userId && context.companyIds.length === 0
+                      ? "No companies assigned to your account yet."
+                      : "No companies found."}
+              </section>
+            )
           ) : (
             <section className="space-y-3">
               <h2 className="px-1 text-base font-bold tracking-tight text-gray-900">Select Company</h2>
               {visibleCompanies.map((company) => {
-                const roleForCompany = context.companyRolesById[company.id];
+                const roleForCompany = companyRolesForDisplay[company.id];
                 const canManageCompanyUsers = isGlobalAdmin || roleForCompany === "admin";
                 return (
                   <section
@@ -300,12 +437,18 @@ export default function CompaniesPage() {
                         Customers / Sites
                       </Link>
                       {canManageCompanyUsers ? (
-                        <Link
-                          href={`/companies/${encodeURIComponent(company.id)}/assignments`}
-                          className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                        >
-                          Assignments / Users
-                        </Link>
+                        isOffline ? (
+                          <span className="inline-flex rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-semibold text-gray-500">
+                            Assignments / Users (online only)
+                          </span>
+                        ) : (
+                          <Link
+                            href={`/companies/${encodeURIComponent(company.id)}/assignments`}
+                            className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                          >
+                            Assignments / Users
+                          </Link>
+                        )
                       ) : null}
                       {isGlobalAdmin ? (
                         <>
@@ -316,6 +459,7 @@ export default function CompaniesPage() {
                               setEditingCompanyName(company.name);
                               setManagementError(null);
                             }}
+                            disabled={isOffline}
                             className="inline-flex rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
                           >
                             Edit Company
@@ -324,7 +468,7 @@ export default function CompaniesPage() {
                             <button
                               type="button"
                               onClick={() => void handleToggleCompanyActive(company)}
-                              disabled={savingCompanyKey === `active::${company.id}`}
+                              disabled={savingCompanyKey === `active::${company.id}` || isOffline}
                               className="inline-flex rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                             >
                               {savingCompanyKey === `active::${company.id}`
