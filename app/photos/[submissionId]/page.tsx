@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 type PhotoItem = {
@@ -127,12 +128,23 @@ async function loadPhotosFromStorage(submissionId: string): Promise<PhotoItem[]>
 }
 
 export default function PhotoGalleryPage() {
+  const router = useRouter();
   const params = useParams<{ submissionId: string }>();
   const submissionId = params?.submissionId || "";
+  const { loading: authLoading, context } = useAuthUserContext();
+  const userId = context.userId;
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!userId) {
+      router.replace("/login");
+    }
+  }, [authLoading, userId, router]);
+
+  useEffect(() => {
+    if (authLoading || !userId) return;
     let cancelled = false;
     const loadPhotos = async () => {
       if (!submissionId) return;
@@ -191,7 +203,7 @@ export default function PhotoGalleryPage() {
     return () => {
       cancelled = true;
     };
-  }, [submissionId]);
+  }, [submissionId, authLoading, userId]);
 
   const grouped = useMemo(() => {
     const groups = new Map<PhotoItem["group"], Map<string, { label: string; items: PhotoItem[] }>>();
@@ -218,6 +230,18 @@ export default function PhotoGalleryPage() {
       };
     });
   }, [photos]);
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <p className="text-sm text-gray-600">Checking sign-in…</p>
+      </main>
+    );
+  }
+
+  if (!userId) {
+    return null;
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">

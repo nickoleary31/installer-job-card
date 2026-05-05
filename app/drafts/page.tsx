@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
@@ -61,6 +62,8 @@ function readDrafts(): StoredJobCardDraftListItem[] {
 
 export default function DraftsPage() {
   const router = useRouter();
+  const { loading: authLoading, context } = useAuthUserContext();
+  const userId = context.userId;
   const [drafts, setDrafts] = useState<StoredJobCardDraftListItem[]>(() => readDrafts());
   const goToProjectDashboard = () => {
     if (typeof window !== "undefined") {
@@ -75,6 +78,14 @@ export default function DraftsPage() {
   };
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!userId) {
+      router.replace("/login");
+    }
+  }, [authLoading, userId, router]);
+
+  useEffect(() => {
+    if (authLoading || !userId) return;
     let cancelled = false;
     const loadFromSupabase = async () => {
       try {
@@ -118,7 +129,7 @@ export default function DraftsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading, userId]);
 
   const sortedDrafts = useMemo(
     () =>
@@ -157,6 +168,18 @@ export default function DraftsPage() {
       // ignore write errors
     }
   };
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <p className="text-sm text-gray-600">Checking sign-in…</p>
+      </main>
+    );
+  }
+
+  if (!userId) {
+    return null;
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">

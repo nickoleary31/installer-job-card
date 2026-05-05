@@ -188,6 +188,13 @@ export default function SubmittedPage() {
     };
   }, [authLoading, userContext.userId]);
 
+  useEffect(() => {
+    if (authLoading) return;
+    if (!userContext.userId) {
+      router.replace("/login");
+    }
+  }, [authLoading, userContext.userId, router]);
+
   const sorted = useMemo(
     () =>
       [...items].sort((a, b) => {
@@ -244,6 +251,18 @@ export default function SubmittedPage() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <p className="text-sm text-gray-600">Checking sign-in…</p>
+      </main>
+    );
+  }
+
+  if (!userContext.userId) {
+    return null;
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
@@ -268,36 +287,19 @@ export default function SubmittedPage() {
           </div>
         </header>
 
-        {authLoading ? (
-          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-            Checking sign-in…
-          </section>
-        ) : null}
-
-        {!authLoading && !userContext.userId ? (
-          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-700 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-            <p className="font-semibold text-gray-900">Sign in required</p>
-            <p className="mt-2 text-gray-600">Log in to view submitted job cards.</p>
-            <Link href="/login" className="mt-4 inline-flex text-sm font-semibold text-blue-700 hover:underline">
-              Go to login
-            </Link>
-          </section>
-        ) : null}
-
-        {!authLoading && userContext.userId && loadError ? (
+        {loadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50/80 p-5 text-sm text-amber-900 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
             Could not load submissions. Check your connection and Supabase configuration.
           </section>
         ) : null}
 
-        {!authLoading && userContext.userId && sorted.length === 0 && !loadError ? (
+        {sorted.length === 0 && !loadError ? (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
             No submitted job cards yet
           </section>
         ) : null}
 
-        {!authLoading && userContext.userId
-          ? sorted.map((row) => (
+        {sorted.map((row) => (
           <section
             key={row.submissionId}
             className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]"
@@ -457,8 +459,7 @@ export default function SubmittedPage() {
               </div>
             ) : null}
           </section>
-        ))
-          : null}
+        ))}
       </div>
     </main>
   );
