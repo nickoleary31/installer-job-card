@@ -424,12 +424,27 @@ export default function CompaniesPage() {
                       </>
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Link
-                        href={`/companies/${encodeURIComponent(company.id)}/projects`}
-                        className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                      >
-                        Projects
-                      </Link>
+                      {isOffline ? (
+                        <a
+                          href={`/companies/${encodeURIComponent(company.id)}/projects`}
+                          className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                          onClick={() =>
+                            console.log("[companies] offline company link clicked", {
+                              companyId: company.id,
+                              href: `/companies/${encodeURIComponent(company.id)}/projects`,
+                            })
+                          }
+                        >
+                          Projects
+                        </a>
+                      ) : (
+                        <Link
+                          href={`/companies/${encodeURIComponent(company.id)}/projects`}
+                          className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                        >
+                          Projects
+                        </Link>
+                      )}
                       <Link
                         href={`/companies/${encodeURIComponent(company.id)}/customers`}
                         className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
