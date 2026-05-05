@@ -120,6 +120,7 @@ const formatTimestamp = (value: string | null) => {
 
 const EXPENSE_CATEGORIES = [
   "Labor",
+  "Airfare",
   "Travel - Fuel",
   "Travel - Car Rental",
   "Travel - Lodging",
