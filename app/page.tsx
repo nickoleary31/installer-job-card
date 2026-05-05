@@ -97,7 +97,7 @@ function generateSubmissionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** PPD text fields persisted on job card drafts (JSON). Local PPD photos are not included. */
+/** PPD text fields persisted on job card drafts (JSON). PPD photos use `photoUploads` like VAC. */
 type StoredPpdDraftPayload = {
   hubSerial: string;
   cameraLocations: string[];
@@ -253,7 +253,7 @@ type PpdPhotoKey = (typeof PPD_PHOTO_KEYS)[number];
 
 const PPD_WIRE_PATH_MIN_PHOTOS = 3;
 
-/** CP4 local-only photo slots (no Supabase upload in this phase). */
+/** CP4 photo slots (uploaded to Supabase Storage like VAC; metadata in `photoMetadataByField`). */
 const CP4_PHOTO_KEYS = [
   "cameraMounting",
   "wirePath",
@@ -271,7 +271,25 @@ const CP4_PHOTO_KEYS = [
 ] as const;
 type Cp4PhotoKey = (typeof CP4_PHOTO_KEYS)[number];
 
-/** CP4 text/select fields persisted on job card drafts (JSON). Local CP4 photos are not included. */
+/** Namespaced Supabase `fieldName` / metadata keys for PPD job-card photos (draft + submission). */
+type PpdUploadFieldName = { [K in PpdPhotoKey]: `ppd_${K}` }[PpdPhotoKey];
+/** Namespaced Supabase `fieldName` / metadata keys for CP4 job-card photos (draft + submission). */
+type Cp4UploadFieldName = { [K in Cp4PhotoKey]: `cp4_${K}` }[Cp4PhotoKey];
+
+function ppdUploadFieldFor(key: PpdPhotoKey): PpdUploadFieldName {
+  return `ppd_${key}` as PpdUploadFieldName;
+}
+function cp4UploadFieldFor(key: Cp4PhotoKey): Cp4UploadFieldName {
+  return `cp4_${key}` as Cp4UploadFieldName;
+}
+function ppdKeyFromUploadField(field: PpdUploadFieldName): PpdPhotoKey {
+  return field.slice(4) as PpdPhotoKey;
+}
+function cp4KeyFromUploadField(field: Cp4UploadFieldName): Cp4PhotoKey {
+  return field.slice(4) as Cp4PhotoKey;
+}
+
+/** CP4 text/select fields persisted on job card drafts (JSON). CP4 photos use `photoUploads` like VAC. */
 type StoredCp4DraftPayload = {
   drid: string;
   serial: string;
@@ -474,7 +492,7 @@ type VehiclePictureFileNames = { [K in VehiclePictureKey]: string[] };
 type VehiclePictureFilesState = { [K in VehiclePictureKey]: File[] };
 type VehiclePictureUrlsState = { [K in VehiclePictureKey]: string[] };
 type VehiclePictureErrorsState = { [K in VehiclePictureKey]: string | null };
-type UploadFieldName = keyof VacPhotoFileNames | VehiclePictureKey;
+type UploadFieldName = keyof VacPhotoFileNames | VehiclePictureKey | PpdUploadFieldName | Cp4UploadFieldName;
 type PhotoMetadataByFieldState = { [K in UploadFieldName]: UploadedPhotoMetadata[] };
 
 const emptyVehiclePictureFileNames = (): VehiclePictureFileNames => ({
@@ -501,27 +519,18 @@ const emptyVehiclePictureErrors = (): VehiclePictureErrorsState => ({
   vehicleRear: null,
 });
 
-const emptyPhotoMetadataByField = (): PhotoMetadataByFieldState => ({
-  vacMounting: [],
-  wirePath: [],
-  redWire: [],
-  blackWire: [],
-  blueWire: [],
-  brownWire: [],
-  sensorHubMounting: [],
-  speedSense: [],
-  loadSense: [],
-  gps: [],
-  externalIndicator: [],
-  purpleWire: [],
-  relayAccess: [],
-  impactSensor: [],
-  vehicleFront: [],
-  vehicleSide: [],
-  vehicleRear: [],
-});
+const emptyPhotoMetadataByField = (): PhotoMetadataByFieldState => {
+  const o = {} as Record<string, UploadedPhotoMetadata[]>;
+  for (const k of Object.keys(emptyVacPhotoFileNames()) as (keyof VacPhotoFileNames)[]) o[k as string] = [];
+  o.vehicleFront = [];
+  o.vehicleSide = [];
+  o.vehicleRear = [];
+  for (const k of PPD_PHOTO_KEYS) o[ppdUploadFieldFor(k)] = [];
+  for (const k of CP4_PHOTO_KEYS) o[cp4UploadFieldFor(k)] = [];
+  return o as PhotoMetadataByFieldState;
+};
 
-const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
+const PHOTO_FIELD_LABELS_BASE: Record<keyof VacPhotoFileNames | VehiclePictureKey, string> = {
   vacMounting: "VAC mounting",
   wirePath: "Wire path",
   redWire: "Red wire",
@@ -541,7 +550,62 @@ const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
   vehicleRear: "Vehicle rear picture",
 };
 
+const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
+  monitorInstalled: "PPD monitor installation",
+  cameraHubMounting: "PPD camera & hub mounting",
+  wirePath: "PPD wire path",
+  redBattery: "PPD red wire — battery (+)",
+  blackBattery: "PPD black wire — battery (−)",
+  yellowIgnition: "PPD yellow wire — ignition",
+  greyMotion: "PPD grey wire — motion",
+  blueDirection: "PPD blue wire — direction",
+  powerConverter: "PPD power converter",
+  redAlarmOut: "PPD red alarm out",
+  yellowAlarmOut: "PPD yellow alarm out",
+  blackAlarmGround: "PPD black alarm ground",
+};
+
+const CP4_PHOTO_LABELS: Record<Cp4PhotoKey, string> = {
+  cameraMounting: "CP4 camera mounting",
+  wirePath: "CP4 wire path",
+  hubMounting: "CP4 DVR mounting",
+  microphoneMounting: "CP4 microphone mounting",
+  remoteControlMounting: "CP4 remote control mounting",
+  gpsSensorMounting: "CP4 GPS sensor mounting",
+  redBattery: "CP4 red wire — battery (+)",
+  blackBattery: "CP4 black wire — battery (−)",
+  whiteIgnition: "CP4 white wire — ignition",
+  monitorMounting: "CP4 monitor mounting",
+  powerConverter: "CP4 power converter",
+  alarmIn1: "CP4 alarm IN 1",
+  alarmIn2: "CP4 alarm IN 2",
+};
+
+const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
+  ...PHOTO_FIELD_LABELS_BASE,
+  ...Object.fromEntries(PPD_PHOTO_KEYS.map((k) => [ppdUploadFieldFor(k), PPD_PHOTO_LABELS[k]])) as Record<
+    PpdUploadFieldName,
+    string
+  >,
+  ...Object.fromEntries(CP4_PHOTO_KEYS.map((k) => [cp4UploadFieldFor(k), CP4_PHOTO_LABELS[k]])) as Record<
+    Cp4UploadFieldName,
+    string
+  >,
+};
+
 const VAC_PHOTO_KEYS = Object.keys(emptyVacPhotoFileNames()) as (keyof VacPhotoFileNames)[];
+
+function isVehiclePictureField(f: UploadFieldName): f is VehiclePictureKey {
+  return f === "vehicleFront" || f === "vehicleSide" || f === "vehicleRear";
+}
+
+function isPpdUploadField(f: UploadFieldName): f is PpdUploadFieldName {
+  return PPD_PHOTO_KEYS.some((k) => f === ppdUploadFieldFor(k));
+}
+
+function isCp4UploadField(f: UploadFieldName): f is Cp4UploadFieldName {
+  return CP4_PHOTO_KEYS.some((k) => f === cp4UploadFieldFor(k));
+}
 
 function VAC4Section({ children }: { children: ReactNode }) {
   return <>{children}</>;
@@ -1058,6 +1122,30 @@ export function NewSubmissionForm() {
         uploadedAt: p.uploadedAt,
       }));
 
+  const remoteThumbsForPpdField = (key: PpdPhotoKey): RemoteThumb[] => {
+    const uf = ppdUploadFieldFor(key);
+    return photoMetadataByField[uf]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
+  };
+
+  const remoteThumbsForCp4Field = (key: Cp4PhotoKey): RemoteThumb[] => {
+    const uf = cp4UploadFieldFor(key);
+    return photoMetadataByField[uf]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
+  };
+
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
   const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
   const [vehiclePictureUrls, setVehiclePictureUrls] = useState<VehiclePictureUrlsState>(() => emptyVehiclePictureUrls());
@@ -1140,27 +1228,49 @@ export function NewSubmissionForm() {
 
   const ppdPc = useMemo(() => {
     const out = {} as Record<PpdPhotoKey, number>;
-    for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].length;
+    for (const k of PPD_PHOTO_KEYS) {
+      const uf = ppdUploadFieldFor(k);
+      out[k] = Math.max(
+        ppdPhotoFiles[k].length,
+        photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).length,
+      );
+    }
     return out;
-  }, [ppdPhotoFiles]);
+  }, [ppdPhotoFiles, photoMetadataByField]);
 
   const ppdPhotoFileNames = useMemo(() => {
     const out = {} as Record<PpdPhotoKey, string[]>;
-    for (const k of PPD_PHOTO_KEYS) out[k] = ppdPhotoFiles[k].map((f) => f.name);
+    for (const k of PPD_PHOTO_KEYS) {
+      const uf = ppdUploadFieldFor(k);
+      const fromFiles = ppdPhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
     return out;
-  }, [ppdPhotoFiles]);
+  }, [ppdPhotoFiles, photoMetadataByField]);
 
   const cp4Pc = useMemo(() => {
     const out = {} as Record<Cp4PhotoKey, number>;
-    for (const k of CP4_PHOTO_KEYS) out[k] = cp4PhotoFiles[k].length;
+    for (const k of CP4_PHOTO_KEYS) {
+      const uf = cp4UploadFieldFor(k);
+      out[k] = Math.max(
+        cp4PhotoFiles[k].length,
+        photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).length,
+      );
+    }
     return out;
-  }, [cp4PhotoFiles]);
+  }, [cp4PhotoFiles, photoMetadataByField]);
 
   const cp4PhotoFileNames = useMemo(() => {
     const out = {} as Record<Cp4PhotoKey, string[]>;
-    for (const k of CP4_PHOTO_KEYS) out[k] = cp4PhotoFiles[k].map((f) => f.name);
+    for (const k of CP4_PHOTO_KEYS) {
+      const uf = cp4UploadFieldFor(k);
+      const fromFiles = cp4PhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
     return out;
-  }, [cp4PhotoFiles]);
+  }, [cp4PhotoFiles, photoMetadataByField]);
 
   const ppdCameraSerialsReviewSummary = useMemo(() => {
     const parts = PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(
@@ -1757,12 +1867,14 @@ export function NewSubmissionForm() {
     });
   };
 
+  type PhotoStorageGroup = "vac4" | "vehicle" | "ppd" | "cp4";
+
   type UploadFailureLog = {
     error: unknown;
     storagePath: string;
     filename: string;
     fieldName: UploadFieldName;
-    group: "vac4" | "vehicle";
+    group: PhotoStorageGroup;
     submissionId: string;
   };
 
@@ -1796,13 +1908,14 @@ export function NewSubmissionForm() {
     else console.error("Supabase upload failed:", payload);
   };
 
-  const uploadPhotosToStorage = async (group: "vac4" | "vehicle", fieldName: UploadFieldName, files: File[]) => {
+  const uploadPhotosToStorage = async (group: PhotoStorageGroup, fieldName: UploadFieldName, files: File[]) => {
     const uploadedUrls: string[] = [];
     const uploadedPhotos: UploadedPhotoMetadata[] = [];
     const failures: UploadFailureLog[] = [];
     let ok = true;
     for (const file of files) {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      // eslint-disable-next-line react-hooks/purity -- unique storage object names (not render)
       const stampedName = `${Date.now()}-${safeName}`;
       const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
       const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
@@ -1904,10 +2017,52 @@ export function NewSubmissionForm() {
       updatePhotoFieldHighlight(field, nextCount);
       return;
     }
+    if (!isVehiclePictureField(field)) return;
     const nextLocal = vehiclePictureFiles[field].filter((f) => localFileDedupeKey(f) !== targetKey);
     setVehiclePictureFiles((p) => ({ ...p, [field]: nextLocal }));
     const nextCount = Math.max(nextLocal.length, photoMetadataByFieldRef.current[field].filter((m) => m.publicUrl?.trim()).length);
     updatePhotoFieldHighlight(field, nextCount);
+  };
+
+  const syncPpdPhotoHighlightFromCounts = (key: PpdPhotoKey, localLen: number, remoteCount: number) => {
+    const photoKey = `photo-ppd-${key}`;
+    const total = Math.max(localLen, remoteCount);
+    const minPhotos = key === "wirePath" ? PPD_WIRE_PATH_MIN_PHOTOS : 1;
+    if (total < minPhotos) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(photoKey);
+        return next;
+      });
+    } else {
+      setReviewHighlights((prev) => {
+        if (!prev.has(photoKey)) return prev;
+        const next = new Set(prev);
+        next.delete(photoKey);
+        if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+        return next;
+      });
+    }
+  };
+
+  const syncCp4PhotoHighlightFromCounts = (key: Cp4PhotoKey, localLen: number, remoteCount: number) => {
+    const photoKey = `photo-cp4-${key}`;
+    const total = Math.max(localLen, remoteCount);
+    if (total < 1) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(photoKey);
+        return next;
+      });
+    } else {
+      setReviewHighlights((prev) => {
+        if (!prev.has(photoKey)) return prev;
+        const next = new Set(prev);
+        next.delete(photoKey);
+        if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+        return next;
+      });
+    }
   };
 
   const removeUploadedPhotoFromField = async (field: UploadFieldName, target: RemoteThumb) => {
@@ -1927,11 +2082,29 @@ export function NewSubmissionForm() {
     const nextUrls = nextMeta.map((m) => m.publicUrl).filter(Boolean);
     if (isVacPhotoField(field)) {
       setVacPhotoUrlsSafe((p) => ({ ...p, [field]: nextUrls }));
-    } else {
+    } else if (isVehiclePictureField(field)) {
       setVehiclePictureUrlsSafe((p) => ({ ...p, [field]: nextUrls }));
     }
-    const localCount = isVacPhotoField(field) ? vacPhotoFiles[field].length : vehiclePictureFiles[field].length;
-    updatePhotoFieldHighlight(field, Math.max(localCount, nextUrls.length));
+
+    const localCount = isVacPhotoField(field)
+      ? vacPhotoFiles[field].length
+      : isVehiclePictureField(field)
+        ? vehiclePictureFiles[field].length
+        : isPpdUploadField(field)
+          ? ppdPhotoFiles[ppdKeyFromUploadField(field)].length
+          : isCp4UploadField(field)
+            ? cp4PhotoFiles[cp4KeyFromUploadField(field)].length
+            : 0;
+
+    if (isVacPhotoField(field)) {
+      updatePhotoFieldHighlight(field, Math.max(localCount, nextUrls.length));
+    } else if (isVehiclePictureField(field)) {
+      updatePhotoFieldHighlight(field, Math.max(localCount, nextUrls.length));
+    } else if (isPpdUploadField(field)) {
+      syncPpdPhotoHighlightFromCounts(ppdKeyFromUploadField(field), localCount, nextUrls.length);
+    } else if (isCp4UploadField(field)) {
+      syncCp4PhotoHighlightFromCounts(cp4KeyFromUploadField(field), localCount, nextUrls.length);
+    }
 
     if (targetStorage) {
       void deleteJobCardPhotoObject(targetStorage);
@@ -2084,34 +2257,33 @@ export function NewSubmissionForm() {
 
   const removePpdLocalPhoto = (key: PpdPhotoKey, targetFile: File) => {
     const targetKey = localFileDedupeKey(targetFile);
-    const photoKey = ppdPhotoIssueKey(key);
-    const minPhotos = key === "wirePath" ? PPD_WIRE_PATH_MIN_PHOTOS : 1;
+    const uploadField = ppdUploadFieldFor(key);
     setPpdPhotoFiles((p) => {
       const nextList = p[key].filter((f) => localFileDedupeKey(f) !== targetKey);
       queueMicrotask(() => {
-        if (nextList.length < minPhotos) {
-          setReviewHighlights((prev) => {
-            const next = new Set(prev);
-            next.add(photoKey);
-            return next;
-          });
-        } else {
-          setReviewHighlights((prev) => {
-            if (!prev.has(photoKey)) return prev;
-            const next = new Set(prev);
-            next.delete(photoKey);
-            if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
-            return next;
-          });
-        }
+        const metaCount = photoMetadataByFieldRef.current[uploadField].filter((m) => m.publicUrl?.trim()).length;
+        syncPpdPhotoHighlightFromCounts(key, nextList.length, metaCount);
       });
       return { ...p, [key]: nextList };
     });
   };
 
-  const applyPpdPhotoUpload = (key: PpdPhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
+  const clearPpdPhotoSlotAndStorage = (key: PpdPhotoKey) => {
+    const uploadField = ppdUploadFieldFor(key);
+    const prev = [...photoMetadataByFieldRef.current[uploadField]];
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+    setPpdPhotoFiles((pf) => ({ ...pf, [key]: [] }));
+    for (const m of prev) {
+      if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+    }
+    syncPpdPhotoHighlightFromCounts(key, 0, 0);
+  };
+
+  const applyPpdPhotoUpload = async (key: PpdPhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
     const picked = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
+    const uploadField = ppdUploadFieldFor(key);
+    const photoKey = `photo-ppd-${key}`;
 
     const hasInvalidType = picked.some((f) => {
       const mime = f.type.toLowerCase();
@@ -2131,67 +2303,108 @@ export function NewSubmissionForm() {
       return;
     }
 
-    const photoKey = ppdPhotoIssueKey(key);
-
     if (picked.length === 0) {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
       setPpdPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+      }
       setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(photoKey);
+      syncPpdPhotoHighlightFromCounts(key, 0, 0);
       return;
     }
 
     if (mode === "single") {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
       setPpdPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+      const uploadResult = await uploadPhotosToStorage("ppd", uploadField, [picked[0]]);
+      const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+      if (nextMeta.length === 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
+        setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: prevMeta }));
+        setPpdPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+        clearFieldHighlight(photoKey);
+        syncPpdPhotoHighlightFromCounts(key, 1, prevMeta.filter((m) => m.publicUrl?.trim()).length);
+        return;
+      }
+      if (!uploadResult.ok && uploadResult.failures.length > 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
+      }
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+      setPpdPhotoFiles((p) => ({ ...p, [key]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+          void deleteJobCardPhotoObject(m.storagePath);
+        }
+      }
       setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(photoKey);
+      syncPpdPhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
       return;
     }
 
-    const currentCount = ppdPhotoFiles[key].length;
+    const currentCount = Math.max(
+      ppdPhotoFiles[key].length,
+      photoMetadataByFieldRef.current[uploadField].filter((p) => p.publicUrl?.trim()).length,
+    );
     if (currentCount + picked.length > MAX_PHOTOS_PER_FIELD) {
       setPpdPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
       return;
     }
 
-    const nextCount = currentCount + picked.length;
-    setPpdPhotoFiles((p) => ({ ...p, [key]: [...p[key], ...picked] }));
-    setPpdPhotoErrors((er) => ({ ...er, [key]: null }));
-    if (key !== "wirePath" || nextCount >= PPD_WIRE_PATH_MIN_PHOTOS) {
-      clearFieldHighlight(photoKey);
+    const merged = [...ppdPhotoFiles[key], ...picked];
+    setPpdPhotoFiles((p) => ({ ...p, [key]: merged }));
+    const uploadResult = await uploadPhotosToStorage("ppd", uploadField, picked);
+    const nextMeta = dedupeUploadedPhotoMeta([...photoMetadataByFieldRef.current[uploadField], ...uploadResult.uploadedPhotos]).slice(
+      0,
+      MAX_PHOTOS_PER_FIELD,
+    );
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      const level: "warn" | "error" = nextMeta.length > 0 ? "warn" : "error";
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue(level, f));
     }
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+    setPpdPhotoErrors((er) => ({ ...er, [key]: nextMeta.length > 0 ? null : uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    if (uploadResult.ok || nextMeta.length > 0) {
+      setPpdPhotoFiles((p) => ({ ...p, [key]: [] }));
+    }
+    clearFieldHighlight(photoKey);
+    syncPpdPhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
   };
 
   const cp4PhotoIssueKey = (key: Cp4PhotoKey) => `photo-cp4-${key}`;
 
   const removeCp4LocalPhoto = (key: Cp4PhotoKey, targetFile: File) => {
     const targetKey = localFileDedupeKey(targetFile);
-    const photoKey = cp4PhotoIssueKey(key);
+    const uploadField = cp4UploadFieldFor(key);
     setCp4PhotoFiles((p) => {
       const nextList = p[key].filter((f) => localFileDedupeKey(f) !== targetKey);
       queueMicrotask(() => {
-        if (nextList.length < 1) {
-          setReviewHighlights((prev) => {
-            const next = new Set(prev);
-            next.add(photoKey);
-            return next;
-          });
-        } else {
-          setReviewHighlights((prev) => {
-            if (!prev.has(photoKey)) return prev;
-            const next = new Set(prev);
-            next.delete(photoKey);
-            if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
-            return next;
-          });
-        }
+        const metaCount = photoMetadataByFieldRef.current[uploadField].filter((m) => m.publicUrl?.trim()).length;
+        syncCp4PhotoHighlightFromCounts(key, nextList.length, metaCount);
       });
       return { ...p, [key]: nextList };
     });
   };
 
-  const applyCp4PhotoUpload = (key: Cp4PhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
+  const clearCp4PhotoSlotAndStorage = (key: Cp4PhotoKey) => {
+    const uploadField = cp4UploadFieldFor(key);
+    const prev = [...photoMetadataByFieldRef.current[uploadField]];
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+    setCp4PhotoFiles((pf) => ({ ...pf, [key]: [] }));
+    for (const m of prev) {
+      if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+    }
+    syncCp4PhotoHighlightFromCounts(key, 0, 0);
+  };
+
+  const applyCp4PhotoUpload = async (key: Cp4PhotoKey, e: ChangeEvent<HTMLInputElement>, mode: "single" | "multi") => {
     const picked = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
+    const uploadField = cp4UploadFieldFor(key);
+    const photoKey = `photo-cp4-${key}`;
 
     const hasInvalidType = picked.some((f) => {
       const mime = f.type.toLowerCase();
@@ -2211,30 +2424,75 @@ export function NewSubmissionForm() {
       return;
     }
 
-    const photoKey = cp4PhotoIssueKey(key);
     if (picked.length === 0) {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
       setCp4PhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+      }
       setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(photoKey);
+      syncCp4PhotoHighlightFromCounts(key, 0, 0);
       return;
     }
 
     if (mode === "single") {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
       setCp4PhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+      const uploadResult = await uploadPhotosToStorage("cp4", uploadField, [picked[0]]);
+      const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+      if (nextMeta.length === 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
+        setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: prevMeta }));
+        setCp4PhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+        clearFieldHighlight(photoKey);
+        syncCp4PhotoHighlightFromCounts(key, 1, prevMeta.filter((m) => m.publicUrl?.trim()).length);
+        return;
+      }
+      if (!uploadResult.ok && uploadResult.failures.length > 0) {
+        uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
+      }
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+      setCp4PhotoFiles((p) => ({ ...p, [key]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+          void deleteJobCardPhotoObject(m.storagePath);
+        }
+      }
       setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
       clearFieldHighlight(photoKey);
+      syncCp4PhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
       return;
     }
 
-    const currentCount = cp4PhotoFiles[key].length;
+    const currentCount = Math.max(
+      cp4PhotoFiles[key].length,
+      photoMetadataByFieldRef.current[uploadField].filter((p) => p.publicUrl?.trim()).length,
+    );
     if (currentCount + picked.length > MAX_PHOTOS_PER_FIELD) {
       setCp4PhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_MAX_COUNT }));
       return;
     }
 
-    setCp4PhotoFiles((p) => ({ ...p, [key]: [...p[key], ...picked] }));
-    setCp4PhotoErrors((er) => ({ ...er, [key]: null }));
+    const merged = [...cp4PhotoFiles[key], ...picked];
+    setCp4PhotoFiles((p) => ({ ...p, [key]: merged }));
+    const uploadResult = await uploadPhotosToStorage("cp4", uploadField, picked);
+    const nextMeta = dedupeUploadedPhotoMeta([...photoMetadataByFieldRef.current[uploadField], ...uploadResult.uploadedPhotos]).slice(
+      0,
+      MAX_PHOTOS_PER_FIELD,
+    );
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      const level: "warn" | "error" = nextMeta.length > 0 ? "warn" : "error";
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue(level, f));
+    }
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+    setCp4PhotoErrors((er) => ({ ...er, [key]: nextMeta.length > 0 ? null : uploadResult.ok ? null : UPLOAD_ERR_UPLOAD_FAILED }));
+    if (uploadResult.ok || nextMeta.length > 0) {
+      setCp4PhotoFiles((p) => ({ ...p, [key]: [] }));
+    }
     clearFieldHighlight(photoKey);
+    syncCp4PhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
   };
 
   const handleReviewClick = () => {
@@ -2366,6 +2624,7 @@ export function NewSubmissionForm() {
       }
       setEmailSendStatus("success");
       setSubmissionStatus("Submitted");
+      // eslint-disable-next-line react-hooks/purity -- submission completion timestamp (event handler)
       setSubmissionCompletedAt(Date.now());
       setSubmitSuccessMessage("Job card submitted successfully.");
       const submittedPayload = pendingEmailPayload;
@@ -2531,7 +2790,7 @@ export function NewSubmissionForm() {
       setCp4PowerConverterDescription("");
     }
 
-    // VAC/vehicle photos: rebuild from saved upload metadata. PPD/CP4 local photos stay empty (not in draft JSON).
+    // VAC/vehicle/PPD/CP4 photos: rebuild from saved upload metadata (`photoUploads`). Local File buffers stay empty.
     setVacPhotoFiles(emptyVacPhotoFiles());
     setPpdPhotoFiles(emptyPpdPhotoFiles());
     setPpdPhotoErrors(emptyPpdPhotoErrors());
@@ -2550,6 +2809,8 @@ export function NewSubmissionForm() {
       "vehicleFront",
       "vehicleSide",
       "vehicleRear",
+      ...PPD_PHOTO_KEYS.map((k) => ppdUploadFieldFor(k)),
+      ...CP4_PHOTO_KEYS.map((k) => cp4UploadFieldFor(k)),
     ];
     for (const k of allPhotoFieldKeys) {
       restoredMetadataByField[k] = dedupeUploadedPhotoMeta(restoredMetadataByField[k]);
@@ -4384,7 +4645,7 @@ export function NewSubmissionForm() {
                             setCp4MonitorInstalled(value);
                             clearFieldHighlight("cp4-monitorInstalled");
                             if (value !== "Yes") {
-                              setCp4PhotoFiles((p) => ({ ...p, monitorMounting: [] }));
+                              clearCp4PhotoSlotAndStorage("monitorMounting");
                               setCp4PhotoErrors((er) => ({ ...er, monitorMounting: null }));
                               setCp4MonitorMountingDescription("");
                               clearFieldHighlight(cp4PhotoIssueKey("monitorMounting"));
@@ -4478,7 +4739,7 @@ export function NewSubmissionForm() {
                           className="hidden"
                           accept="image/png,image/jpeg,image/jpg"
                           multiple
-                          onChange={(e) => applyCp4PhotoUpload("cameraMounting", e, "multi")}
+                          onChange={(e) => void applyCp4PhotoUpload("cameraMounting", e, "multi")}
                         />
                         <label
                           htmlFor="cp4-photo-cameraMounting"
@@ -4487,7 +4748,12 @@ export function NewSubmissionForm() {
                           Take / upload photo(s)
                         </label>
                         <PhotoUploadFeedback count={cp4Pc.cameraMounting} names={cp4PhotoFileNames.cameraMounting} />
-                        <PhotoThumbnailGrid files={cp4PhotoFiles.cameraMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("cameraMounting", file)} />
+                        <PhotoThumbnailGrid
+                          files={cp4PhotoFiles.cameraMounting}
+                          remotePhotos={remoteThumbsForCp4Field("cameraMounting")}
+                          onRemoveLocal={(file) => removeCp4LocalPhoto("cameraMounting", file)}
+                          onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("cameraMounting"), remote)}
+                        />
                         <PhotoUploadedBadge show={cp4Pc.cameraMounting >= 1} />
                         <PhotoFieldError message={cp4PhotoErrors.cameraMounting} />
                         {requiredHint(cp4PhotoIssueKey("cameraMounting"))}
@@ -4507,7 +4773,7 @@ export function NewSubmissionForm() {
                           className="hidden"
                           accept="image/png,image/jpeg,image/jpg"
                           multiple
-                          onChange={(e) => applyCp4PhotoUpload("wirePath", e, "multi")}
+                          onChange={(e) => void applyCp4PhotoUpload("wirePath", e, "multi")}
                         />
                         <label
                           htmlFor="cp4-photo-wirePath"
@@ -4516,7 +4782,12 @@ export function NewSubmissionForm() {
                           Take / upload photo(s)
                         </label>
                         <PhotoUploadFeedback count={cp4Pc.wirePath} names={cp4PhotoFileNames.wirePath} />
-                        <PhotoThumbnailGrid files={cp4PhotoFiles.wirePath} onRemoveLocal={(file) => removeCp4LocalPhoto("wirePath", file)} />
+                        <PhotoThumbnailGrid
+                          files={cp4PhotoFiles.wirePath}
+                          remotePhotos={remoteThumbsForCp4Field("wirePath")}
+                          onRemoveLocal={(file) => removeCp4LocalPhoto("wirePath", file)}
+                          onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("wirePath"), remote)}
+                        />
                         <PhotoUploadedBadge show={cp4Pc.wirePath >= 1} />
                         <PhotoFieldError message={cp4PhotoErrors.wirePath} />
                         {requiredHint(cp4PhotoIssueKey("wirePath"))}
@@ -4527,10 +4798,15 @@ export function NewSubmissionForm() {
                         <div className="space-y-6">
                           <div id={`field-${cp4PhotoIssueKey("hubMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("hubMounting"))}>DVR Mounting Location<RequiredMark /></label>
-                            <input id="cp4-photo-hubMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("hubMounting", e, "single")} />
+                            <input id="cp4-photo-hubMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("hubMounting", e, "single")} />
                             <label htmlFor="cp4-photo-hubMounting" className={photoPickClass(cp4PhotoIssueKey("hubMounting"), true, cp4Pc.hubMounting >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.hubMounting} names={cp4PhotoFileNames.hubMounting} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.hubMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("hubMounting", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.hubMounting}
+                              remotePhotos={remoteThumbsForCp4Field("hubMounting")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("hubMounting", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("hubMounting"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.hubMounting >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.hubMounting} />
                             {requiredHint(cp4PhotoIssueKey("hubMounting"))}
@@ -4551,10 +4827,15 @@ export function NewSubmissionForm() {
 
                           <div id={`field-${cp4PhotoIssueKey("microphoneMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("microphoneMounting"))}>Microphone mounting location<RequiredMark /></label>
-                            <input id="cp4-photo-microphoneMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("microphoneMounting", e, "single")} />
+                            <input id="cp4-photo-microphoneMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("microphoneMounting", e, "single")} />
                             <label htmlFor="cp4-photo-microphoneMounting" className={photoPickClass(cp4PhotoIssueKey("microphoneMounting"), true, cp4Pc.microphoneMounting >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.microphoneMounting} names={cp4PhotoFileNames.microphoneMounting} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.microphoneMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("microphoneMounting", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.microphoneMounting}
+                              remotePhotos={remoteThumbsForCp4Field("microphoneMounting")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("microphoneMounting", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("microphoneMounting"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.microphoneMounting >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.microphoneMounting} />
                             {requiredHint(cp4PhotoIssueKey("microphoneMounting"))}
@@ -4576,10 +4857,15 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("remoteControlMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("remoteControlMounting"))}>Remote control mounting location<RequiredMark /></label>
                             <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Include illuminated lights.</p>
-                            <input id="cp4-photo-remoteControlMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("remoteControlMounting", e, "single")} />
+                            <input id="cp4-photo-remoteControlMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("remoteControlMounting", e, "single")} />
                             <label htmlFor="cp4-photo-remoteControlMounting" className={photoPickClass(cp4PhotoIssueKey("remoteControlMounting"), true, cp4Pc.remoteControlMounting >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.remoteControlMounting} names={cp4PhotoFileNames.remoteControlMounting} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.remoteControlMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("remoteControlMounting", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.remoteControlMounting}
+                              remotePhotos={remoteThumbsForCp4Field("remoteControlMounting")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("remoteControlMounting", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("remoteControlMounting"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.remoteControlMounting >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.remoteControlMounting} />
                             {requiredHint(cp4PhotoIssueKey("remoteControlMounting"))}
@@ -4600,10 +4886,15 @@ export function NewSubmissionForm() {
 
                           <div id={`field-${cp4PhotoIssueKey("gpsSensorMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("gpsSensorMounting"))}>GPS sensor mounting location<RequiredMark /></label>
-                            <input id="cp4-photo-gpsSensorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("gpsSensorMounting", e, "single")} />
+                            <input id="cp4-photo-gpsSensorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("gpsSensorMounting", e, "single")} />
                             <label htmlFor="cp4-photo-gpsSensorMounting" className={photoPickClass(cp4PhotoIssueKey("gpsSensorMounting"), true, cp4Pc.gpsSensorMounting >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.gpsSensorMounting} names={cp4PhotoFileNames.gpsSensorMounting} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.gpsSensorMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("gpsSensorMounting", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.gpsSensorMounting}
+                              remotePhotos={remoteThumbsForCp4Field("gpsSensorMounting")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("gpsSensorMounting", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("gpsSensorMounting"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.gpsSensorMounting >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.gpsSensorMounting} />
                             {requiredHint(cp4PhotoIssueKey("gpsSensorMounting"))}
@@ -4629,10 +4920,15 @@ export function NewSubmissionForm() {
                         <div className="space-y-6">
                           <div id={`field-${cp4PhotoIssueKey("redBattery")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("redBattery"))}>Red wire — battery positive (+) connection<RequiredMark /></label>
-                            <input id="cp4-photo-redBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("redBattery", e, "single")} />
+                            <input id="cp4-photo-redBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("redBattery", e, "single")} />
                             <label htmlFor="cp4-photo-redBattery" className={photoPickClass(cp4PhotoIssueKey("redBattery"), true, cp4Pc.redBattery >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.redBattery} names={cp4PhotoFileNames.redBattery} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.redBattery} onRemoveLocal={(file) => removeCp4LocalPhoto("redBattery", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.redBattery}
+                              remotePhotos={remoteThumbsForCp4Field("redBattery")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("redBattery", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("redBattery"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.redBattery >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.redBattery} />
                             {requiredHint(cp4PhotoIssueKey("redBattery"))}
@@ -4652,10 +4948,15 @@ export function NewSubmissionForm() {
                           </div>
                           <div id={`field-${cp4PhotoIssueKey("blackBattery")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("blackBattery"))}>Black wire — battery negative (−) connection<RequiredMark /></label>
-                            <input id="cp4-photo-blackBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("blackBattery", e, "single")} />
+                            <input id="cp4-photo-blackBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("blackBattery", e, "single")} />
                             <label htmlFor="cp4-photo-blackBattery" className={photoPickClass(cp4PhotoIssueKey("blackBattery"), true, cp4Pc.blackBattery >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.blackBattery} names={cp4PhotoFileNames.blackBattery} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.blackBattery} onRemoveLocal={(file) => removeCp4LocalPhoto("blackBattery", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.blackBattery}
+                              remotePhotos={remoteThumbsForCp4Field("blackBattery")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("blackBattery", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("blackBattery"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.blackBattery >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.blackBattery} />
                             {requiredHint(cp4PhotoIssueKey("blackBattery"))}
@@ -4675,10 +4976,15 @@ export function NewSubmissionForm() {
                           </div>
                           <div id={`field-${cp4PhotoIssueKey("whiteIgnition")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("whiteIgnition"))}>White wire — ignition / power trigger connection<RequiredMark /></label>
-                            <input id="cp4-photo-whiteIgnition" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("whiteIgnition", e, "single")} />
+                            <input id="cp4-photo-whiteIgnition" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("whiteIgnition", e, "single")} />
                             <label htmlFor="cp4-photo-whiteIgnition" className={photoPickClass(cp4PhotoIssueKey("whiteIgnition"), true, cp4Pc.whiteIgnition >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.whiteIgnition} names={cp4PhotoFileNames.whiteIgnition} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.whiteIgnition} onRemoveLocal={(file) => removeCp4LocalPhoto("whiteIgnition", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.whiteIgnition}
+                              remotePhotos={remoteThumbsForCp4Field("whiteIgnition")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("whiteIgnition", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("whiteIgnition"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.whiteIgnition >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.whiteIgnition} />
                             {requiredHint(cp4PhotoIssueKey("whiteIgnition"))}
@@ -4703,10 +5009,15 @@ export function NewSubmissionForm() {
                         <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/60 p-4 dark:border-indigo-800 dark:bg-indigo-950/30 sm:p-5">
                           <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Monitor mounting location<RequiredMark /></h4>
                           <div id={`field-${cp4PhotoIssueKey("monitorMounting")}`}>
-                            <input id="cp4-photo-monitorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("monitorMounting", e, "single")} />
+                            <input id="cp4-photo-monitorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("monitorMounting", e, "single")} />
                             <label htmlFor="cp4-photo-monitorMounting" className={photoPickClass(cp4PhotoIssueKey("monitorMounting"), true, cp4Pc.monitorMounting >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.monitorMounting} names={cp4PhotoFileNames.monitorMounting} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.monitorMounting} onRemoveLocal={(file) => removeCp4LocalPhoto("monitorMounting", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.monitorMounting}
+                              remotePhotos={remoteThumbsForCp4Field("monitorMounting")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("monitorMounting", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("monitorMounting"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.monitorMounting >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.monitorMounting} />
                             {requiredHint(cp4PhotoIssueKey("monitorMounting"))}
@@ -4731,10 +5042,15 @@ export function NewSubmissionForm() {
                         <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 dark:border-amber-800 dark:bg-amber-950/30 sm:p-5">
                           <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Power converter mounting and wiring<RequiredMark /></h4>
                           <div id={`field-${cp4PhotoIssueKey("powerConverter")}`}>
-                            <input id="cp4-photo-powerConverter" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("powerConverter", e, "single")} />
+                            <input id="cp4-photo-powerConverter" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("powerConverter", e, "single")} />
                             <label htmlFor="cp4-photo-powerConverter" className={photoPickClass(cp4PhotoIssueKey("powerConverter"), true, cp4Pc.powerConverter >= 1)}>Take / upload photo</label>
                             <PhotoUploadFeedback count={cp4Pc.powerConverter} names={cp4PhotoFileNames.powerConverter} />
-                            <PhotoThumbnailGrid files={cp4PhotoFiles.powerConverter} onRemoveLocal={(file) => removeCp4LocalPhoto("powerConverter", file)} />
+                            <PhotoThumbnailGrid
+                              files={cp4PhotoFiles.powerConverter}
+                              remotePhotos={remoteThumbsForCp4Field("powerConverter")}
+                              onRemoveLocal={(file) => removeCp4LocalPhoto("powerConverter", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("powerConverter"), remote)}
+                            />
                             <PhotoUploadedBadge show={cp4Pc.powerConverter >= 1} />
                             <PhotoFieldError message={cp4PhotoErrors.powerConverter} />
                             {requiredHint(cp4PhotoIssueKey("powerConverter"))}
@@ -4761,17 +5077,22 @@ export function NewSubmissionForm() {
                           <div id="field-cp4-alarmIn1RelayInstalled">
                             <label className={fieldLabelClass("cp4-alarmIn1RelayInstalled")}>Relay installed for ALARM IN 1?<RequiredMark /></label>
                             <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Usually tied to VAC4 impact trigger.</p>
-                            <select className={fieldSelectClass("cp4-alarmIn1RelayInstalled")} value={cp4AlarmIn1RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn1RelayInstalled(value); clearFieldHighlight("cp4-alarmIn1RelayInstalled"); if (value !== "Yes") { setCp4PhotoFiles((p) => ({ ...p, alarmIn1: [] })); setCp4PhotoErrors((er) => ({ ...er, alarmIn1: null })); setCp4AlarmIn1Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn1")); clearFieldHighlight("cp4-alarmIn1Description"); } }}>
+                            <select className={fieldSelectClass("cp4-alarmIn1RelayInstalled")} value={cp4AlarmIn1RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn1RelayInstalled(value); clearFieldHighlight("cp4-alarmIn1RelayInstalled"); if (value !== "Yes") { clearCp4PhotoSlotAndStorage("alarmIn1"); setCp4PhotoErrors((er) => ({ ...er, alarmIn1: null })); setCp4AlarmIn1Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn1")); clearFieldHighlight("cp4-alarmIn1Description"); } }}>
                               <option value="">Select</option><option value="Yes">Yes</option><option value="No">No</option>
                             </select>
                             {requiredHint("cp4-alarmIn1RelayInstalled")}
                           </div>
                           {cp4ShowAlarmIn1 ? (
                             <div id={`field-${cp4PhotoIssueKey("alarmIn1")}`}>
-                              <input id="cp4-photo-alarmIn1" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("alarmIn1", e, "single")} />
+                              <input id="cp4-photo-alarmIn1" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("alarmIn1", e, "single")} />
                               <label htmlFor="cp4-photo-alarmIn1" className={photoPickClass(cp4PhotoIssueKey("alarmIn1"), true, cp4Pc.alarmIn1 >= 1)}>Take / upload photo</label>
                               <PhotoUploadFeedback count={cp4Pc.alarmIn1} names={cp4PhotoFileNames.alarmIn1} />
-                              <PhotoThumbnailGrid files={cp4PhotoFiles.alarmIn1} onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn1", file)} />
+                              <PhotoThumbnailGrid
+                                files={cp4PhotoFiles.alarmIn1}
+                                remotePhotos={remoteThumbsForCp4Field("alarmIn1")}
+                                onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn1", file)}
+                                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("alarmIn1"), remote)}
+                              />
                               <PhotoUploadedBadge show={cp4Pc.alarmIn1 >= 1} />
                               <PhotoFieldError message={cp4PhotoErrors.alarmIn1} />
                               {requiredHint(cp4PhotoIssueKey("alarmIn1"))}
@@ -4794,17 +5115,22 @@ export function NewSubmissionForm() {
                           <div id="field-cp4-alarmIn2RelayInstalled">
                             <label className={fieldLabelClass("cp4-alarmIn2RelayInstalled")}>Relay installed for ALARM IN 2?<RequiredMark /></label>
                             <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Used for second trigger such as PPD.</p>
-                            <select className={fieldSelectClass("cp4-alarmIn2RelayInstalled")} value={cp4AlarmIn2RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn2RelayInstalled(value); clearFieldHighlight("cp4-alarmIn2RelayInstalled"); if (value !== "Yes") { setCp4PhotoFiles((p) => ({ ...p, alarmIn2: [] })); setCp4PhotoErrors((er) => ({ ...er, alarmIn2: null })); setCp4AlarmIn2Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn2")); clearFieldHighlight("cp4-alarmIn2Description"); } }}>
+                            <select className={fieldSelectClass("cp4-alarmIn2RelayInstalled")} value={cp4AlarmIn2RelayInstalled} onChange={(e) => { const value = e.target.value; setCp4AlarmIn2RelayInstalled(value); clearFieldHighlight("cp4-alarmIn2RelayInstalled"); if (value !== "Yes") { clearCp4PhotoSlotAndStorage("alarmIn2"); setCp4PhotoErrors((er) => ({ ...er, alarmIn2: null })); setCp4AlarmIn2Description(""); clearFieldHighlight(cp4PhotoIssueKey("alarmIn2")); clearFieldHighlight("cp4-alarmIn2Description"); } }}>
                               <option value="">Select</option><option value="Yes">Yes</option><option value="No">No</option>
                             </select>
                             {requiredHint("cp4-alarmIn2RelayInstalled")}
                           </div>
                           {cp4ShowAlarmIn2 ? (
                             <div id={`field-${cp4PhotoIssueKey("alarmIn2")}`}>
-                              <input id="cp4-photo-alarmIn2" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => applyCp4PhotoUpload("alarmIn2", e, "single")} />
+                              <input id="cp4-photo-alarmIn2" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("alarmIn2", e, "single")} />
                               <label htmlFor="cp4-photo-alarmIn2" className={photoPickClass(cp4PhotoIssueKey("alarmIn2"), true, cp4Pc.alarmIn2 >= 1)}>Take / upload photo</label>
                               <PhotoUploadFeedback count={cp4Pc.alarmIn2} names={cp4PhotoFileNames.alarmIn2} />
-                              <PhotoThumbnailGrid files={cp4PhotoFiles.alarmIn2} onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn2", file)} />
+                              <PhotoThumbnailGrid
+                                files={cp4PhotoFiles.alarmIn2}
+                                remotePhotos={remoteThumbsForCp4Field("alarmIn2")}
+                                onRemoveLocal={(file) => removeCp4LocalPhoto("alarmIn2", file)}
+                                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(cp4UploadFieldFor("alarmIn2"), remote)}
+                              />
                               <PhotoUploadedBadge show={cp4Pc.alarmIn2 >= 1} />
                               <PhotoFieldError message={cp4PhotoErrors.alarmIn2} />
                               {requiredHint(cp4PhotoIssueKey("alarmIn2"))}
@@ -5003,7 +5329,7 @@ export function NewSubmissionForm() {
                           setPpdMonitorInstalled(v);
                           clearFieldHighlight("ppd-monitorInstalled");
                           if (v !== "Yes") {
-                            setPpdPhotoFiles((p) => ({ ...p, monitorInstalled: [] }));
+                            clearPpdPhotoSlotAndStorage("monitorInstalled");
                             setPpdPhotoErrors((er) => ({ ...er, monitorInstalled: null }));
                             clearFieldHighlight(ppdPhotoIssueKey("monitorInstalled"));
                           }
@@ -5027,7 +5353,7 @@ export function NewSubmissionForm() {
                           type="file"
                           className="hidden"
                           accept="image/png,image/jpeg,image/jpg"
-                          onChange={(e) => applyPpdPhotoUpload("monitorInstalled", e, "single")}
+                          onChange={(e) => void applyPpdPhotoUpload("monitorInstalled", e, "single")}
                         />
                         <label
                           htmlFor="ppd-photo-monitorInstalled"
@@ -5038,7 +5364,9 @@ export function NewSubmissionForm() {
                         <PhotoUploadFeedback count={ppdPc.monitorInstalled} names={ppdPhotoFileNames.monitorInstalled} />
                         <PhotoThumbnailGrid
                           files={ppdPhotoFiles.monitorInstalled}
+                          remotePhotos={remoteThumbsForPpdField("monitorInstalled")}
                           onRemoveLocal={(file) => removePpdLocalPhoto("monitorInstalled", file)}
+                          onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("monitorInstalled"), remote)}
                         />
                         <PhotoUploadedBadge show={ppdPc.monitorInstalled >= 1} />
                         <PhotoFieldError message={ppdPhotoErrors.monitorInstalled} />
@@ -5073,7 +5401,7 @@ export function NewSubmissionForm() {
                       </div>
                     ) : null}
 
-                    {/* PPD photos — local files only (no cloud upload this phase) */}
+                    {/* PPD photos — uploads go to Supabase; metadata in `photoUploads` for drafts */}
                     <div className="space-y-6 border-t border-gray-100 pt-6 dark:border-gray-700">
                       <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">PPD photos</h3>
 
@@ -5091,7 +5419,7 @@ export function NewSubmissionForm() {
                           className="hidden"
                           accept="image/png,image/jpeg,image/jpg"
                           multiple
-                          onChange={(e) => applyPpdPhotoUpload("cameraHubMounting", e, "multi")}
+                          onChange={(e) => void applyPpdPhotoUpload("cameraHubMounting", e, "multi")}
                         />
                         <label
                           htmlFor="ppd-photo-cameraHubMounting"
@@ -5102,7 +5430,9 @@ export function NewSubmissionForm() {
                         <PhotoUploadFeedback count={ppdPc.cameraHubMounting} names={ppdPhotoFileNames.cameraHubMounting} />
                         <PhotoThumbnailGrid
                           files={ppdPhotoFiles.cameraHubMounting}
+                          remotePhotos={remoteThumbsForPpdField("cameraHubMounting")}
                           onRemoveLocal={(file) => removePpdLocalPhoto("cameraHubMounting", file)}
+                          onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("cameraHubMounting"), remote)}
                         />
                         <PhotoUploadedBadge show={ppdPc.cameraHubMounting >= 1} />
                         <PhotoFieldError message={ppdPhotoErrors.cameraHubMounting} />
@@ -5123,7 +5453,7 @@ export function NewSubmissionForm() {
                           className="hidden"
                           accept="image/png,image/jpeg,image/jpg"
                           multiple
-                          onChange={(e) => applyPpdPhotoUpload("wirePath", e, "multi")}
+                          onChange={(e) => void applyPpdPhotoUpload("wirePath", e, "multi")}
                         />
                         <label
                           htmlFor="ppd-photo-wirePath"
@@ -5138,7 +5468,9 @@ export function NewSubmissionForm() {
                         <PhotoUploadFeedback count={ppdPc.wirePath} names={ppdPhotoFileNames.wirePath} />
                         <PhotoThumbnailGrid
                           files={ppdPhotoFiles.wirePath}
+                          remotePhotos={remoteThumbsForPpdField("wirePath")}
                           onRemoveLocal={(file) => removePpdLocalPhoto("wirePath", file)}
+                          onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("wirePath"), remote)}
                         />
                         <PhotoUploadedBadge show={ppdPc.wirePath >= PPD_WIRE_PATH_MIN_PHOTOS} />
                         <PhotoFieldError message={ppdPhotoErrors.wirePath} />
@@ -5158,7 +5490,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("redBattery", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("redBattery", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-redBattery"
@@ -5169,7 +5501,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.redBattery} names={ppdPhotoFileNames.redBattery} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.redBattery}
+                              remotePhotos={remoteThumbsForPpdField("redBattery")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("redBattery", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("redBattery"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.redBattery >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.redBattery} />
@@ -5202,7 +5536,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("blackBattery", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("blackBattery", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-blackBattery"
@@ -5213,7 +5547,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.blackBattery} names={ppdPhotoFileNames.blackBattery} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.blackBattery}
+                              remotePhotos={remoteThumbsForPpdField("blackBattery")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("blackBattery", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("blackBattery"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.blackBattery >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.blackBattery} />
@@ -5246,7 +5582,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("yellowIgnition", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("yellowIgnition", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-yellowIgnition"
@@ -5257,7 +5593,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.yellowIgnition} names={ppdPhotoFileNames.yellowIgnition} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.yellowIgnition}
+                              remotePhotos={remoteThumbsForPpdField("yellowIgnition")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("yellowIgnition", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("yellowIgnition"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.yellowIgnition >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.yellowIgnition} />
@@ -5290,7 +5628,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("greyMotion", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("greyMotion", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-greyMotion"
@@ -5301,7 +5639,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.greyMotion} names={ppdPhotoFileNames.greyMotion} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.greyMotion}
+                              remotePhotos={remoteThumbsForPpdField("greyMotion")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("greyMotion", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("greyMotion"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.greyMotion >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.greyMotion} />
@@ -5334,7 +5674,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("blueDirection", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("blueDirection", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-blueDirection"
@@ -5345,7 +5685,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.blueDirection} names={ppdPhotoFileNames.blueDirection} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.blueDirection}
+                              remotePhotos={remoteThumbsForPpdField("blueDirection")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("blueDirection", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("blueDirection"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.blueDirection >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.blueDirection} />
@@ -5385,7 +5727,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("powerConverter", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("powerConverter", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-powerConverter"
@@ -5396,7 +5738,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.powerConverter} names={ppdPhotoFileNames.powerConverter} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.powerConverter}
+                              remotePhotos={remoteThumbsForPpdField("powerConverter")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("powerConverter", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("powerConverter"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.powerConverter >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.powerConverter} />
@@ -5434,7 +5778,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("redAlarmOut", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("redAlarmOut", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-redAlarmOut"
@@ -5445,7 +5789,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.redAlarmOut} names={ppdPhotoFileNames.redAlarmOut} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.redAlarmOut}
+                              remotePhotos={remoteThumbsForPpdField("redAlarmOut")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("redAlarmOut", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("redAlarmOut"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.redAlarmOut >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.redAlarmOut} />
@@ -5477,7 +5823,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("yellowAlarmOut", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("yellowAlarmOut", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-yellowAlarmOut"
@@ -5488,7 +5834,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.yellowAlarmOut} names={ppdPhotoFileNames.yellowAlarmOut} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.yellowAlarmOut}
+                              remotePhotos={remoteThumbsForPpdField("yellowAlarmOut")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("yellowAlarmOut", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("yellowAlarmOut"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.yellowAlarmOut >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.yellowAlarmOut} />
@@ -5525,7 +5873,7 @@ export function NewSubmissionForm() {
                               type="file"
                               className="hidden"
                               accept="image/png,image/jpeg,image/jpg"
-                              onChange={(e) => applyPpdPhotoUpload("blackAlarmGround", e, "single")}
+                              onChange={(e) => void applyPpdPhotoUpload("blackAlarmGround", e, "single")}
                             />
                             <label
                               htmlFor="ppd-photo-blackAlarmGround"
@@ -5536,7 +5884,9 @@ export function NewSubmissionForm() {
                             <PhotoUploadFeedback count={ppdPc.blackAlarmGround} names={ppdPhotoFileNames.blackAlarmGround} />
                             <PhotoThumbnailGrid
                               files={ppdPhotoFiles.blackAlarmGround}
+                              remotePhotos={remoteThumbsForPpdField("blackAlarmGround")}
                               onRemoveLocal={(file) => removePpdLocalPhoto("blackAlarmGround", file)}
+                              onRemoveRemote={(remote) => void removeUploadedPhotoFromField(ppdUploadFieldFor("blackAlarmGround"), remote)}
                             />
                             <PhotoUploadedBadge show={ppdPc.blackAlarmGround >= 1} />
                             <PhotoFieldError message={ppdPhotoErrors.blackAlarmGround} />
@@ -5721,7 +6071,7 @@ export function NewSubmissionForm() {
                   {cp4CustomBracketsNeeded === "Yes" ? <SummaryRow label="Custom bracket notes" value={cp4CustomBracketNotes} /> : null}
                   <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(cp4VehicleVolts ?? "—")} />
                   <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
-                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">CP4 photos (local)</p>
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">CP4 photos</p>
                     <SummaryRow label="Camera mounting" value={reviewPhotoSummary(cp4Pc.cameraMounting, cp4PhotoFileNames.cameraMounting)} />
                     <SummaryRow label="Wire path" value={reviewPhotoSummary(cp4Pc.wirePath, cp4PhotoFileNames.wirePath)} />
                     <SummaryRow label="DVR Mounting Location" value={reviewPhotoSummary(cp4Pc.hubMounting, cp4PhotoFileNames.hubMounting)} />
@@ -5806,7 +6156,7 @@ export function NewSubmissionForm() {
                   ) : null}
                   <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(ppdVehicleVolts ?? "—")} />
                   <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
-                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">PPD photos (local)</p>
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">PPD photos</p>
                     <SummaryRow
                       label="Camera & hub mounting"
                       value={reviewPhotoSummary(ppdPc.cameraHubMounting, ppdPhotoFileNames.cameraHubMounting)}

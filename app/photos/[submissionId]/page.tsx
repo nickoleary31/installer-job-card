@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 
 type PhotoItem = {
-  group: "vehicle" | "vac4";
+  group: "vehicle" | "vac4" | "ppd" | "cp4";
   fieldName: string;
   label: string;
   filename: string;
@@ -41,11 +41,38 @@ const PHOTO_FIELD_LABELS: Record<string, string> = {
   vehicleFront: "Front",
   vehicleSide: "Side",
   vehicleRear: "Rear",
+  ppd_monitorInstalled: "PPD monitor installation",
+  ppd_cameraHubMounting: "PPD camera & hub mounting",
+  ppd_wirePath: "PPD wire path",
+  ppd_redBattery: "PPD red wire — battery (+)",
+  ppd_blackBattery: "PPD black wire — battery (−)",
+  ppd_yellowIgnition: "PPD yellow wire — ignition",
+  ppd_greyMotion: "PPD grey wire — motion",
+  ppd_blueDirection: "PPD blue wire — direction",
+  ppd_powerConverter: "PPD power converter",
+  ppd_redAlarmOut: "PPD red alarm out",
+  ppd_yellowAlarmOut: "PPD yellow alarm out",
+  ppd_blackAlarmGround: "PPD black alarm ground",
+  cp4_cameraMounting: "CP4 camera mounting",
+  cp4_wirePath: "CP4 wire path",
+  cp4_hubMounting: "CP4 DVR mounting",
+  cp4_microphoneMounting: "CP4 microphone mounting",
+  cp4_remoteControlMounting: "CP4 remote control mounting",
+  cp4_gpsSensorMounting: "CP4 GPS sensor mounting",
+  cp4_redBattery: "CP4 red wire — battery (+)",
+  cp4_blackBattery: "CP4 black wire — battery (−)",
+  cp4_whiteIgnition: "CP4 white wire — ignition",
+  cp4_monitorMounting: "CP4 monitor mounting",
+  cp4_powerConverter: "CP4 power converter",
+  cp4_alarmIn1: "CP4 alarm IN 1",
+  cp4_alarmIn2: "CP4 alarm IN 2",
 };
 
-const PHOTO_GROUP_TITLES: Record<"vehicle" | "vac4", string> = {
+const PHOTO_GROUP_TITLES: Record<PhotoItem["group"], string> = {
   vehicle: "Vehicle Photos",
   vac4: "VAC4 Photos",
+  ppd: "PPD Photos",
+  cp4: "CP4 Photos",
 };
 
 function extractPhotoUploadsFromPayload(payload: unknown): PayloadPhotoUpload[] {
@@ -70,7 +97,7 @@ async function loadPhotosFromStorage(submissionId: string): Promise<PhotoItem[]>
   const nextPhotos: PhotoItem[] = [];
   for (const groupEntry of groupEntries) {
     const groupName = groupEntry.name;
-    if (groupName !== "vehicle" && groupName !== "vac4") continue;
+    if (groupName !== "vehicle" && groupName !== "vac4" && groupName !== "ppd" && groupName !== "cp4") continue;
     const { data: fieldEntries, error: fieldListError } = await supabase.storage
       .from("job-card-photos")
       .list(`${basePath}/${groupName}`, { limit: 200 });
@@ -133,7 +160,7 @@ export default function PhotoGalleryPage() {
           const fieldName = u.fieldName?.trim();
           const publicUrl = u.publicUrl?.trim();
           if (!fieldName || !publicUrl) continue;
-          if (g !== "vehicle" && g !== "vac4") continue;
+          if (g !== "vehicle" && g !== "vac4" && g !== "ppd" && g !== "cp4") continue;
           fromPayload.push({
             group: g,
             fieldName,
@@ -167,7 +194,7 @@ export default function PhotoGalleryPage() {
   }, [submissionId]);
 
   const grouped = useMemo(() => {
-    const groups = new Map<"vehicle" | "vac4", Map<string, { label: string; items: PhotoItem[] }>>();
+    const groups = new Map<PhotoItem["group"], Map<string, { label: string; items: PhotoItem[] }>>();
     for (const photo of photos) {
       const section = groups.get(photo.group) || new Map<string, { label: string; items: PhotoItem[] }>();
       const subsection = section.get(photo.fieldName);
@@ -178,7 +205,7 @@ export default function PhotoGalleryPage() {
       }
       groups.set(photo.group, section);
     }
-    return (["vehicle", "vac4"] as const).map((groupKey) => {
+    return (["vehicle", "vac4", "ppd", "cp4"] as const).map((groupKey) => {
       const section = groups.get(groupKey) || new Map<string, { label: string; items: PhotoItem[] }>();
       return {
         group: groupKey,

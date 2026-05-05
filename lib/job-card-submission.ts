@@ -78,7 +78,7 @@ export type JobCardSubmissionPayload = {
 
 export type UploadedPhotoMetadata = {
   fieldName: string;
-  group: "vac4" | "vehicle";
+  group: "vac4" | "vehicle" | "ppd" | "cp4";
   label: string;
   filename: string;
   storagePath: string;
