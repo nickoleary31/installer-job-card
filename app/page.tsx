@@ -22,6 +22,7 @@ import {
   sanitizeServiceAppointmentInput,
   sanitizeWorkOrderInput,
 } from "@/lib/format";
+import { SerialInput } from "@/components/SerialInput";
 
 const PHOTO_BUCKET = "job-card-photos";
 
@@ -4616,32 +4617,30 @@ export function NewSubmissionForm() {
                   <div className="space-y-6">
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-cp4-drid">
-                        <label className={fieldLabelClass("cp4-drid")}>
-                          DRID
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("cp4-drid")}
+                        <SerialInput
+                          label="DRID"
+                          required
+                          labelClassName={fieldLabelClass("cp4-drid")}
+                          inputClassName={fieldInputClass("cp4-drid")}
                           value={cp4Drid}
                           placeholder="exp: DRID-8FBE20U01 (manual / scan later)"
-                          onChange={(e) => {
-                            setCp4Drid(e.target.value);
+                          onChange={(v) => {
+                            setCp4Drid(v);
                             clearFieldHighlight("cp4-drid");
                           }}
                         />
                         {requiredHint("cp4-drid")}
                       </div>
                       <div id="field-cp4-serial">
-                        <label className={fieldLabelClass("cp4-serial")}>
-                          CP4 serial number
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("cp4-serial")}
+                        <SerialInput
+                          label="CP4 serial number"
+                          required
+                          labelClassName={fieldLabelClass("cp4-serial")}
+                          inputClassName={fieldInputClass("cp4-serial")}
                           value={cp4Serial}
                           placeholder="Scan or type serial"
-                          onChange={(e) => {
-                            setCp4Serial(e.target.value);
+                          onChange={(v) => {
+                            setCp4Serial(v);
                             clearFieldHighlight("cp4-serial");
                           }}
                         />
@@ -5222,16 +5221,15 @@ export function NewSubmissionForm() {
                   <div className="space-y-6">
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-ppd-hubSerial" className="sm:col-span-2">
-                        <label className={fieldLabelClass("ppd-hubSerial")}>
-                          Hub serial number
-                          <RequiredMark />
-                        </label>
-                        <input
-                          className={fieldInputClass("ppd-hubSerial")}
+                        <SerialInput
+                          label="Hub serial number"
+                          required
+                          labelClassName={fieldLabelClass("ppd-hubSerial")}
+                          inputClassName={fieldInputClass("ppd-hubSerial")}
                           value={ppdHubSerial}
                           placeholder="Scan or type serial"
-                          onChange={(e) => {
-                            setPpdHubSerial(e.target.value);
+                          onChange={(v) => {
+                            setPpdHubSerial(v);
                             clearFieldHighlight("ppd-hubSerial");
                           }}
                         />
@@ -5256,16 +5254,15 @@ export function NewSubmissionForm() {
                       </div>
                       {PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(({ key, serialLabel }) => (
                         <div key={key} id={`field-ppd-cameraSerial-${key}`}>
-                          <label className={fieldLabelClass(`ppd-cameraSerial-${key}`)}>
-                            {serialLabel}
-                            <RequiredMark />
-                          </label>
-                          <input
-                            className={fieldInputClass(`ppd-cameraSerial-${key}`)}
+                          <SerialInput
+                            label={serialLabel}
+                            required
+                            labelClassName={fieldLabelClass(`ppd-cameraSerial-${key}`)}
+                            inputClassName={fieldInputClass(`ppd-cameraSerial-${key}`)}
                             value={ppdCameraSerialsByLocation[key]}
                             placeholder="Scan or type serial"
-                            onChange={(e) => {
-                              setPpdCameraSerialsByLocation((prev) => ({ ...prev, [key]: e.target.value }));
+                            onChange={(v) => {
+                              setPpdCameraSerialsByLocation((prev) => ({ ...prev, [key]: v }));
                               clearFieldHighlight(`ppd-cameraSerial-${key}`);
                             }}
                           />
