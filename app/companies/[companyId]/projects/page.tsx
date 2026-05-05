@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import {
+  type StarterDataSnapshot,
+  getBestStarterSnapshotForOffline,
+  upsertStarterDataSnapshot,
+} from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
@@ -93,6 +98,22 @@ export default function CompanyProjectsPage() {
   const [isSavingNewCustomer, setIsSavingNewCustomer] = useState(false);
   const [assignedProjectIds, setAssignedProjectIds] = useState<string[]>([]);
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => (typeof window !== "undefined" ? !window.navigator.onLine : false));
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  const [offlineSnapshot, setOfflineSnapshot] = useState<StarterDataSnapshot | null>(null);
+  const [offlineProjectsCacheMiss, setOfflineProjectsCacheMiss] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => setIsOffline(!window.navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
 
   useEffect(() => {
     if (!companyId) return;
@@ -107,6 +128,7 @@ export default function CompanyProjectsPage() {
     let cancelled = false;
     const loadCompanyName = async () => {
       if (!companyId) return;
+      if (typeof window !== "undefined" && !window.navigator.onLine) return;
       if (authLoading) return;
       if (!userContext.userId) {
         if (!cancelled) setCompanyName("—");
@@ -179,7 +201,53 @@ export default function CompanyProjectsPage() {
     let cancelled = false;
     const load = async () => {
       if (!companyId) return;
+      if (typeof window === "undefined") return;
+
+      if (!window.navigator.onLine) {
+        console.log("[projects] offline detected");
+        setLoadError(null);
+        try {
+          const snap = await getBestStarterSnapshotForOffline(userContext.userId);
+          if (cancelled) return;
+          if (!snap) {
+            console.log("[projects] cached snapshot: not found");
+            setOfflineSnapshot(null);
+            setOfflineProjectsCacheMiss(true);
+            setProjects([]);
+            setCompanyName("—");
+            setCachedAt(null);
+            console.log("[projects] cached project count", companyId, 0);
+          } else {
+            console.log("[projects] cached snapshot found", { userId: snap.userId });
+            const cachedProjects = snap.projectsByCompanyId?.[companyId] || [];
+            const cachedCompany = (snap.companies || []).find((company) => company.id === companyId);
+            console.log("[projects] cached project count", companyId, cachedProjects.length);
+            setOfflineSnapshot(snap);
+            const miss = cachedProjects.length === 0;
+            setOfflineProjectsCacheMiss(miss);
+            setProjects(cachedProjects as ProjectCardRow[]);
+            setCompanyName(cachedCompany?.name?.trim() || "—");
+            setCachedAt(snap.cachedAt);
+          }
+        } catch (e) {
+          if (!cancelled) {
+            console.warn("[projects] offline IndexedDB read failed", e);
+            setLoadError("Could not read offline projects cache.");
+            setProjects([]);
+            setOfflineSnapshot(null);
+            setOfflineProjectsCacheMiss(false);
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+        return;
+      }
+
+      setOfflineSnapshot(null);
+      setOfflineProjectsCacheMiss(false);
+
       if (authLoading) return;
+
       if (!userContext.userId) {
         if (!cancelled) {
           setProjects([]);
@@ -188,9 +256,11 @@ export default function CompanyProjectsPage() {
         }
         return;
       }
+
       if (!cancelled) setLoading(true);
       try {
         await loadProjects();
+        if (!cancelled) setCachedAt(null);
       } catch (e) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : "Failed to load projects";
@@ -205,14 +275,24 @@ export default function CompanyProjectsPage() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, companyId, loadProjects, userContext.userId]);
+  }, [authLoading, companyId, isOffline, loadProjects, userContext.userId]);
 
-  const companyRole = userContext.companyRolesById[companyId];
-  const isGlobalAdmin = userContext.globalRole === "admin";
+  const companyRole = useMemo(() => {
+    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.companyRolesById[companyId];
+    return userContext.companyRolesById[companyId];
+  }, [companyId, isOffline, offlineSnapshot, userContext.companyRolesById]);
+
+  const isGlobalAdmin = useMemo(() => {
+    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.globalRole === "admin";
+    return userContext.globalRole === "admin";
+  }, [isOffline, offlineSnapshot, userContext.globalRole]);
+
   const isActiveCompanyAdmin = companyRole === "admin";
   const canManageCompanyData = isGlobalAdmin || isActiveCompanyAdmin;
 
+  /** Online only: technician assignment fetch. Skip offline to avoid Supabase timeouts. */
   useEffect(() => {
+    if (isOffline || (typeof window !== "undefined" && !window.navigator.onLine)) return;
     if (authLoading || !userContext.userId || companyRole !== "technician") return;
     let cancelled = false;
     const loadAssignments = async () => {
@@ -236,9 +316,12 @@ export default function CompanyProjectsPage() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, companyRole, userContext.userId]);
+  }, [authLoading, companyRole, isOffline, userContext.userId]);
 
   const visibleProjects = useMemo(() => {
+    if (isOffline && offlineSnapshot) {
+      return projects;
+    }
     if (authLoading) return [];
     if (!userContext.userId) return [];
     if (companyRole === "admin") return projects;
@@ -249,7 +332,18 @@ export default function CompanyProjectsPage() {
       return projects.filter((project) => allowed.has(project.id));
     }
     return projects;
-  }, [assignedProjectIds, authLoading, companyRole, isLoadingAssignments, projects, userContext.userId]);
+  }, [
+    assignedProjectIds,
+    authLoading,
+    companyRole,
+    isLoadingAssignments,
+    isOffline,
+    offlineSnapshot,
+    projects,
+    userContext.userId,
+  ]);
+
+  const showAuthBlockingSpinner = !isOffline && authLoading;
 
   const parsedExternalEmails = useMemo(
     () =>
@@ -310,6 +404,10 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddProjectModal = () => {
+    if (isOffline) {
+      setAddProjectError("Offline mode: project creation requires connection.");
+      return;
+    }
     if (!canManageCompanyData) {
       setAddProjectError("Only global admins or active company admins can create projects.");
       return;
@@ -329,6 +427,10 @@ export default function CompanyProjectsPage() {
   };
 
   const openAddCustomerModal = () => {
+    if (isOffline) {
+      setNewCustomerError("Offline mode: customer creation requires connection.");
+      return;
+    }
     if (!canManageCompanyData) {
       setNewCustomerError("Only global admins or active company admins can create customers/sites from project setup.");
       return;
@@ -352,6 +454,10 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewCustomer = async () => {
+    if (isOffline) {
+      setNewCustomerError("Offline mode: customer creation requires connection.");
+      return;
+    }
     if (!canManageCompanyData) {
       setNewCustomerError("Only global admins or active company admins can create customers/sites from project setup.");
       return;
@@ -455,6 +561,10 @@ export default function CompanyProjectsPage() {
   };
 
   const handleSaveNewProject = async () => {
+    if (isOffline) {
+      setAddProjectError("Offline mode: project creation requires connection.");
+      return;
+    }
     if (!canManageCompanyData) {
       setAddProjectError("Only global admins or active company admins can create projects.");
       return;
@@ -528,6 +638,32 @@ export default function CompanyProjectsPage() {
     router.push(`/companies/${encodeURIComponent(companyId)}/projects/${encodeURIComponent(projectId)}`);
   };
 
+  useEffect(() => {
+    if (!userContext.userId || authLoading || isOffline) return;
+    void upsertStarterDataSnapshot(userContext.userId, (prev) => ({
+      userId: userContext.userId!,
+      cachedAt: new Date().toISOString(),
+      profile: {
+        globalRole: userContext.globalRole,
+        companyIds: [...userContext.companyIds],
+        companyRolesById: { ...userContext.companyRolesById },
+      },
+      companies: prev?.companies || [],
+      projectsByCompanyId: {
+        ...(prev?.projectsByCompanyId || {}),
+        [companyId]: visibleProjects.map((project) => ({
+          id: project.id,
+          project_name: project.project_name,
+          active: project.active,
+          displayCustomerName: project.displayCustomerName,
+          completedSubmissionCount: project.completedSubmissionCount,
+        })),
+      },
+    })).catch(() => {
+      // ignore IndexedDB cache write errors
+    });
+  }, [authLoading, companyId, isOffline, userContext, visibleProjects]);
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
@@ -547,29 +683,45 @@ export default function CompanyProjectsPage() {
                 Customers / Sites
               </Link>
               {canManageCompanyData ? (
-                <Link
-                  href={`/companies/${encodeURIComponent(companyId)}/assignments`}
-                  className="inline-flex text-sm font-semibold text-blue-700 hover:underline"
-                >
-                  Assignments
-                </Link>
+                isOffline ? (
+                  <span className="inline-flex text-sm font-semibold text-gray-500">Assignments (online only)</span>
+                ) : (
+                  <Link
+                    href={`/companies/${encodeURIComponent(companyId)}/assignments`}
+                    className="inline-flex text-sm font-semibold text-blue-700 hover:underline"
+                  >
+                    Assignments
+                  </Link>
+                )
               ) : null}
             </div>
             {canManageCompanyData ? (
               <button
                 type="button"
                 onClick={openAddProjectModal}
+                disabled={isOffline}
                 className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
               >
-                Add New Project
+                {isOffline ? "Add New Project (online only)" : "Add New Project"}
               </button>
             ) : null}
           </div>
         </header>
 
-        {loading || authLoading ? (
+        {loading || showAuthBlockingSpinner ? (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
-            {authLoading ? "Checking sign-in…" : "Loading projects…"}
+            {showAuthBlockingSpinner ? "Checking sign-in…" : "Loading projects…"}
+          </section>
+        ) : null}
+        {!loading && !showAuthBlockingSpinner && isOffline && offlineSnapshot && !offlineProjectsCacheMiss ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+            <p className="font-semibold">Offline — showing cached projects</p>
+            {cachedAt ? <p className="mt-1 text-xs">Cached data from {new Date(cachedAt).toLocaleString()}</p> : null}
+          </section>
+        ) : null}
+        {!loading && !showAuthBlockingSpinner && isOffline && offlineProjectsCacheMiss && !loadError ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+            <p className="font-semibold">No cached projects found. Open this company online once before using offline.</p>
           </section>
         ) : null}
         {loadError ? (
@@ -578,22 +730,31 @@ export default function CompanyProjectsPage() {
           </section>
         ) : null}
 
-        {!loading && !loadError && !authLoading ? (
+        {!loading && !loadError && !showAuthBlockingSpinner ? (
           visibleProjects.length === 0 ? (
+            isOffline && offlineProjectsCacheMiss ? null : (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
               <p>
-                {!userContext.userId
-                  ? "Log in to view projects for this company."
-                  : "No projects found for this company."}
+                {isOffline && offlineSnapshot
+                  ? "No projects match your cached list for this company."
+                  : !userContext.userId
+                    ? "Log in to view projects for this company."
+                    : "No projects found for this company."}
               </p>
               {canManageCompanyData ? (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Link
-                    href={`/companies/${encodeURIComponent(companyId)}/assignments`}
-                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                  >
-                    Manage Users / Assignments
-                  </Link>
+                  {isOffline ? (
+                    <span className="inline-flex rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-semibold text-gray-500">
+                      Manage Users / Assignments (online only)
+                    </span>
+                  ) : (
+                    <Link
+                      href={`/companies/${encodeURIComponent(companyId)}/assignments`}
+                      className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                    >
+                      Manage Users / Assignments
+                    </Link>
+                  )}
                   <Link
                     href={`/companies/${encodeURIComponent(companyId)}/customers`}
                     className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
@@ -603,13 +764,15 @@ export default function CompanyProjectsPage() {
                   <button
                     type="button"
                     onClick={openAddProjectModal}
+                    disabled={isOffline}
                     className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
                   >
-                    Add Project
+                    {isOffline ? "Add Project (online only)" : "Add Project"}
                   </button>
                 </div>
               ) : null}
             </section>
+            )
           ) : (
             visibleProjects.map((project) => (
               <button
