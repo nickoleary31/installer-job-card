@@ -4,17 +4,41 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import {
+  type CachedProjectItem,
   type StarterDataSnapshot,
   getBestStarterSnapshotForOffline,
   upsertStarterDataSnapshot,
 } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 
+const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
+const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
+
 type CompanyRow = {
   id: string;
   name: string;
   active?: boolean;
 };
+
+/** NewSubmissionForm reads these keys before fetching default company/project online. */
+function OfflineStartJobCardLink({ companyId, projectId }: { companyId: string; projectId: string }) {
+  return (
+    <a
+      href="/new-submission"
+      className="mt-2 inline-flex rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
+      onClick={() => {
+        try {
+          window.localStorage.setItem(SELECTED_COMPANY_ID_KEY, companyId);
+          window.localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId);
+        } catch {
+          // ignore storage failures
+        }
+      }}
+    >
+      Start local job card
+    </a>
+  );
+}
 
 export default function CompaniesPage() {
   const { loading: authLoading, context } = useAuthUserContext();
@@ -424,27 +448,14 @@ export default function CompaniesPage() {
                       </>
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {isOffline ? (
-                        <a
-                          href={`/companies/${encodeURIComponent(company.id)}/projects`}
-                          className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                          onClick={() =>
-                            console.log("[companies] offline company link clicked", {
-                              companyId: company.id,
-                              href: `/companies/${encodeURIComponent(company.id)}/projects`,
-                            })
-                          }
-                        >
-                          Projects
-                        </a>
-                      ) : (
+                      {!isOffline ? (
                         <Link
                           href={`/companies/${encodeURIComponent(company.id)}/projects`}
                           className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
                         >
                           Projects
                         </Link>
-                      )}
+                      ) : null}
                       <Link
                         href={`/companies/${encodeURIComponent(company.id)}/customers`}
                         className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
@@ -496,6 +507,31 @@ export default function CompaniesPage() {
                         </>
                       ) : null}
                     </div>
+                    {isOffline && offlineSnapshot ? (
+                      <div className="mt-4 border-t border-slate-200 pt-4 dark:border-slate-600">
+                        <h4 className="text-sm font-bold tracking-tight text-gray-900">Cached projects</h4>
+                        {(offlineSnapshot.projectsByCompanyId[company.id] ?? []).length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-600">
+                            No projects cached for this company. Open this company&apos;s Projects page online once.
+                          </p>
+                        ) : (
+                          <ul className="mt-2 space-y-2">
+                            {(offlineSnapshot.projectsByCompanyId[company.id] ?? []).map((project: CachedProjectItem) => (
+                              <li
+                                key={project.id}
+                                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-600 dark:bg-slate-800/60"
+                              >
+                                <p className="font-semibold text-gray-900 dark:text-slate-100">{project.project_name}</p>
+                                <p className="text-xs text-gray-600 dark:text-slate-400">
+                                  Customer/site: {project.displayCustomerName?.trim() || "—"}
+                                </p>
+                                <OfflineStartJobCardLink companyId={company.id} projectId={project.id} />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ) : null}
                   </section>
                 );
               })}
