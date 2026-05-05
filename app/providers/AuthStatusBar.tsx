@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -62,32 +63,54 @@ export default function AuthStatusBar() {
           Offline — changes will be saved locally when supported.
         </p>
       ) : null}
-      <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3">
-        <div className="truncate">
-          {loading
-            ? "Checking session..."
-            : context.userId
-              ? `Signed in as ${context.userId}`
-              : "Not signed in"}
+      <div className="mx-auto w-full max-w-6xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Image src="/icon.png" alt="Installer Sheetz" width={24} height={24} className="h-6 w-6 rounded" />
+            <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">Installer Sheetz</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {context.userId ? (
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                disabled={isSigningOut}
+              >
+                {isSigningOut ? "Logging out..." : "Log out"}
+              </button>
+            ) : pathname !== "/login" ? (
+              <Link
+                href="/login"
+                className="rounded border border-blue-300 bg-blue-50 px-2 py-1 font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/50"
+              >
+                Log in
+              </Link>
+            ) : null}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {context.userId ? (
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="rounded border border-gray-300 bg-white px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-              disabled={isSigningOut}
-            >
-              {isSigningOut ? "Logging out..." : "Log out"}
-            </button>
-          ) : pathname !== "/login" ? (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
             <Link
-              href="/login"
-              className="rounded border border-blue-300 bg-blue-50 px-2 py-1 font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/50"
+              href="/companies"
+              className="font-semibold text-blue-700 hover:underline dark:text-blue-300"
             >
-              Log in
+              Companies
             </Link>
-          ) : null}
+            <Link href="/drafts" className="font-semibold text-blue-700 hover:underline dark:text-blue-300">
+              Drafts
+            </Link>
+            <Link href="/submitted" className="font-semibold text-blue-700 hover:underline dark:text-blue-300">
+              Submitted
+            </Link>
+          </div>
+          <p className="truncate">
+            {loading
+              ? "Checking session..."
+              : context.userId
+                ? `Signed in as ${context.userId}`
+                : "Not signed in"}
+          </p>
         </div>
       </div>
       {error ? <p className="mx-auto mt-1 w-full max-w-6xl text-red-700">{error}</p> : null}
