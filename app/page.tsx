@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   type CoreJobFields,
   type Vac4DescriptionKey,
+  type JobCardCp4Payload,
+  type JobCardPpdPayload,
   type JobCardSubmissionPayload,
   type UploadedPhotoMetadata,
   type Vac4OrderedPhotoKey,
@@ -85,6 +87,7 @@ const UPLOAD_ERR_UPLOAD_FAILED = "Upload failed";
 const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
 const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
 const JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY = "installer-job-card-resume-draft-payload-v1";
+const JOB_CARD_AUTOSAVE_KEY = "jobCard_autosave";
 const JOB_CARD_DRAFTS_MIGRATION_KEY = "installer-job-card-drafts-submission-id-migrated-v1";
 const DEFAULT_COMPANY_NAME = "Powerfleet";
 const DEFAULT_PROJECT_NAME = "Default Project";
@@ -145,6 +148,13 @@ type StoredJobCardDraft = {
       photoUploads?: UploadedPhotoMetadata[];
     };
   };
+};
+
+type JobCardAutosavePayload = {
+  submissionId: string;
+  savedAt: string;
+  selectedSections: string[];
+  data: StoredJobCardDraft["data"];
 };
 
 type DefaultContextIds = {
@@ -1166,7 +1176,22 @@ export function NewSubmissionForm() {
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
+  const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hasManualResumeRequest =
+      !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY) || !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+    if (hasManualResumeRequest) return null;
+    try {
+      const raw = window.localStorage.getItem(JOB_CARD_AUTOSAVE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as JobCardAutosavePayload;
+      return parsed && parsed.data && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
+  const autosaveCheckedRef = useRef(false);
 
   const availableAdditional = hardwareTypes.filter((h) => h !== primary);
   const inputClassName =
@@ -1726,7 +1751,7 @@ export function NewSubmissionForm() {
       const cameraQty = Number.parseInt(cp4CameraQuantity, 10);
       if (!cp4Drid.trim()) issues.push("cp4-drid");
       if (!cp4Serial.trim()) issues.push("cp4-serial");
-      if (!Number.isFinite(cameraQty) || cameraQty < 1) issues.push("cp4-cameraQuantity");
+      if (!Number.isFinite(cameraQty) || cameraQty < 1 || cameraQty > 4) issues.push("cp4-cameraQuantity");
       if (cp4MonitorInstalled !== "Yes" && cp4MonitorInstalled !== "No") issues.push("cp4-monitorInstalled");
       if (!cp4ClientApproval.trim()) issues.push("cp4-clientApproval");
       if (cp4CustomBracketsNeeded !== "Yes" && cp4CustomBracketsNeeded !== "No") issues.push("cp4-customBracketsNeeded");
@@ -2527,6 +2552,52 @@ export function NewSubmissionForm() {
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const projectContext = await resolveProjectContextPayload();
+    const ppdPayload: JobCardPpdPayload | undefined = selectedSections.includes("PPD")
+      ? {
+          hubSerial: ppdHubSerial,
+          cameraLocations: [...ppdCameraLocations],
+          cameraSerialsByLocation: { ...ppdCameraSerialsByLocation },
+          monitorInstalled: ppdMonitorInstalled,
+          customBracketsNeeded: ppdCustomBracketsNeeded,
+          customBracketNotes: ppdCustomBracketNotes,
+          clientApproval: ppdClientApproval,
+          jsonFileName: ppdJsonFileName,
+          relaysUsedForSpeedControl: ppdRelaysUsedForSpeedControl,
+          redWireDescription: ppdRedWireDescription,
+          blackWireDescription: ppdBlackWireDescription,
+          yellowWireDescription: ppdYellowWireDescription,
+          greyWireDescription: ppdGreyWireDescription,
+          blueWireDescription: ppdBlueWireDescription,
+          powerConverterDescription: ppdPowerConverterDescription,
+          redAlarmOutDescription: ppdRedAlarmOutDescription,
+          yellowAlarmOutDescription: ppdYellowAlarmOutDescription,
+          blackAlarmGroundDescription: ppdBlackAlarmGroundDescription,
+        }
+      : undefined;
+    const cp4Payload: JobCardCp4Payload | undefined = selectedSections.includes("CP4")
+      ? {
+          drid: cp4Drid,
+          serial: cp4Serial,
+          cameraQuantity: cp4CameraQuantity,
+          monitorInstalled: cp4MonitorInstalled,
+          clientApproval: cp4ClientApproval,
+          customBracketsNeeded: cp4CustomBracketsNeeded,
+          customBracketNotes: cp4CustomBracketNotes,
+          alarmIn1RelayInstalled: cp4AlarmIn1RelayInstalled,
+          alarmIn1Description: cp4AlarmIn1Description,
+          alarmIn2RelayInstalled: cp4AlarmIn2RelayInstalled,
+          alarmIn2Description: cp4AlarmIn2Description,
+          hubMountingDescription: cp4HubMountingDescription,
+          microphoneMountingDescription: cp4MicrophoneMountingDescription,
+          remoteControlMountingDescription: cp4RemoteControlMountingDescription,
+          gpsSensorMountingDescription: cp4GpsSensorMountingDescription,
+          redWireDescription: cp4RedWireDescription,
+          blackWireDescription: cp4BlackWireDescription,
+          whiteWireDescription: cp4WhiteWireDescription,
+          monitorMountingDescription: cp4MonitorMountingDescription,
+          powerConverterDescription: cp4PowerConverterDescription,
+        }
+      : undefined;
     return {
       submissionId,
       submissionTimestamp: new Date().toISOString(),
@@ -2543,6 +2614,8 @@ export function NewSubmissionForm() {
       },
       selectedSections: [...selectedSections],
       photoUploads: [...photoSnapshot.photoUploads],
+      ...(ppdPayload ? { ppd: ppdPayload } : {}),
+      ...(cp4Payload ? { cp4: cp4Payload } : {}),
       vac4: {
       vehicleType: vac4VehicleType,
       otherVehicleType: vac4OtherVehicleType,
@@ -2663,6 +2736,7 @@ export function NewSubmissionForm() {
       try {
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+        window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
         const drafts = readMigratedDraftsFromStorage();
         const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
         window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
@@ -2853,6 +2927,27 @@ export function NewSubmissionForm() {
     );
   };
 
+  const handleResumeAutosave = () => {
+    if (!autosaveRestorePayload) return;
+    restoreFromDraftData(autosaveRestorePayload.data, autosaveRestorePayload.submissionId || generateSubmissionId());
+    try {
+      window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+    } catch {
+      // ignore localStorage cleanup errors
+    }
+    setAutosaveRestorePayload(null);
+    setDraftNoticeMessage("Autosave restored.");
+  };
+
+  const handleDiscardAutosave = () => {
+    try {
+      window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+    } catch {
+      // ignore localStorage cleanup errors
+    }
+    setAutosaveRestorePayload(null);
+  };
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -2889,6 +2984,10 @@ export function NewSubmissionForm() {
     } catch {
       window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
     }
+  }, []);
+
+  useEffect(() => {
+    autosaveCheckedRef.current = true;
   }, []);
 
   useEffect(() => {
@@ -2975,8 +3074,7 @@ export function NewSubmissionForm() {
     window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(nextDrafts));
   };
 
-  const handleSaveDraft = async () => {
-    const photoSnapshot = getPhotoPersistenceSnapshot();
+  function buildCurrentDraftData(photoSnapshot: ReturnType<typeof getPhotoPersistenceSnapshot>): StoredJobCardDraft["data"] {
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const cp4DraftPayload: StoredCp4DraftPayload | undefined = selectedSections.includes("CP4")
       ? {
@@ -3002,7 +3100,8 @@ export function NewSubmissionForm() {
           powerConverterDescription: cp4PowerConverterDescription,
         }
       : undefined;
-    const draftData: StoredJobCardDraft["data"] = {
+
+    return {
       coreJob: normalizedCoreJob,
       hardwareSelection: { primary, hasAdditional, additional },
       vac4: {
@@ -3063,6 +3162,34 @@ export function NewSubmissionForm() {
         photoUploads: photoSnapshot.photoUploads,
       },
     };
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!autosaveCheckedRef.current) return;
+    if (autosaveRestorePayload) return;
+    if (submissionStatus === "Submitted" && emailSendStatus === "success") return;
+    const timeout = window.setTimeout(() => {
+      try {
+        const photoSnapshot = getPhotoPersistenceSnapshot();
+        const payload: JobCardAutosavePayload = {
+          submissionId,
+          savedAt: new Date().toISOString(),
+          selectedSections: [...selectedSections],
+          data: buildCurrentDraftData(photoSnapshot),
+        };
+        window.localStorage.setItem(JOB_CARD_AUTOSAVE_KEY, JSON.stringify(payload));
+      } catch {
+        // ignore localStorage write errors
+      }
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  });
+
+  const handleSaveDraft = async () => {
+    const photoSnapshot = getPhotoPersistenceSnapshot();
+    const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
+    const draftData = buildCurrentDraftData(photoSnapshot);
     const updatedAt = new Date().toISOString();
     const nextDraft: StoredJobCardDraft = {
       submissionId,
@@ -3146,7 +3273,11 @@ export function NewSubmissionForm() {
   const requiredHint = (key: string) =>
     hl(key) ? (
       <p className="mt-1 text-sm font-medium text-red-600 dark:text-red-400">
-        {key.startsWith("photo-") ? "Add at least one clear photo here." : "Enter a value or make a selection to continue."}
+        {key.startsWith("photo-")
+          ? "Add at least one clear photo here."
+          : key === "cp4-cameraQuantity"
+            ? "Select 1–4 cameras."
+            : "Enter a value or make a selection to continue."}
       </p>
     ) : null;
 
@@ -3200,6 +3331,28 @@ export function NewSubmissionForm() {
             {draftNoticeMessage}
           </div>
         )}
+
+        {autosaveRestorePayload ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p className="font-semibold">Resume your previous job card?</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleResumeAutosave}
+                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardAutosave}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {submitSuccessMessage && (
           <div
@@ -4651,17 +4804,27 @@ export function NewSubmissionForm() {
                           Quantity of cameras
                           <RequiredMark />
                         </label>
-                        <input
-                          type="number"
-                          min={1}
-                          className={fieldInputClass("cp4-cameraQuantity")}
-                          value={cp4CameraQuantity}
-                          placeholder="exp: 4"
+                        <select
+                          className={fieldSelectClass("cp4-cameraQuantity")}
+                          value={
+                            cp4CameraQuantity === "1" ||
+                            cp4CameraQuantity === "2" ||
+                            cp4CameraQuantity === "3" ||
+                            cp4CameraQuantity === "4"
+                              ? cp4CameraQuantity
+                              : ""
+                          }
                           onChange={(e) => {
                             setCp4CameraQuantity(e.target.value);
                             clearFieldHighlight("cp4-cameraQuantity");
                           }}
-                        />
+                        >
+                          <option value="">Select</option>
+                          <option value="1">1</option>
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="4">4</option>
+                        </select>
                         {requiredHint("cp4-cameraQuantity")}
                       </div>
                       <div id="field-cp4-monitorInstalled">
