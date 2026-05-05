@@ -108,6 +108,10 @@ Turn job cards into revenue + profitability tracking
   - Paid
   - Overdue
 
+Phase 4A-4 — Location-Based Camera Mapping
+  -Goal:
+- Tie camera location, serial number, and mounting photo into a single structured unit for PPD and future - - -camera-based hardware (CP4, etc.)
+
 4B — Expense Tracking
 - Track expenses per project:
   - Labor
