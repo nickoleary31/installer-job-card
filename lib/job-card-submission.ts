@@ -132,13 +132,13 @@ export const VAC4_ORDERED_DESCRIPTION_FIELDS: ReadonlyArray<{
   key: Vac4DescriptionKey;
   label: string;
 }> = [
-  { key: "redWireDescription", label: "Red wire description" },
-  { key: "blackWireDescription", label: "Black wire description" },
-  { key: "blueWireDescription", label: "Blue wire description" },
-  { key: "purpleWireDescription", label: "Purple wire description" },
-  { key: "brownWireDescription", label: "Brown wire description" },
-  { key: "relayAccessDescription", label: "Relay access control description" },
-  { key: "impactSensorDescription", label: "Impact sensor mounting description" },
+  { key: "redWireDescription", label: "Red (+) — connection note" },
+  { key: "blackWireDescription", label: "Black (−) — connection note" },
+  { key: "blueWireDescription", label: "Blue — connection note" },
+  { key: "purpleWireDescription", label: "Purple — connection note" },
+  { key: "brownWireDescription", label: "Brown — connection note" },
+  { key: "relayAccessDescription", label: "Relay access — connection note" },
+  { key: "impactSensorDescription", label: "Impact sensor — mounting note" },
 ];
 
 export const VAC4_ORDERED_PHOTO_FIELDS: ReadonlyArray<{
@@ -146,16 +146,16 @@ export const VAC4_ORDERED_PHOTO_FIELDS: ReadonlyArray<{
   label: string;
   descriptionField?: Vac4DescriptionKey;
 }> = [
-  { key: "vacMounting", label: "VAC mounting" },
+  { key: "vacMounting", label: "VAC4 mounting" },
   { key: "wirePath", label: "Wire path" },
-  { key: "redWire", label: "Red wire", descriptionField: "redWireDescription" },
-  { key: "blackWire", label: "Black wire", descriptionField: "blackWireDescription" },
+  { key: "redWire", label: "Red (+) battery", descriptionField: "redWireDescription" },
+  { key: "blackWire", label: "Black (−) battery", descriptionField: "blackWireDescription" },
   { key: "blueWire", label: "Blue wire", descriptionField: "blueWireDescription" },
   { key: "purpleWire", label: "Purple wire", descriptionField: "purpleWireDescription" },
   { key: "brownWire", label: "Brown wire", descriptionField: "brownWireDescription" },
-  { key: "relayAccess", label: "Relay access control", descriptionField: "relayAccessDescription" },
-  { key: "impactSensor", label: "Impact sensor mounting", descriptionField: "impactSensorDescription" },
-  { key: "sensorHubMounting", label: "Sensor hub mounting" },
+  { key: "relayAccess", label: "Relay access", descriptionField: "relayAccessDescription" },
+  { key: "impactSensor", label: "Impact sensor", descriptionField: "impactSensorDescription" },
+  { key: "sensorHubMounting", label: "Sensor hub" },
   { key: "speedSense", label: "Speed sense" },
   { key: "loadSense", label: "Load sense" },
   { key: "gps", label: "GPS" },

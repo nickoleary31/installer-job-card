@@ -531,54 +531,54 @@ const emptyPhotoMetadataByField = (): PhotoMetadataByFieldState => {
 };
 
 const PHOTO_FIELD_LABELS_BASE: Record<keyof VacPhotoFileNames | VehiclePictureKey, string> = {
-  vacMounting: "VAC mounting",
+  vacMounting: "VAC4 mounting",
   wirePath: "Wire path",
-  redWire: "Red wire",
-  blackWire: "Black wire",
+  redWire: "Red (+) battery",
+  blackWire: "Black (−) battery",
   blueWire: "Blue wire",
   brownWire: "Brown wire",
-  sensorHubMounting: "Sensor hub mounting",
+  sensorHubMounting: "Sensor hub",
   speedSense: "Speed sense",
   loadSense: "Load sense",
   gps: "GPS",
   externalIndicator: "External indicator",
   purpleWire: "Purple wire",
-  relayAccess: "Relay access control",
-  impactSensor: "Impact sensor mounting",
-  vehicleFront: "Vehicle front picture",
-  vehicleSide: "Vehicle side picture",
-  vehicleRear: "Vehicle rear picture",
+  relayAccess: "Relay access",
+  impactSensor: "Impact sensor",
+  vehicleFront: "Vehicle front",
+  vehicleSide: "Vehicle side",
+  vehicleRear: "Vehicle rear",
 };
 
 const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
-  monitorInstalled: "PPD monitor installation",
-  cameraHubMounting: "PPD camera & hub mounting",
-  wirePath: "PPD wire path",
-  redBattery: "PPD red wire — battery (+)",
-  blackBattery: "PPD black wire — battery (−)",
-  yellowIgnition: "PPD yellow wire — ignition",
-  greyMotion: "PPD grey wire — motion",
-  blueDirection: "PPD blue wire — direction",
-  powerConverter: "PPD power converter",
-  redAlarmOut: "PPD red alarm out",
-  yellowAlarmOut: "PPD yellow alarm out",
-  blackAlarmGround: "PPD black alarm ground",
+  monitorInstalled: "PPD — monitor install",
+  cameraHubMounting: "PPD — camera & hub",
+  wirePath: "PPD — wire path",
+  redBattery: "PPD — red (+) battery",
+  blackBattery: "PPD — black (−) battery",
+  yellowIgnition: "PPD — yellow ignition",
+  greyMotion: "PPD — grey motion",
+  blueDirection: "PPD — blue direction",
+  powerConverter: "PPD — power converter",
+  redAlarmOut: "PPD — red alarm out",
+  yellowAlarmOut: "PPD — yellow alarm out",
+  blackAlarmGround: "PPD — black alarm ground",
 };
 
 const CP4_PHOTO_LABELS: Record<Cp4PhotoKey, string> = {
-  cameraMounting: "CP4 camera mounting",
-  wirePath: "CP4 wire path",
-  hubMounting: "CP4 DVR mounting",
-  microphoneMounting: "CP4 microphone mounting",
-  remoteControlMounting: "CP4 remote control mounting",
-  gpsSensorMounting: "CP4 GPS sensor mounting",
-  redBattery: "CP4 red wire — battery (+)",
-  blackBattery: "CP4 black wire — battery (−)",
-  whiteIgnition: "CP4 white wire — ignition",
-  monitorMounting: "CP4 monitor mounting",
-  powerConverter: "CP4 power converter",
-  alarmIn1: "CP4 alarm IN 1",
-  alarmIn2: "CP4 alarm IN 2",
+  cameraMounting: "CP4 — camera mount",
+  wirePath: "CP4 — wire path",
+  hubMounting: "CP4 — DVR mount",
+  microphoneMounting: "CP4 — microphone",
+  remoteControlMounting: "CP4 — remote control",
+  gpsSensorMounting: "CP4 — GPS sensor",
+  redBattery: "CP4 — red (+) battery",
+  blackBattery: "CP4 — black (−) battery",
+  whiteIgnition: "CP4 — white ignition",
+  monitorMounting: "CP4 — monitor",
+  powerConverter: "CP4 — power converter",
+  alarmIn1: "CP4 — alarm IN 1",
+  alarmIn2: "CP4 — alarm IN 2",
 };
 
 const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
@@ -592,6 +592,10 @@ const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
     string
   >,
 };
+
+/** Shared upload control copy for VAC4, PPD, CP4, and vehicle photos */
+const PHOTO_UPLOAD_LABEL_SINGLE = "Take or upload photo";
+const PHOTO_UPLOAD_LABEL_MULTI = "Take or upload photos";
 
 const VAC_PHOTO_KEYS = Object.keys(emptyVacPhotoFileNames()) as (keyof VacPhotoFileNames)[];
 
@@ -677,12 +681,12 @@ type SectionStepStatus = "Not Started" | "In Progress" | "Complete";
 function sectionStatusBadgeClassName(status: SectionStepStatus) {
   switch (status) {
     case "Not Started":
-      return "mt-1 inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-slate-700 ring-1 ring-inset ring-slate-200/80";
+      return "mt-1 inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-slate-700 ring-1 ring-inset ring-slate-200/80 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-600";
     case "Complete":
-      return "mt-1 inline-flex rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-emerald-900 ring-1 ring-inset ring-emerald-200/80";
+      return "mt-1 inline-flex rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-emerald-900 ring-1 ring-inset ring-emerald-200/80 dark:bg-emerald-950/50 dark:text-emerald-100 dark:ring-emerald-800/60";
     case "In Progress":
     default:
-      return "mt-1 inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-amber-900 ring-1 ring-inset ring-amber-200/80";
+      return "mt-1 inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold tracking-tight text-amber-900 ring-1 ring-inset ring-amber-200/80 dark:bg-amber-950/40 dark:text-amber-100 dark:ring-amber-800/50";
   }
 }
 
@@ -699,13 +703,13 @@ function SectionStatusCard({
 }) {
   const ring = tone === "blue" ? "bg-blue-600" : tone === "green" ? "bg-emerald-600" : "bg-violet-600";
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-4">
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)] dark:border-gray-700 dark:bg-gray-900 sm:p-4">
       <div className="flex items-center gap-3">
         <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${ring} text-white`}>
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-gray-900">{title}</p>
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</p>
           <span className={sectionStatusBadgeClassName(status)}>{status}</span>
         </div>
       </div>
@@ -721,17 +725,20 @@ function FormSectionHeader({ title, tone }: { title: string; tone: "blue" | "gre
       <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${ring} text-white`}>
         <Icon className="h-5 w-5" />
       </div>
-      <h2 className="text-xl font-bold tracking-tight text-gray-900">{title}</h2>
+      <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100">{title}</h2>
     </div>
   );
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
   const shown = value.trim() ? value : "Not Installed";
-  const valueClass = shown === "Not Installed" ? "text-base font-semibold text-red-600 sm:col-span-2" : "text-base text-gray-900 sm:col-span-2";
+  const valueClass =
+    shown === "Not Installed"
+      ? "text-base font-semibold text-red-600 dark:text-red-400 sm:col-span-2"
+      : "text-base text-gray-900 dark:text-gray-100 sm:col-span-2";
   return (
-    <div className="grid gap-1 border-b border-gray-100 py-3 sm:grid-cols-3 sm:gap-4 last:border-b-0">
-      <div className="text-sm font-semibold text-gray-600">{label}</div>
+    <div className="grid gap-1 border-b border-gray-100 py-3 last:border-b-0 dark:border-gray-700 sm:grid-cols-3 sm:gap-4">
+      <div className="text-sm font-semibold text-gray-600 dark:text-gray-300">{label}</div>
       <div className={valueClass}>{shown}</div>
     </div>
   );
@@ -936,7 +943,7 @@ function PhotoThumbnailGrid({
   if (entries.length === 0) return null;
 
   return (
-    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+    <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
       {entries.map((e) =>
         e.kind === "remote" ? (
           <div
@@ -2501,7 +2508,9 @@ export function NewSubmissionForm() {
     const issues = collectReviewValidationIssues();
     if (issues.length > 0) {
       setReviewHighlights(new Set(issues));
-      setReviewBlockMessage("Please complete the highlighted required fields and photos.");
+      setReviewBlockMessage(
+        "Fix the highlighted items below (scroll stopped at the first one). Add missing photos or text, then try again.",
+      );
       queueMicrotask(() => {
         document.getElementById(`field-${issues[0]}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
       });
@@ -3129,20 +3138,44 @@ export function NewSubmissionForm() {
 
   const hl = (key: string) => reviewHighlights.has(key);
   const fieldInputClass = (key: string) =>
-    `${inputClassName}${hl(key) ? " border-red-500 ring-2 ring-red-100" : ""}`;
+    `${inputClassName}${hl(key) ? " border-red-500 ring-2 ring-red-100 dark:border-red-500 dark:ring-red-900/40" : ""}`;
   const fieldSelectClass = (key: string) =>
-    `${selectClassName}${hl(key) ? " border-red-500 ring-2 ring-red-100" : ""}`;
+    `${selectClassName}${hl(key) ? " border-red-500 ring-2 ring-red-100 dark:border-red-500 dark:ring-red-900/40" : ""}`;
   const fieldLabelClass = (key: string) => `${labelClassName}${hl(key) ? " text-red-600" : ""}`;
   const requiredHint = (key: string) =>
-    hl(key) ? <p className="mt-1 text-sm font-medium text-red-600">Required</p> : null;
+    hl(key) ? (
+      <p className="mt-1 text-sm font-medium text-red-600 dark:text-red-400">
+        {key.startsWith("photo-") ? "Add at least one clear photo here." : "Enter a value or make a selection to continue."}
+      </p>
+    ) : null;
 
   const photoPickClass = (photoKey: string, required: boolean, complete: boolean) => {
     let extra = "";
-    if (hl(photoKey)) extra = " border-red-500 border-dashed ring-2 ring-red-100";
+    if (hl(photoKey)) extra = " border-red-500 border-dashed ring-2 ring-red-100 dark:border-red-500 dark:ring-red-900/40";
     else if (required && complete) extra = " border-emerald-500 border-dashed";
     return `${photoPickClassName}${extra}`;
   };
   const isJobCardSubmitted = submissionStatus === "Submitted" && emailSendStatus === "success";
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const shouldTrapBrowserBack = hasCoreOrVehicleInfo && !isJobCardSubmitted;
+    if (!shouldTrapBrowserBack) return;
+
+    const historyState = { jobCardBrowserBackGuard: true as const };
+
+    const onPopState = () => {
+      setExitWithoutSavingOpen(true);
+      window.history.pushState(historyState, "", window.location.href);
+    };
+
+    window.history.pushState(historyState, "", window.location.href);
+    window.addEventListener("popstate", onPopState);
+
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [hasCoreOrVehicleInfo, isJobCardSubmitted]);
 
   return (
     <div className="min-h-screen bg-slate-50 pb-32 sm:pb-36 md:pb-10">
@@ -3228,12 +3261,12 @@ export function NewSubmissionForm() {
                 </p>
               )}
               {postSubmitSyncWarning && (
-                <p className="text-sm font-semibold text-amber-800" role="alert">
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-200" role="alert">
                   {postSubmitSyncWarning}
                 </p>
               )}
               {emailSendStatus === "error" && emailSendErrorMessage && (
-                <p className="text-sm font-semibold text-red-700" role="alert">
+                <p className="text-sm font-semibold text-red-700 dark:text-red-300" role="alert">
                   {emailSendErrorMessage}
                 </p>
               )}
@@ -3275,7 +3308,7 @@ export function NewSubmissionForm() {
           {hardwareStatusSections.map((section) => (
             <SectionStatusCard
               key={section}
-              title={`${section} Section`}
+              title={["VAC4", "CP4", "PPD"].includes(section) ? `${section} hardware` : `${section} Section`}
               tone={section === "VAC4" ? "purple" : "green"}
               icon={section === "VAC4" ? IconGear : IconChip}
               status={section === "VAC4" ? vac4SectionStatus : "In Progress"}
@@ -3285,7 +3318,7 @@ export function NewSubmissionForm() {
 
         {reviewBlockMessage && (
           <div
-            className="rounded-xl border-2 border-red-300 bg-red-50 px-4 py-3 text-base font-semibold text-red-900 shadow-sm"
+            className="rounded-xl border-2 border-red-300 bg-red-50 px-4 py-3 text-base font-semibold text-red-900 shadow-sm dark:border-red-800 dark:bg-red-950/40 dark:text-red-100"
             role="alert"
           >
             {reviewBlockMessage}
@@ -3578,10 +3611,10 @@ export function NewSubmissionForm() {
         <section className={cardClassName}>
           <FormSectionHeader title="Vehicle Pictures" tone="purple" />
 
-          <div className="space-y-5">
+          <div className="space-y-6">
             <div id="field-photo-vehicleFront">
               <label className={fieldLabelClass("photo-vehicleFront")}>
-                Vehicle Front Picture
+                Vehicle front photo(s)
                 <RequiredMark />
               </label>
               <input
@@ -3596,7 +3629,7 @@ export function NewSubmissionForm() {
                 htmlFor="vehicleFrontPictures"
                 className={photoPickClass("photo-vehicleFront", true, vehiclePictureCounts.vehicleFront >= 1)}
               >
-                Select Front Photo(s)
+                {PHOTO_UPLOAD_LABEL_MULTI}
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleFront} names={vehiclePictureFileNames.vehicleFront} />
               <PhotoThumbnailGrid
@@ -3612,7 +3645,7 @@ export function NewSubmissionForm() {
 
             <div id="field-photo-vehicleSide">
               <label className={fieldLabelClass("photo-vehicleSide")}>
-                Vehicle Side Picture
+                Vehicle side photo(s)
                 <RequiredMark />
               </label>
               <input
@@ -3627,7 +3660,7 @@ export function NewSubmissionForm() {
                 htmlFor="vehicleSidePictures"
                 className={photoPickClass("photo-vehicleSide", true, vehiclePictureCounts.vehicleSide >= 1)}
               >
-                Select Side Photo(s)
+                {PHOTO_UPLOAD_LABEL_MULTI}
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleSide} names={vehiclePictureFileNames.vehicleSide} />
               <PhotoThumbnailGrid
@@ -3642,7 +3675,7 @@ export function NewSubmissionForm() {
             </div>
 
             <div id="field-photo-vehicleRear">
-              <label className={labelClassName}>Vehicle Rear Picture (Optional)</label>
+              <label className={labelClassName}>Vehicle rear photo (optional)</label>
               <input
                 id="vehicleRearPictures"
                 type="file"
@@ -3655,7 +3688,7 @@ export function NewSubmissionForm() {
                 htmlFor="vehicleRearPictures"
                 className={photoPickClass("photo-vehicleRear", false, vehiclePictureCounts.vehicleRear >= 1)}
               >
-                Select Rear Photo(s)
+                {PHOTO_UPLOAD_LABEL_MULTI}
               </label>
               <PhotoUploadFeedback count={vehiclePictureCounts.vehicleRear} names={vehiclePictureFileNames.vehicleRear} />
               <PhotoThumbnailGrid
@@ -3755,7 +3788,7 @@ export function NewSubmissionForm() {
 
         {primary && !hasAnsweredAdditionalHardwareQuestion && (
           <section className={cardClassName}>
-            <p className="text-sm font-semibold text-amber-800">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
               Please answer &quot;Is any additional hardware being installed?&quot; to continue.
             </p>
           </section>
@@ -3764,11 +3797,11 @@ export function NewSubmissionForm() {
         {hasAnsweredAdditionalHardwareQuestion && selectedSections.includes("VAC4") && (
           <VAC4Section>
             <section className={`${cardClassName} space-y-5`}>
-              <FormSectionHeader title="VAC4 Section" tone="purple" />
+              <FormSectionHeader title="VAC4 hardware" tone="purple" />
 
                 <div id="field-vac4-clientApproval">
                   <label className={fieldLabelClass("vac4-clientApproval")}>
-                    Client Representative Approval Details
+                    Client rep. approval — name, role, date/time
                     <RequiredMark />
                   </label>
                   <input
@@ -3839,12 +3872,12 @@ export function NewSubmissionForm() {
                   {requiredHint("vac4-operatorPresence")}
                 </div>
 
-                <div className="space-y-5 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 dark:border-gray-600 dark:bg-gray-800/90 sm:p-5">
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">VAC4 Required Photos</h3>
+                <div className="space-y-6 rounded-2xl border-2 border-gray-200 bg-gray-50/90 p-4 dark:border-gray-600 dark:bg-gray-800/90 sm:p-5">
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">VAC4 required photos</h3>
 
                   <div id="field-photo-vacMounting">
                     <label className={fieldLabelClass("photo-vacMounting")}>
-                      VAC Mounting Location Photo
+                      VAC4 mounting photo
                       <RequiredMark />
                     </label>
                     <input
@@ -3858,7 +3891,7 @@ export function NewSubmissionForm() {
                       htmlFor="vacMountingPhoto"
                       className={photoPickClass("photo-vacMounting", true, pc.vacMounting >= 1)}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.vacMounting} names={vacPhotoFileNames.vacMounting} />
                     <PhotoThumbnailGrid
@@ -3873,7 +3906,7 @@ export function NewSubmissionForm() {
                   </div>
                   <div id="field-photo-wirePath">
                     <label className={fieldLabelClass("photo-wirePath")}>
-                      Wire Path Photos
+                      Wire path photos
                       <RequiredMark />
                     </label>
                     <input
@@ -3888,7 +3921,7 @@ export function NewSubmissionForm() {
                       htmlFor="wirePathPhotos"
                       className={photoPickClass("photo-wirePath", true, pc.wirePath >= 1)}
                     >
-                      📷 Take / Upload Photos
+                      {PHOTO_UPLOAD_LABEL_MULTI}
                     </label>
                     <PhotoUploadFeedback count={pc.wirePath} names={vacPhotoFileNames.wirePath} />
                     <PhotoThumbnailGrid
@@ -3900,17 +3933,17 @@ export function NewSubmissionForm() {
                     <PhotoUploadedBadge show={pc.wirePath >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.wirePath} />
                     {requiredHint("photo-wirePath")}
-                    <p className="mt-2 text-base leading-relaxed text-gray-600 dark:text-gray-300">
-                      Upload multiple photos showing the full wire route from device to connection points.
+                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      Show the full harness route (bends, clips, through panels) in one or more photos.
                     </p>
                   </div>
 
                   <div id="field-photo-redWire">
                     <label className={fieldLabelClass("photo-redWire")}>
-                      Red Wire Connection Photo
+                      Red (+) battery photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600 dark:text-gray-300">Battery positive</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">Battery positive (+) terminal or bus.</p>
                     <input
                       id="redWirePhoto"
                       type="file"
@@ -3922,7 +3955,7 @@ export function NewSubmissionForm() {
                       htmlFor="redWirePhoto"
                       className={`${photoPickClass("photo-redWire", true, pc.redWire >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.redWire} names={vacPhotoFileNames.redWire} />
                     <PhotoThumbnailGrid
@@ -3936,7 +3969,7 @@ export function NewSubmissionForm() {
                     {requiredHint("photo-redWire")}
                     <div id="field-vac4-redWireDescription" className="mt-2">
                       <label className={fieldLabelClass("vac4-redWireDescription")}>
-                        Red wire connection description
+                        Red wire — connection note
                         <RequiredMark />
                       </label>
                       <input
@@ -3953,10 +3986,10 @@ export function NewSubmissionForm() {
                   </div>
                   <div id="field-photo-blackWire">
                     <label className={fieldLabelClass("photo-blackWire")}>
-                      Black Wire Connection Photo
+                      Black (−) battery photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600 dark:text-gray-300">Battery negative</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">Battery negative (−) or chassis ground.</p>
                     <input
                       id="blackWirePhoto"
                       type="file"
@@ -3968,7 +4001,7 @@ export function NewSubmissionForm() {
                       htmlFor="blackWirePhoto"
                       className={`${photoPickClass("photo-blackWire", true, pc.blackWire >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.blackWire} names={vacPhotoFileNames.blackWire} />
                     <PhotoThumbnailGrid
@@ -3982,7 +4015,7 @@ export function NewSubmissionForm() {
                     {requiredHint("photo-blackWire")}
                     <div id="field-vac4-blackWireDescription" className="mt-2">
                       <label className={fieldLabelClass("vac4-blackWireDescription")}>
-                        Black wire connection description
+                        Black wire — connection note
                         <RequiredMark />
                       </label>
                       <input
@@ -3999,10 +4032,10 @@ export function NewSubmissionForm() {
                   </div>
                   <div id="field-photo-blueWire">
                     <label className={fieldLabelClass("photo-blueWire")}>
-                      Blue Wire Connection Photo
+                      Blue wire photo
                       <RequiredMark />
                     </label>
-                    <p className="text-base text-gray-600 dark:text-gray-300">{blueWireHelperText}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">{blueWireHelperText}</p>
                     <input
                       id="blueWirePhoto"
                       type="file"
@@ -4014,7 +4047,7 @@ export function NewSubmissionForm() {
                       htmlFor="blueWirePhoto"
                       className={`${photoPickClass("photo-blueWire", true, pc.blueWire >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.blueWire} names={vacPhotoFileNames.blueWire} />
                     <PhotoThumbnailGrid
@@ -4028,7 +4061,7 @@ export function NewSubmissionForm() {
                     {requiredHint("photo-blueWire")}
                     <div id="field-vac4-blueWireDescription" className="mt-2">
                       <label className={fieldLabelClass("vac4-blueWireDescription")}>
-                        Blue wire connection description
+                        Blue wire — connection note
                         <RequiredMark />
                       </label>
                       <input
@@ -4046,10 +4079,10 @@ export function NewSubmissionForm() {
                   {operatorPresenceInstalled === "Yes" && (
                     <div id="field-photo-purpleWire">
                       <label className={fieldLabelClass("photo-purpleWire")}>
-                      Purple Wire Connection Photo
+                        Purple wire photo
                         <RequiredMark />
                       </label>
-                    <p className="text-base text-gray-600">Operator presence</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-300">Operator-presence circuit.</p>
                     <input
                       id="purpleWirePhoto"
                       type="file"
@@ -4061,7 +4094,7 @@ export function NewSubmissionForm() {
                       htmlFor="purpleWirePhoto"
                         className={`${photoPickClass("photo-purpleWire", true, pc.purpleWire >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.purpleWire} names={vacPhotoFileNames.purpleWire} />
                     <PhotoThumbnailGrid
@@ -4075,7 +4108,7 @@ export function NewSubmissionForm() {
                       {requiredHint("photo-purpleWire")}
                       <div id="field-vac4-purpleWireDescription">
                         <label className={fieldLabelClass("vac4-purpleWireDescription")}>
-                      Purple wire connection description
+                          Purple wire — connection note
                           <RequiredMark />
                         </label>
                         <input
@@ -4095,10 +4128,10 @@ export function NewSubmissionForm() {
                     (vac4DriveType === "Electric" && liftSenseInstalled === "Yes")) && (
                     <div id="field-photo-brownWire">
                       <label className={fieldLabelClass("photo-brownWire")}>
-                        Brown Wire Connection Photo
+                        Brown wire photo
                         <RequiredMark />
                       </label>
-                    <p className="text-base text-gray-600 dark:text-gray-300">{brownWireHelperText}</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-300">{brownWireHelperText}</p>
                       <input
                         id="brownWirePhoto"
                         type="file"
@@ -4110,7 +4143,7 @@ export function NewSubmissionForm() {
                         htmlFor="brownWirePhoto"
                         className={`${photoPickClass("photo-brownWire", true, pc.brownWire >= 1)} mb-2`}
                       >
-                        📷 Take / Upload Photo
+                        {PHOTO_UPLOAD_LABEL_SINGLE}
                       </label>
                       <PhotoUploadFeedback count={pc.brownWire} names={vacPhotoFileNames.brownWire} />
                       <PhotoThumbnailGrid
@@ -4124,7 +4157,7 @@ export function NewSubmissionForm() {
                       {requiredHint("photo-brownWire")}
                       <div id="field-vac4-brownWireDescription" className="mt-2">
                         <label className={fieldLabelClass("vac4-brownWireDescription")}>
-                          Brown wire connection description
+                          Brown wire — connection note
                           <RequiredMark />
                         </label>
                         <input
@@ -4143,7 +4176,7 @@ export function NewSubmissionForm() {
 
                   <div>
                     <label className={labelClassName}>
-                      Relay Access Control Connection(s) Photo
+                      Relay access photo
                       <RequiredMark />
                     </label>
                     <input
@@ -4158,7 +4191,7 @@ export function NewSubmissionForm() {
                       htmlFor="relayAccessControlPhoto"
                       className={`${photoPickClass("photo-relayAccess", false, pc.relayAccess >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.relayAccess} names={vacPhotoFileNames.relayAccess} />
                     <PhotoThumbnailGrid
@@ -4170,7 +4203,7 @@ export function NewSubmissionForm() {
                     <PhotoUploadedBadge show={pc.relayAccess >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.relayAccess} />
                     <label className={`${labelClassName} mt-2`}>
-                      Relay access control connection description
+                      Relay access — connection note
                       <RequiredMark />
                     </label>
                     <input
@@ -4182,7 +4215,7 @@ export function NewSubmissionForm() {
                   </div>
                   <div>
                     <label className={labelClassName}>
-                      Impact Sensor Mounting Photo
+                      Impact sensor photo
                       <RequiredMark />
                     </label>
                     <input
@@ -4197,7 +4230,7 @@ export function NewSubmissionForm() {
                       htmlFor="impactSensorMountingPhoto"
                       className={`${photoPickClass("photo-impactSensor", false, pc.impactSensor >= 1)} mb-2`}
                     >
-                      📷 Take / Upload Photo
+                      {PHOTO_UPLOAD_LABEL_SINGLE}
                     </label>
                     <PhotoUploadFeedback count={pc.impactSensor} names={vacPhotoFileNames.impactSensor} />
                     <PhotoThumbnailGrid
@@ -4209,7 +4242,7 @@ export function NewSubmissionForm() {
                     <PhotoUploadedBadge show={pc.impactSensor >= 1} />
                     <PhotoFieldError message={vacPhotoErrors.impactSensor} />
                     <label className={`${labelClassName} mt-2`}>
-                      Impact sensor mounting description
+                      Impact sensor — mounting note
                       <RequiredMark />
                     </label>
                     <input
@@ -4268,7 +4301,7 @@ export function NewSubmissionForm() {
                     </div>
                     <div id="field-photo-sensorHubMounting">
                       <label className={fieldLabelClass("photo-sensorHubMounting")}>
-                        Sensor Hub Mounting Location Photo
+                        Sensor hub mounting photo
                         <RequiredMark />
                       </label>
                       <input
@@ -4282,7 +4315,7 @@ export function NewSubmissionForm() {
                         htmlFor="sensorHubMountingPhoto"
                         className={photoPickClass("photo-sensorHubMounting", true, pc.sensorHubMounting >= 1)}
                       >
-                        📷 Take / Upload Photo
+                        {PHOTO_UPLOAD_LABEL_SINGLE}
                       </label>
                       <PhotoUploadFeedback count={pc.sensorHubMounting} names={vacPhotoFileNames.sensorHubMounting} />
                       <PhotoThumbnailGrid
@@ -4361,7 +4394,7 @@ export function NewSubmissionForm() {
                         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Speed Sense Details</h3>
                         <div id="field-photo-speedSense">
                           <label className={fieldLabelClass("photo-speedSense")}>
-                            Speed Sense Photo
+                            Speed sense photo
                             <RequiredMark />
                           </label>
                           <input
@@ -4375,7 +4408,7 @@ export function NewSubmissionForm() {
                             htmlFor="speedSensePhoto"
                             className={photoPickClass("photo-speedSense", true, pc.speedSense >= 1)}
                           >
-                            📷 Take / Upload Photo
+                            {PHOTO_UPLOAD_LABEL_SINGLE}
                           </label>
                           <PhotoUploadFeedback count={pc.speedSense} names={vacPhotoFileNames.speedSense} />
                           <PhotoThumbnailGrid
@@ -4390,7 +4423,7 @@ export function NewSubmissionForm() {
                         </div>
                         <div id="field-vac4-speedSenseDescription">
                           <label className={fieldLabelClass("vac4-speedSenseDescription")}>
-                            Speed Sense Description
+                            Speed sense — installation note
                             <RequiredMark />
                           </label>
                           <input
@@ -4406,7 +4439,7 @@ export function NewSubmissionForm() {
                         </div>
                         <div id="field-vac4-speedSensePulseCount">
                           <label className={fieldLabelClass("vac4-speedSensePulseCount")}>
-                            Speed Sense Pulse Count
+                            Speed sense pulse count
                             <RequiredMark />
                           </label>
                           <input
@@ -4428,7 +4461,7 @@ export function NewSubmissionForm() {
                         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Load Sense Details</h3>
                         <div id="field-photo-loadSense">
                           <label className={fieldLabelClass("photo-loadSense")}>
-                            Load Sense Photo
+                            Load sense photo
                             <RequiredMark />
                           </label>
                           <input
@@ -4442,7 +4475,7 @@ export function NewSubmissionForm() {
                             htmlFor="loadSensePhoto"
                             className={photoPickClass("photo-loadSense", true, pc.loadSense >= 1)}
                           >
-                            📷 Take / Upload Photo
+                            {PHOTO_UPLOAD_LABEL_SINGLE}
                           </label>
                           <PhotoUploadFeedback count={pc.loadSense} names={vacPhotoFileNames.loadSense} />
                           <PhotoThumbnailGrid
@@ -4457,7 +4490,7 @@ export function NewSubmissionForm() {
                         </div>
                         <div id="field-vac4-loadSenseThresholds">
                           <label className={fieldLabelClass("vac4-loadSenseThresholds")}>
-                            Load Sense VAC Thresholds
+                            Load sense VAC thresholds
                             <RequiredMark />
                           </label>
                           <input
@@ -4479,7 +4512,7 @@ export function NewSubmissionForm() {
                         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">GPS Details</h3>
                         <div id="field-photo-gps">
                           <label className={fieldLabelClass("photo-gps")}>
-                            GPS Mounting Location Photo
+                            GPS mounting photo
                             <RequiredMark />
                           </label>
                           <input
@@ -4493,7 +4526,7 @@ export function NewSubmissionForm() {
                             htmlFor="gpsMountingPhoto"
                             className={photoPickClass("photo-gps", true, pc.gps >= 1)}
                           >
-                            📷 Take / Upload Photo
+                            {PHOTO_UPLOAD_LABEL_SINGLE}
                           </label>
                           <PhotoUploadFeedback count={pc.gps} names={vacPhotoFileNames.gps} />
                           <PhotoThumbnailGrid
@@ -4514,7 +4547,7 @@ export function NewSubmissionForm() {
                         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">External Indicator Details</h3>
                         <div id="field-photo-externalIndicator">
                           <label className={fieldLabelClass("photo-externalIndicator")}>
-                            External Indicator Mounting Location Photo
+                            External indicator mounting photo
                             <RequiredMark />
                           </label>
                           <input
@@ -4528,7 +4561,7 @@ export function NewSubmissionForm() {
                             htmlFor="externalIndicatorPhoto"
                             className={photoPickClass("photo-externalIndicator", true, pc.externalIndicator >= 1)}
                           >
-                            📷 Take / Upload Photo
+                            {PHOTO_UPLOAD_LABEL_SINGLE}
                           </label>
                           <PhotoUploadFeedback count={pc.externalIndicator} names={vacPhotoFileNames.externalIndicator} />
                           <PhotoThumbnailGrid
@@ -4580,7 +4613,7 @@ export function NewSubmissionForm() {
                     </p>
                   </div>
 
-                  <div className="space-y-8">
+                  <div className="space-y-6">
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-cp4-drid">
                         <label className={fieldLabelClass("cp4-drid")}>
@@ -4663,7 +4696,7 @@ export function NewSubmissionForm() {
 
                     <div id="field-cp4-clientApproval">
                       <label className={fieldLabelClass("cp4-clientApproval")}>
-                        Client representative that approved monitor/camera mounting locations and camera views
+                        Client rep. approval — mounting locations, camera positions, and views
                         <RequiredMark />
                       </label>
                       <textarea
@@ -4723,7 +4756,7 @@ export function NewSubmissionForm() {
                     ) : null}
 
                     <div className="space-y-6 border-t border-gray-100 pt-6 dark:border-gray-700">
-                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">CP4 photos</h3>
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">CP4 required photos</h3>
 
                       <div id={`field-${cp4PhotoIssueKey("cameraMounting")}`}>
                         <label className={fieldLabelClass(cp4PhotoIssueKey("cameraMounting"))}>
@@ -4745,7 +4778,7 @@ export function NewSubmissionForm() {
                           htmlFor="cp4-photo-cameraMounting"
                           className={photoPickClass(cp4PhotoIssueKey("cameraMounting"), true, cp4Pc.cameraMounting >= 1)}
                         >
-                          Take / upload photo(s)
+                          {PHOTO_UPLOAD_LABEL_MULTI}
                         </label>
                         <PhotoUploadFeedback count={cp4Pc.cameraMounting} names={cp4PhotoFileNames.cameraMounting} />
                         <PhotoThumbnailGrid
@@ -4779,7 +4812,7 @@ export function NewSubmissionForm() {
                           htmlFor="cp4-photo-wirePath"
                           className={photoPickClass(cp4PhotoIssueKey("wirePath"), true, cp4Pc.wirePath >= 1)}
                         >
-                          Take / upload photo(s)
+                          {PHOTO_UPLOAD_LABEL_MULTI}
                         </label>
                         <PhotoUploadFeedback count={cp4Pc.wirePath} names={cp4PhotoFileNames.wirePath} />
                         <PhotoThumbnailGrid
@@ -4799,7 +4832,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("hubMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("hubMounting"))}>DVR Mounting Location<RequiredMark /></label>
                             <input id="cp4-photo-hubMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("hubMounting", e, "single")} />
-                            <label htmlFor="cp4-photo-hubMounting" className={photoPickClass(cp4PhotoIssueKey("hubMounting"), true, cp4Pc.hubMounting >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-hubMounting" className={photoPickClass(cp4PhotoIssueKey("hubMounting"), true, cp4Pc.hubMounting >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.hubMounting} names={cp4PhotoFileNames.hubMounting} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.hubMounting}
@@ -4811,7 +4844,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.hubMounting} />
                             {requiredHint(cp4PhotoIssueKey("hubMounting"))}
                             <div id="field-cp4-hubMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-hubMountingDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-hubMountingDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-hubMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4HubMountingDescription}
@@ -4828,7 +4861,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("microphoneMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("microphoneMounting"))}>Microphone mounting location<RequiredMark /></label>
                             <input id="cp4-photo-microphoneMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("microphoneMounting", e, "single")} />
-                            <label htmlFor="cp4-photo-microphoneMounting" className={photoPickClass(cp4PhotoIssueKey("microphoneMounting"), true, cp4Pc.microphoneMounting >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-microphoneMounting" className={photoPickClass(cp4PhotoIssueKey("microphoneMounting"), true, cp4Pc.microphoneMounting >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.microphoneMounting} names={cp4PhotoFileNames.microphoneMounting} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.microphoneMounting}
@@ -4840,7 +4873,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.microphoneMounting} />
                             {requiredHint(cp4PhotoIssueKey("microphoneMounting"))}
                             <div id="field-cp4-microphoneMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-microphoneMountingDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-microphoneMountingDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-microphoneMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4MicrophoneMountingDescription}
@@ -4858,7 +4891,7 @@ export function NewSubmissionForm() {
                             <label className={fieldLabelClass(cp4PhotoIssueKey("remoteControlMounting"))}>Remote control mounting location<RequiredMark /></label>
                             <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">Include illuminated lights.</p>
                             <input id="cp4-photo-remoteControlMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("remoteControlMounting", e, "single")} />
-                            <label htmlFor="cp4-photo-remoteControlMounting" className={photoPickClass(cp4PhotoIssueKey("remoteControlMounting"), true, cp4Pc.remoteControlMounting >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-remoteControlMounting" className={photoPickClass(cp4PhotoIssueKey("remoteControlMounting"), true, cp4Pc.remoteControlMounting >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.remoteControlMounting} names={cp4PhotoFileNames.remoteControlMounting} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.remoteControlMounting}
@@ -4870,7 +4903,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.remoteControlMounting} />
                             {requiredHint(cp4PhotoIssueKey("remoteControlMounting"))}
                             <div id="field-cp4-remoteControlMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-remoteControlMountingDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-remoteControlMountingDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-remoteControlMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4RemoteControlMountingDescription}
@@ -4887,7 +4920,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("gpsSensorMounting")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("gpsSensorMounting"))}>GPS sensor mounting location<RequiredMark /></label>
                             <input id="cp4-photo-gpsSensorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("gpsSensorMounting", e, "single")} />
-                            <label htmlFor="cp4-photo-gpsSensorMounting" className={photoPickClass(cp4PhotoIssueKey("gpsSensorMounting"), true, cp4Pc.gpsSensorMounting >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-gpsSensorMounting" className={photoPickClass(cp4PhotoIssueKey("gpsSensorMounting"), true, cp4Pc.gpsSensorMounting >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.gpsSensorMounting} names={cp4PhotoFileNames.gpsSensorMounting} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.gpsSensorMounting}
@@ -4899,7 +4932,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.gpsSensorMounting} />
                             {requiredHint(cp4PhotoIssueKey("gpsSensorMounting"))}
                             <div id="field-cp4-gpsSensorMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-gpsSensorMountingDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-gpsSensorMountingDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-gpsSensorMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4GpsSensorMountingDescription}
@@ -4921,7 +4954,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("redBattery")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("redBattery"))}>Red wire — battery positive (+) connection<RequiredMark /></label>
                             <input id="cp4-photo-redBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("redBattery", e, "single")} />
-                            <label htmlFor="cp4-photo-redBattery" className={photoPickClass(cp4PhotoIssueKey("redBattery"), true, cp4Pc.redBattery >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-redBattery" className={photoPickClass(cp4PhotoIssueKey("redBattery"), true, cp4Pc.redBattery >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.redBattery} names={cp4PhotoFileNames.redBattery} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.redBattery}
@@ -4933,7 +4966,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.redBattery} />
                             {requiredHint(cp4PhotoIssueKey("redBattery"))}
                             <div id="field-cp4-redWireDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-redWireDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-redWireDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-redWireDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4RedWireDescription}
@@ -4949,7 +4982,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("blackBattery")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("blackBattery"))}>Black wire — battery negative (−) connection<RequiredMark /></label>
                             <input id="cp4-photo-blackBattery" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("blackBattery", e, "single")} />
-                            <label htmlFor="cp4-photo-blackBattery" className={photoPickClass(cp4PhotoIssueKey("blackBattery"), true, cp4Pc.blackBattery >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-blackBattery" className={photoPickClass(cp4PhotoIssueKey("blackBattery"), true, cp4Pc.blackBattery >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.blackBattery} names={cp4PhotoFileNames.blackBattery} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.blackBattery}
@@ -4961,7 +4994,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.blackBattery} />
                             {requiredHint(cp4PhotoIssueKey("blackBattery"))}
                             <div id="field-cp4-blackWireDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-blackWireDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-blackWireDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-blackWireDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4BlackWireDescription}
@@ -4977,7 +5010,7 @@ export function NewSubmissionForm() {
                           <div id={`field-${cp4PhotoIssueKey("whiteIgnition")}`}>
                             <label className={fieldLabelClass(cp4PhotoIssueKey("whiteIgnition"))}>White wire — ignition / power trigger connection<RequiredMark /></label>
                             <input id="cp4-photo-whiteIgnition" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("whiteIgnition", e, "single")} />
-                            <label htmlFor="cp4-photo-whiteIgnition" className={photoPickClass(cp4PhotoIssueKey("whiteIgnition"), true, cp4Pc.whiteIgnition >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-whiteIgnition" className={photoPickClass(cp4PhotoIssueKey("whiteIgnition"), true, cp4Pc.whiteIgnition >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.whiteIgnition} names={cp4PhotoFileNames.whiteIgnition} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.whiteIgnition}
@@ -4989,7 +5022,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.whiteIgnition} />
                             {requiredHint(cp4PhotoIssueKey("whiteIgnition"))}
                             <div id="field-cp4-whiteWireDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-whiteWireDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-whiteWireDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-whiteWireDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4WhiteWireDescription}
@@ -5010,7 +5043,7 @@ export function NewSubmissionForm() {
                           <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Monitor mounting location<RequiredMark /></h4>
                           <div id={`field-${cp4PhotoIssueKey("monitorMounting")}`}>
                             <input id="cp4-photo-monitorMounting" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("monitorMounting", e, "single")} />
-                            <label htmlFor="cp4-photo-monitorMounting" className={photoPickClass(cp4PhotoIssueKey("monitorMounting"), true, cp4Pc.monitorMounting >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-monitorMounting" className={photoPickClass(cp4PhotoIssueKey("monitorMounting"), true, cp4Pc.monitorMounting >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.monitorMounting} names={cp4PhotoFileNames.monitorMounting} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.monitorMounting}
@@ -5022,7 +5055,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.monitorMounting} />
                             {requiredHint(cp4PhotoIssueKey("monitorMounting"))}
                             <div id="field-cp4-monitorMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-monitorMountingDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-monitorMountingDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-monitorMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4MonitorMountingDescription}
@@ -5043,7 +5076,7 @@ export function NewSubmissionForm() {
                           <h4 className="mb-2 text-base font-bold text-gray-900 dark:text-gray-100">Power converter mounting and wiring<RequiredMark /></h4>
                           <div id={`field-${cp4PhotoIssueKey("powerConverter")}`}>
                             <input id="cp4-photo-powerConverter" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("powerConverter", e, "single")} />
-                            <label htmlFor="cp4-photo-powerConverter" className={photoPickClass(cp4PhotoIssueKey("powerConverter"), true, cp4Pc.powerConverter >= 1)}>Take / upload photo</label>
+                            <label htmlFor="cp4-photo-powerConverter" className={photoPickClass(cp4PhotoIssueKey("powerConverter"), true, cp4Pc.powerConverter >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                             <PhotoUploadFeedback count={cp4Pc.powerConverter} names={cp4PhotoFileNames.powerConverter} />
                             <PhotoThumbnailGrid
                               files={cp4PhotoFiles.powerConverter}
@@ -5055,7 +5088,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.powerConverter} />
                             {requiredHint(cp4PhotoIssueKey("powerConverter"))}
                             <div id="field-cp4-powerConverterDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-powerConverterDescription")}>Description<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-powerConverterDescription")}>Connection note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-powerConverterDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4PowerConverterDescription}
@@ -5085,7 +5118,7 @@ export function NewSubmissionForm() {
                           {cp4ShowAlarmIn1 ? (
                             <div id={`field-${cp4PhotoIssueKey("alarmIn1")}`}>
                               <input id="cp4-photo-alarmIn1" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("alarmIn1", e, "single")} />
-                              <label htmlFor="cp4-photo-alarmIn1" className={photoPickClass(cp4PhotoIssueKey("alarmIn1"), true, cp4Pc.alarmIn1 >= 1)}>Take / upload photo</label>
+                              <label htmlFor="cp4-photo-alarmIn1" className={photoPickClass(cp4PhotoIssueKey("alarmIn1"), true, cp4Pc.alarmIn1 >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                               <PhotoUploadFeedback count={cp4Pc.alarmIn1} names={cp4PhotoFileNames.alarmIn1} />
                               <PhotoThumbnailGrid
                                 files={cp4PhotoFiles.alarmIn1}
@@ -5097,7 +5130,7 @@ export function NewSubmissionForm() {
                               <PhotoFieldError message={cp4PhotoErrors.alarmIn1} />
                               {requiredHint(cp4PhotoIssueKey("alarmIn1"))}
                               <div id="field-cp4-alarmIn1Description" className="mt-3">
-                                <label className={fieldLabelClass("cp4-alarmIn1Description")}>Description<RequiredMark /></label>
+                                <label className={fieldLabelClass("cp4-alarmIn1Description")}>Connection note<RequiredMark /></label>
                                 <textarea
                                   className={`${fieldInputClass("cp4-alarmIn1Description")} min-h-[80px] resize-y py-3`}
                                   value={cp4AlarmIn1Description}
@@ -5123,7 +5156,7 @@ export function NewSubmissionForm() {
                           {cp4ShowAlarmIn2 ? (
                             <div id={`field-${cp4PhotoIssueKey("alarmIn2")}`}>
                               <input id="cp4-photo-alarmIn2" type="file" className="hidden" accept="image/png,image/jpeg,image/jpg" onChange={(e) => void applyCp4PhotoUpload("alarmIn2", e, "single")} />
-                              <label htmlFor="cp4-photo-alarmIn2" className={photoPickClass(cp4PhotoIssueKey("alarmIn2"), true, cp4Pc.alarmIn2 >= 1)}>Take / upload photo</label>
+                              <label htmlFor="cp4-photo-alarmIn2" className={photoPickClass(cp4PhotoIssueKey("alarmIn2"), true, cp4Pc.alarmIn2 >= 1)}>{PHOTO_UPLOAD_LABEL_SINGLE}</label>
                               <PhotoUploadFeedback count={cp4Pc.alarmIn2} names={cp4PhotoFileNames.alarmIn2} />
                               <PhotoThumbnailGrid
                                 files={cp4PhotoFiles.alarmIn2}
@@ -5135,7 +5168,7 @@ export function NewSubmissionForm() {
                               <PhotoFieldError message={cp4PhotoErrors.alarmIn2} />
                               {requiredHint(cp4PhotoIssueKey("alarmIn2"))}
                               <div id="field-cp4-alarmIn2Description" className="mt-3">
-                                <label className={fieldLabelClass("cp4-alarmIn2Description")}>Description<RequiredMark /></label>
+                                <label className={fieldLabelClass("cp4-alarmIn2Description")}>Connection note<RequiredMark /></label>
                                 <textarea
                                   className={`${fieldInputClass("cp4-alarmIn2Description")} min-h-[80px] resize-y py-3`}
                                   value={cp4AlarmIn2Description}
@@ -5186,7 +5219,7 @@ export function NewSubmissionForm() {
                     ) : null}
                   </div>
 
-                  <div className="space-y-8">
+                  <div className="space-y-6">
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-ppd-hubSerial" className="sm:col-span-2">
                         <label className={fieldLabelClass("ppd-hubSerial")}>
@@ -5243,7 +5276,7 @@ export function NewSubmissionForm() {
 
                     <div id="field-ppd-clientApproval" className="space-y-2">
                       <label className={fieldLabelClass("ppd-clientApproval")}>
-                        Client representative approval details
+                        Client rep. approval — name, role, date/time
                         <RequiredMark />
                       </label>
                       <textarea
@@ -5359,7 +5392,7 @@ export function NewSubmissionForm() {
                           htmlFor="ppd-photo-monitorInstalled"
                           className={photoPickClass(ppdPhotoIssueKey("monitorInstalled"), true, ppdPc.monitorInstalled >= 1)}
                         >
-                          Take / upload photo
+                          {PHOTO_UPLOAD_LABEL_SINGLE}
                         </label>
                         <PhotoUploadFeedback count={ppdPc.monitorInstalled} names={ppdPhotoFileNames.monitorInstalled} />
                         <PhotoThumbnailGrid
@@ -5403,7 +5436,7 @@ export function NewSubmissionForm() {
 
                     {/* PPD photos — uploads go to Supabase; metadata in `photoUploads` for drafts */}
                     <div className="space-y-6 border-t border-gray-100 pt-6 dark:border-gray-700">
-                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">PPD photos</h3>
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">PPD required photos</h3>
 
                       <div id={`field-${ppdPhotoIssueKey("cameraHubMounting")}`}>
                         <label className={fieldLabelClass(ppdPhotoIssueKey("cameraHubMounting"))}>
@@ -5425,7 +5458,7 @@ export function NewSubmissionForm() {
                           htmlFor="ppd-photo-cameraHubMounting"
                           className={photoPickClass(ppdPhotoIssueKey("cameraHubMounting"), true, ppdPc.cameraHubMounting >= 1)}
                         >
-                          Take / upload photo(s)
+                          {PHOTO_UPLOAD_LABEL_MULTI}
                         </label>
                         <PhotoUploadFeedback count={ppdPc.cameraHubMounting} names={ppdPhotoFileNames.cameraHubMounting} />
                         <PhotoThumbnailGrid
@@ -5445,7 +5478,7 @@ export function NewSubmissionForm() {
                           <RequiredMark />
                         </label>
                         <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
-                          Minimum {PPD_WIRE_PATH_MIN_PHOTOS} photos required.
+                          Add at least {PPD_WIRE_PATH_MIN_PHOTOS} photos (turns, clips, panel exits).
                         </p>
                         <input
                           id="ppd-photo-wirePath"
@@ -5463,7 +5496,7 @@ export function NewSubmissionForm() {
                             ppdPc.wirePath >= PPD_WIRE_PATH_MIN_PHOTOS,
                           )}
                         >
-                          Take / upload photo(s)
+                          {PHOTO_UPLOAD_LABEL_MULTI}
                         </label>
                         <PhotoUploadFeedback count={ppdPc.wirePath} names={ppdPhotoFileNames.wirePath} />
                         <PhotoThumbnailGrid
@@ -5496,7 +5529,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-redBattery"
                               className={photoPickClass(ppdPhotoIssueKey("redBattery"), true, ppdPc.redBattery >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.redBattery} names={ppdPhotoFileNames.redBattery} />
                             <PhotoThumbnailGrid
@@ -5510,7 +5543,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("redBattery"))}
                             <div id="field-ppd-redWireDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-redWireDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5542,7 +5575,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-blackBattery"
                               className={photoPickClass(ppdPhotoIssueKey("blackBattery"), true, ppdPc.blackBattery >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.blackBattery} names={ppdPhotoFileNames.blackBattery} />
                             <PhotoThumbnailGrid
@@ -5556,7 +5589,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("blackBattery"))}
                             <div id="field-ppd-blackWireDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-blackWireDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5588,7 +5621,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-yellowIgnition"
                               className={photoPickClass(ppdPhotoIssueKey("yellowIgnition"), true, ppdPc.yellowIgnition >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.yellowIgnition} names={ppdPhotoFileNames.yellowIgnition} />
                             <PhotoThumbnailGrid
@@ -5602,7 +5635,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("yellowIgnition"))}
                             <div id="field-ppd-yellowWireDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-yellowWireDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5634,7 +5667,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-greyMotion"
                               className={photoPickClass(ppdPhotoIssueKey("greyMotion"), true, ppdPc.greyMotion >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.greyMotion} names={ppdPhotoFileNames.greyMotion} />
                             <PhotoThumbnailGrid
@@ -5648,7 +5681,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("greyMotion"))}
                             <div id="field-ppd-greyWireDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-greyWireDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5680,7 +5713,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-blueDirection"
                               className={photoPickClass(ppdPhotoIssueKey("blueDirection"), true, ppdPc.blueDirection >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.blueDirection} names={ppdPhotoFileNames.blueDirection} />
                             <PhotoThumbnailGrid
@@ -5694,7 +5727,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("blueDirection"))}
                             <div id="field-ppd-blueWireDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-blueWireDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5733,7 +5766,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-powerConverter"
                               className={photoPickClass(ppdPhotoIssueKey("powerConverter"), true, ppdPc.powerConverter >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.powerConverter} names={ppdPhotoFileNames.powerConverter} />
                             <PhotoThumbnailGrid
@@ -5747,7 +5780,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("powerConverter"))}
                             <div id="field-ppd-powerConverterDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-powerConverterDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5784,7 +5817,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-redAlarmOut"
                               className={photoPickClass(ppdPhotoIssueKey("redAlarmOut"), true, ppdPc.redAlarmOut >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.redAlarmOut} names={ppdPhotoFileNames.redAlarmOut} />
                             <PhotoThumbnailGrid
@@ -5798,7 +5831,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("redAlarmOut"))}
                             <div id="field-ppd-redAlarmOutDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-redAlarmOutDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5829,7 +5862,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-yellowAlarmOut"
                               className={photoPickClass(ppdPhotoIssueKey("yellowAlarmOut"), true, ppdPc.yellowAlarmOut >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.yellowAlarmOut} names={ppdPhotoFileNames.yellowAlarmOut} />
                             <PhotoThumbnailGrid
@@ -5843,7 +5876,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("yellowAlarmOut"))}
                             <div id="field-ppd-yellowAlarmOutDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-yellowAlarmOutDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5879,7 +5912,7 @@ export function NewSubmissionForm() {
                               htmlFor="ppd-photo-blackAlarmGround"
                               className={photoPickClass(ppdPhotoIssueKey("blackAlarmGround"), true, ppdPc.blackAlarmGround >= 1)}
                             >
-                              Take / upload photo
+                              {PHOTO_UPLOAD_LABEL_SINGLE}
                             </label>
                             <PhotoUploadFeedback count={ppdPc.blackAlarmGround} names={ppdPhotoFileNames.blackAlarmGround} />
                             <PhotoThumbnailGrid
@@ -5893,7 +5926,7 @@ export function NewSubmissionForm() {
                             {requiredHint(ppdPhotoIssueKey("blackAlarmGround"))}
                             <div id="field-ppd-blackAlarmGroundDescription" className="mt-3">
                               <label className={fieldLabelClass("ppd-blackAlarmGroundDescription")}>
-                                Description
+                                Connection note
                                 <RequiredMark />
                               </label>
                               <textarea
@@ -5976,9 +6009,9 @@ export function NewSubmissionForm() {
             <IconSend className="h-6 w-6 shrink-0 text-blue-600" />
             <h2 className="text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">Review before submit</h2>
           </div>
-          <p className="text-base leading-relaxed text-gray-600">
-            Everything below is grouped by section. Confirm it matches the install, then confirm and submit. Photo rows list
-            file names when your browser exposes them (captured on upload).
+          <p className="text-base leading-relaxed text-gray-600 dark:text-gray-300">
+            Grouped by section—confirm against the truck before you submit. Photo rows list filenames when the browser
+            provides them at upload time.
           </p>
         </section>
 
@@ -6028,15 +6061,15 @@ export function NewSubmissionForm() {
           <FormSectionHeader title="Vehicle Pictures" tone="purple" />
           <div>
             <SummaryRow
-              label="Vehicle front picture(s)"
+              label="Vehicle front photo(s)"
               value={reviewPhotoSummary(vehiclePictureCounts.vehicleFront, vehiclePictureFileNames.vehicleFront)}
             />
             <SummaryRow
-              label="Vehicle side picture(s)"
+              label="Vehicle side photo(s)"
               value={reviewPhotoSummary(vehiclePictureCounts.vehicleSide, vehiclePictureFileNames.vehicleSide)}
             />
             <SummaryRow
-              label="Vehicle rear picture(s)"
+              label="Vehicle rear photo(s)"
               value={reviewPhotoSummary(vehiclePictureCounts.vehicleRear, vehiclePictureFileNames.vehicleRear)}
             />
           </div>
@@ -6060,73 +6093,70 @@ export function NewSubmissionForm() {
                 <FormSectionHeader title="CP4 hardware" tone="green" />
                 <div>
                   <SummaryRow label="DRID" value={cp4Drid} />
-                  <SummaryRow label="CP4 serial number" value={cp4Serial} />
-                  <SummaryRow label="Quantity of cameras" value={cp4CameraQuantity} />
+                  <SummaryRow label="Serial #" value={cp4Serial} />
+                  <SummaryRow label="Camera count" value={cp4CameraQuantity} />
                   <SummaryRow label="Monitor installed?" value={cp4MonitorInstalled} />
-                  <SummaryRow
-                    label="Client representative approval"
-                    value={cp4ClientApproval}
-                  />
+                  <SummaryRow label="Client rep. approval" value={cp4ClientApproval} />
                   <SummaryRow label="Custom brackets needed?" value={cp4CustomBracketsNeeded} />
                   {cp4CustomBracketsNeeded === "Yes" ? <SummaryRow label="Custom bracket notes" value={cp4CustomBracketNotes} /> : null}
-                  <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(cp4VehicleVolts ?? "—")} />
+                  <SummaryRow label="Vehicle voltage (from Vehicle Info)" value={String(cp4VehicleVolts ?? "—")} />
                   <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
-                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">CP4 photos</p>
-                    <SummaryRow label="Camera mounting" value={reviewPhotoSummary(cp4Pc.cameraMounting, cp4PhotoFileNames.cameraMounting)} />
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">Photos</p>
+                    <SummaryRow label="Camera mount" value={reviewPhotoSummary(cp4Pc.cameraMounting, cp4PhotoFileNames.cameraMounting)} />
                     <SummaryRow label="Wire path" value={reviewPhotoSummary(cp4Pc.wirePath, cp4PhotoFileNames.wirePath)} />
-                    <SummaryRow label="DVR Mounting Location" value={reviewPhotoSummary(cp4Pc.hubMounting, cp4PhotoFileNames.hubMounting)} />
-                    <SummaryRow label="DVR Mounting Location description" value={cp4HubMountingDescription} />
+                    <SummaryRow label="DVR mount" value={reviewPhotoSummary(cp4Pc.hubMounting, cp4PhotoFileNames.hubMounting)} />
+                    <SummaryRow label="DVR mount — note" value={cp4HubMountingDescription} />
                     <SummaryRow
-                      label="Microphone mounting"
+                      label="Microphone mount"
                       value={reviewPhotoSummary(cp4Pc.microphoneMounting, cp4PhotoFileNames.microphoneMounting)}
                     />
-                    <SummaryRow label="Microphone mounting description" value={cp4MicrophoneMountingDescription} />
+                    <SummaryRow label="Microphone — note" value={cp4MicrophoneMountingDescription} />
                     <SummaryRow
-                      label="Remote control mounting"
+                      label="Remote control mount"
                       value={reviewPhotoSummary(cp4Pc.remoteControlMounting, cp4PhotoFileNames.remoteControlMounting)}
                     />
-                    <SummaryRow label="Remote control mounting description" value={cp4RemoteControlMountingDescription} />
+                    <SummaryRow label="Remote control — note" value={cp4RemoteControlMountingDescription} />
                     <SummaryRow
-                      label="GPS sensor mounting"
+                      label="GPS sensor mount"
                       value={reviewPhotoSummary(cp4Pc.gpsSensorMounting, cp4PhotoFileNames.gpsSensorMounting)}
                     />
-                    <SummaryRow label="GPS sensor mounting description" value={cp4GpsSensorMountingDescription} />
-                    <SummaryRow label="Red battery connection" value={reviewPhotoSummary(cp4Pc.redBattery, cp4PhotoFileNames.redBattery)} />
-                    <SummaryRow label="Red wire description" value={cp4RedWireDescription} />
+                    <SummaryRow label="GPS sensor — note" value={cp4GpsSensorMountingDescription} />
+                    <SummaryRow label="Red (+) battery" value={reviewPhotoSummary(cp4Pc.redBattery, cp4PhotoFileNames.redBattery)} />
+                    <SummaryRow label="Red (+) — note" value={cp4RedWireDescription} />
                     <SummaryRow
-                      label="Black battery connection"
+                      label="Black (−) battery"
                       value={reviewPhotoSummary(cp4Pc.blackBattery, cp4PhotoFileNames.blackBattery)}
                     />
-                    <SummaryRow label="Black wire description" value={cp4BlackWireDescription} />
+                    <SummaryRow label="Black (−) — note" value={cp4BlackWireDescription} />
                     <SummaryRow
-                      label="White ignition / trigger connection"
+                      label="White ignition / trigger"
                       value={reviewPhotoSummary(cp4Pc.whiteIgnition, cp4PhotoFileNames.whiteIgnition)}
                     />
-                    <SummaryRow label="White wire description" value={cp4WhiteWireDescription} />
+                    <SummaryRow label="White — note" value={cp4WhiteWireDescription} />
                     {cp4ShowMonitorMounting ? (
                       <>
-                        <SummaryRow label="Monitor mounting" value={reviewPhotoSummary(cp4Pc.monitorMounting, cp4PhotoFileNames.monitorMounting)} />
-                        <SummaryRow label="Monitor mounting description" value={cp4MonitorMountingDescription} />
+                        <SummaryRow label="Monitor mount" value={reviewPhotoSummary(cp4Pc.monitorMounting, cp4PhotoFileNames.monitorMounting)} />
+                        <SummaryRow label="Monitor — note" value={cp4MonitorMountingDescription} />
                       </>
                     ) : null}
                     {cp4ShowPowerConverterMounting ? (
                       <>
                         <SummaryRow label="Power converter" value={reviewPhotoSummary(cp4Pc.powerConverter, cp4PhotoFileNames.powerConverter)} />
-                        <SummaryRow label="Power converter description" value={cp4PowerConverterDescription} />
+                        <SummaryRow label="Power converter — note" value={cp4PowerConverterDescription} />
                       </>
                     ) : null}
                     <SummaryRow label="Relay installed for ALARM IN 1?" value={cp4AlarmIn1RelayInstalled} />
                     {cp4ShowAlarmIn1 ? (
                       <>
-                        <SummaryRow label="Alarm IN 1 relay photo" value={reviewPhotoSummary(cp4Pc.alarmIn1, cp4PhotoFileNames.alarmIn1)} />
-                        <SummaryRow label="Alarm IN 1 description" value={cp4AlarmIn1Description} />
+                        <SummaryRow label="Alarm IN 1 photo" value={reviewPhotoSummary(cp4Pc.alarmIn1, cp4PhotoFileNames.alarmIn1)} />
+                        <SummaryRow label="Alarm IN 1 — note" value={cp4AlarmIn1Description} />
                       </>
                     ) : null}
                     <SummaryRow label="Relay installed for ALARM IN 2?" value={cp4AlarmIn2RelayInstalled} />
                     {cp4ShowAlarmIn2 ? (
                       <>
-                        <SummaryRow label="Alarm IN 2 relay photo" value={reviewPhotoSummary(cp4Pc.alarmIn2, cp4PhotoFileNames.alarmIn2)} />
-                        <SummaryRow label="Alarm IN 2 description" value={cp4AlarmIn2Description} />
+                        <SummaryRow label="Alarm IN 2 photo" value={reviewPhotoSummary(cp4Pc.alarmIn2, cp4PhotoFileNames.alarmIn2)} />
+                        <SummaryRow label="Alarm IN 2 — note" value={cp4AlarmIn2Description} />
                       </>
                     ) : null}
                   </div>
@@ -6136,10 +6166,10 @@ export function NewSubmissionForm() {
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
                 <div>
-                  <SummaryRow label="Hub serial" value={ppdHubSerial} />
-                  <SummaryRow label="Camera serials by location" value={ppdCameraSerialsReviewSummary} />
-                  <SummaryRow label="Client representative approval" value={ppdClientApproval} />
-                  <SummaryRow label="JSON file name (to PM)" value={ppdJsonFileName} />
+                  <SummaryRow label="Hub serial #" value={ppdHubSerial} />
+                  <SummaryRow label="Camera serials" value={ppdCameraSerialsReviewSummary} />
+                  <SummaryRow label="Client rep. approval" value={ppdClientApproval} />
+                  <SummaryRow label="JSON to PM" value={ppdJsonFileName} />
                   <SummaryRow label="Modifications or custom brackets needed?" value={ppdCustomBracketsNeeded} />
                   {ppdCustomBracketsNeeded === "Yes" ? (
                     <SummaryRow label="Notes (modifications / brackets)" value={ppdCustomBracketNotes} />
@@ -6154,9 +6184,9 @@ export function NewSubmissionForm() {
                   {ppdShowRelaysSpeedControlQuestion ? (
                     <SummaryRow label="Relays used for speed control?" value={ppdRelaysUsedForSpeedControl} />
                   ) : null}
-                  <SummaryRow label="Vehicle voltage (from Vehicle Information)" value={String(ppdVehicleVolts ?? "—")} />
+                  <SummaryRow label="Vehicle voltage (from Vehicle Info)" value={String(ppdVehicleVolts ?? "—")} />
                   <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
-                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">PPD photos</p>
+                    <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">Photos</p>
                     <SummaryRow
                       label="Camera & hub mounting"
                       value={reviewPhotoSummary(ppdPc.cameraHubMounting, ppdPhotoFileNames.cameraHubMounting)}
@@ -6166,31 +6196,31 @@ export function NewSubmissionForm() {
                       label="Red — battery +"
                       value={reviewPhotoSummary(ppdPc.redBattery, ppdPhotoFileNames.redBattery)}
                     />
-                    <SummaryRow label="Red wire description" value={ppdRedWireDescription} />
+                    <SummaryRow label="Red (+) — note" value={ppdRedWireDescription} />
                     <SummaryRow
                       label="Black — battery −"
                       value={reviewPhotoSummary(ppdPc.blackBattery, ppdPhotoFileNames.blackBattery)}
                     />
-                    <SummaryRow label="Black wire description" value={ppdBlackWireDescription} />
+                    <SummaryRow label="Black (−) — note" value={ppdBlackWireDescription} />
                     <SummaryRow
                       label="Yellow — ignition / power trigger"
                       value={reviewPhotoSummary(ppdPc.yellowIgnition, ppdPhotoFileNames.yellowIgnition)}
                     />
-                    <SummaryRow label="Yellow wire description" value={ppdYellowWireDescription} />
+                    <SummaryRow label="Yellow — note" value={ppdYellowWireDescription} />
                     <SummaryRow label="Grey — motion" value={reviewPhotoSummary(ppdPc.greyMotion, ppdPhotoFileNames.greyMotion)} />
-                    <SummaryRow label="Grey wire description" value={ppdGreyWireDescription} />
+                    <SummaryRow label="Grey — note" value={ppdGreyWireDescription} />
                     <SummaryRow
                       label="Blue — direction"
                       value={reviewPhotoSummary(ppdPc.blueDirection, ppdPhotoFileNames.blueDirection)}
                     />
-                    <SummaryRow label="Blue wire description" value={ppdBlueWireDescription} />
+                    <SummaryRow label="Blue — note" value={ppdBlueWireDescription} />
                     {ppdShowPowerConverterMounting ? (
                       <>
                         <SummaryRow
                           label="Power converter"
                           value={reviewPhotoSummary(ppdPc.powerConverter, ppdPhotoFileNames.powerConverter)}
                         />
-                        <SummaryRow label="Power converter description" value={ppdPowerConverterDescription} />
+                        <SummaryRow label="Power converter — note" value={ppdPowerConverterDescription} />
                       </>
                     ) : null}
                     {ppdShowAlarmOutConnections ? (
@@ -6199,12 +6229,12 @@ export function NewSubmissionForm() {
                           label="Red alarm out"
                           value={reviewPhotoSummary(ppdPc.redAlarmOut, ppdPhotoFileNames.redAlarmOut)}
                         />
-                        <SummaryRow label="Red alarm out description" value={ppdRedAlarmOutDescription} />
+                        <SummaryRow label="Red alarm out — note" value={ppdRedAlarmOutDescription} />
                         <SummaryRow
                           label="Yellow alarm out"
                           value={reviewPhotoSummary(ppdPc.yellowAlarmOut, ppdPhotoFileNames.yellowAlarmOut)}
                         />
-                        <SummaryRow label="Yellow alarm out description" value={ppdYellowAlarmOutDescription} />
+                        <SummaryRow label="Yellow alarm out — note" value={ppdYellowAlarmOutDescription} />
                       </>
                     ) : null}
                     {ppdShowBlackAlarmGround ? (
@@ -6213,7 +6243,7 @@ export function NewSubmissionForm() {
                           label="Black alarm out ground"
                           value={reviewPhotoSummary(ppdPc.blackAlarmGround, ppdPhotoFileNames.blackAlarmGround)}
                         />
-                        <SummaryRow label="Black alarm ground description" value={ppdBlackAlarmGroundDescription} />
+                        <SummaryRow label="Black alarm ground — note" value={ppdBlackAlarmGroundDescription} />
                       </>
                     ) : null}
                   </div>
@@ -6222,9 +6252,8 @@ export function NewSubmissionForm() {
             ) : (
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title={`${section} Section`} tone="green" />
-                <p className="text-sm leading-relaxed text-gray-600">
-                  This hardware is selected for the job card. Detailed fields for this section are filled on the form; they are
-                  not yet mirrored here.
+                <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300">
+                  This hardware type is on the card; use the form for full details (not shown in this summary).
                 </p>
               </section>
             )
@@ -6232,7 +6261,7 @@ export function NewSubmissionForm() {
 
         {selectedSections.includes("VAC4") && (
           <section className={cardClassName}>
-            <FormSectionHeader title="VAC4 details" tone="purple" />
+            <FormSectionHeader title="VAC4 hardware" tone="purple" />
             <div>
               <SummaryRow
                 label="Vehicle type"
@@ -6245,7 +6274,7 @@ export function NewSubmissionForm() {
               <SummaryRow label="Drive type" value={vac4DriveType} />
               {vac4DriveType === "Electric" && <SummaryRow label="Lift sense installed?" value={liftSenseInstalled} />}
               <SummaryRow label="Operator presence installed?" value={operatorPresenceInstalled} />
-              <SummaryRow label="Client representative approval" value={vac4ClientApproval} />
+              <SummaryRow label="Client rep. approval" value={vac4ClientApproval} />
               <SummaryRow label="Hour meter (configuration)" value={vac4HourMeter} />
               <SummaryRow label="Sensor hub installed?" value={sensorHubInstalled} />
               {sensorHubInstalled === "Yes" && (
@@ -6256,11 +6285,11 @@ export function NewSubmissionForm() {
                   <SummaryRow label="External indicator installed?" value={externalIndicatorInstalled} />
                   {speedSenseInstalled === "Yes" && (
                     <>
-                      <SummaryRow label="Speed sense description" value={speedSenseDescription} />
-                      <SummaryRow label="Speed Sense Pulse Count" value={speedSensePulseCount} />
+                      <SummaryRow label="Speed sense — note" value={speedSenseDescription} />
+                      <SummaryRow label="Speed sense pulse count" value={speedSensePulseCount} />
                     </>
                   )}
-                  {loadSenseInstalled === "Yes" && <SummaryRow label="Load sense VAC thresholds" value={loadSenseThresholds} />}
+                  {loadSenseInstalled === "Yes" && <SummaryRow label="Load sense thresholds (VAC)" value={loadSenseThresholds} />}
                 </>
               )}
               {(() => {
@@ -6277,8 +6306,8 @@ export function NewSubmissionForm() {
                   <SummaryRow key={`vac4-desc-${key}`} label={label} value={descriptionValues[key]} />
                 ));
               })()}
-              <div className="border-t border-gray-100 pt-4">
-                <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">VAC4 photos</p>
+              <div className="border-t border-gray-100 pt-4 dark:border-gray-700">
+                <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">Photos</p>
                 {VAC4_ORDERED_PHOTO_FIELDS.map(({ key, label }) => {
                   const namesValue = vacPhotoFileNames[key as Vac4OrderedPhotoKey];
                   const names = Array.isArray(namesValue) ? namesValue : [];
@@ -6382,10 +6411,10 @@ export function NewSubmissionForm() {
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">Any unsaved changes will be lost.</p>
             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button type="button" className={btnSecondaryClassName} onClick={handleExitWithoutSavingDismiss}>
-                Go Back
+                Stay
               </button>
               <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingConfirm}>
-                Continue
+                Leave
               </button>
             </div>
           </div>
