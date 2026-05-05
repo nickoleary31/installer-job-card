@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -17,6 +17,12 @@ import {
   formatEmailSubject,
 } from "@/lib/job-card-submission";
 import { supabase } from "@/lib/supabase/client";
+import {
+  deleteOfflineJobCardDraft,
+  getLatestOfflineJobCardDraft,
+  saveOfflineJobCardDraft,
+  type OfflineJobCardDraftRecord,
+} from "@/lib/offline-job-card-drafts";
 import {
   formatServiceAppointment,
   formatUpper,
@@ -157,6 +163,8 @@ type JobCardAutosavePayload = {
   selectedSections: string[];
   data: StoredJobCardDraft["data"];
 };
+
+type OfflineJobCardDraftPayload = OfflineJobCardDraftRecord<StoredJobCardDraft["data"]>;
 
 type DefaultContextIds = {
   companyId: string;
@@ -1177,6 +1185,7 @@ export function NewSubmissionForm() {
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
+  const [localDeviceSaveError, setLocalDeviceSaveError] = useState<string | null>(null);
   const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
     if (typeof window === "undefined") return null;
     const hasManualResumeRequest =
@@ -1191,6 +1200,9 @@ export function NewSubmissionForm() {
       return null;
     }
   });
+  const [offlineRestorePayload, setOfflineRestorePayload] = useState<OfflineJobCardDraftPayload | null>(null);
+  const [isOffline, setIsOffline] = useState(false);
+  const offlineDraftIdRef = useRef<string | null>(null);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
   const autosaveCheckedRef = useRef(false);
 
@@ -2662,6 +2674,10 @@ export function NewSubmissionForm() {
   };
 
   const handleFinalSubmit = async () => {
+    if (isOffline) {
+      setDraftNoticeMessage("Offline mode — submit is disabled until connection returns.");
+      return;
+    }
     const payload = await buildSubmissionPayload();
     console.log("[Job card submission]", payload);
     setSubmitSuccessMessage(null);
@@ -2741,6 +2757,11 @@ export function NewSubmissionForm() {
         const drafts = readMigratedDraftsFromStorage();
         const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
         window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+        if (offlineDraftIdRef.current) {
+          await deleteOfflineJobCardDraft(offlineDraftIdRef.current);
+          offlineDraftIdRef.current = null;
+          setOfflineRestorePayload(null);
+        }
       } catch {
         // ignore localStorage cleanup errors
       }
@@ -2949,6 +2970,31 @@ export function NewSubmissionForm() {
     setAutosaveRestorePayload(null);
   };
 
+  const handleResumeOfflineDraft = () => {
+    if (!offlineRestorePayload) return;
+    offlineDraftIdRef.current = offlineRestorePayload.offlineDraftId;
+    restoreFromDraftData(offlineRestorePayload.data, offlineRestorePayload.submissionId || generateSubmissionId());
+    setOfflineRestorePayload(null);
+    setDraftNoticeMessage("Offline draft restored (text fields). Re-upload photos before submitting.");
+  };
+
+  const handleDiscardOfflineDraft = async () => {
+    const targetId = offlineRestorePayload?.offlineDraftId || offlineDraftIdRef.current;
+    if (!targetId) {
+      setOfflineRestorePayload(null);
+      return;
+    }
+    try {
+      await deleteOfflineJobCardDraft(targetId);
+    } catch {
+      // ignore IndexedDB delete errors
+    }
+    if (offlineDraftIdRef.current === targetId) {
+      offlineDraftIdRef.current = null;
+    }
+    setOfflineRestorePayload(null);
+  };
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -2989,6 +3035,37 @@ export function NewSubmissionForm() {
 
   useEffect(() => {
     autosaveCheckedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => setIsOffline(!window.navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    const loadOfflineDraft = async () => {
+      try {
+        const latest = await getLatestOfflineJobCardDraft<StoredJobCardDraft["data"]>();
+        if (cancelled || !latest) return;
+        setOfflineRestorePayload(latest);
+        offlineDraftIdRef.current = latest.offlineDraftId;
+      } catch {
+        // ignore IndexedDB read errors
+      }
+    };
+    void loadOfflineDraft();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -3233,6 +3310,46 @@ export function NewSubmissionForm() {
     }
   };
 
+  const handleSaveToDevice = async (event?: MouseEvent<HTMLButtonElement>) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    console.log("[Offline draft] Save to device started", {
+      submissionId,
+      selectedSectionsCount: selectedSections.length,
+      isOffline,
+    });
+    setLocalDeviceSaveError(null);
+    const photoSnapshot = getPhotoPersistenceSnapshot();
+    const draftData = buildCurrentDraftData(photoSnapshot);
+    const savedAt = new Date().toISOString();
+    const offlineDraftId = offlineDraftIdRef.current || `offline-${generateId()}`;
+    const payload: OfflineJobCardDraftPayload = {
+      offlineDraftId,
+      submissionId,
+      savedAt,
+      selectedSections: [...selectedSections],
+      data: draftData,
+      photoRestoreSupported: false,
+    };
+    try {
+      await saveOfflineJobCardDraft(payload);
+      console.log("[Offline draft] IndexedDB save succeeded", {
+        offlineDraftId,
+        savedAt,
+      });
+      offlineDraftIdRef.current = offlineDraftId;
+      setOfflineRestorePayload(payload);
+      setDraftNoticeMessage("Saved on this device");
+    } catch (error) {
+      console.error("[Offline draft] IndexedDB save failed", {
+        message: error instanceof Error ? error.message : String(error),
+        error,
+      });
+      setLocalDeviceSaveError("Unable to save on this device.");
+      setDraftNoticeMessage("Unable to save on this device.");
+    }
+  };
+
   const handleExitToHome = () => {
     if (typeof window !== "undefined") {
       const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
@@ -3332,6 +3449,17 @@ export function NewSubmissionForm() {
             {draftNoticeMessage}
           </div>
         )}
+        {localDeviceSaveError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-900" role="alert">
+            {localDeviceSaveError}
+          </div>
+        ) : null}
+
+        {isOffline ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900" role="status">
+            Offline mode — your job card is being saved on this device.
+          </div>
+        ) : null}
 
         {autosaveRestorePayload ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -3348,6 +3476,31 @@ export function NewSubmissionForm() {
                 type="button"
                 onClick={handleDiscardAutosave}
                 className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {offlineRestorePayload ? (
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+            <p className="font-semibold">Offline draft found</p>
+            <p className="mt-1 text-xs text-indigo-700">
+              Saved {new Date(offlineRestorePayload.savedAt).toLocaleString()} on this device.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleResumeOfflineDraft}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDiscardOfflineDraft()}
+                className="rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-900 hover:bg-indigo-100"
               >
                 Discard
               </button>
@@ -6142,6 +6295,10 @@ export function NewSubmissionForm() {
             )}
 
         <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
+          <button type="button" className={btnSecondaryClassName} onClick={(event) => void handleSaveToDevice(event)}>
+            <IconFloppy className="h-5 w-5" />
+            Save to this device
+          </button>
           <button
             type="button"
             className={btnSecondaryClassName}
@@ -6490,9 +6647,9 @@ export function NewSubmissionForm() {
           <button type="button" className={btnSecondaryClassName} onClick={handleBackToForm}>
             Back to Edit
           </button>
-          <button type="button" className={btnPrimaryClassName} onClick={handleFinalSubmit}>
+          <button type="button" className={btnPrimaryClassName} onClick={handleFinalSubmit} disabled={isOffline}>
             <IconSend className="h-5 w-5" />
-            Confirm & Submit
+            {isOffline ? "Offline — Submit Disabled" : "Confirm & Submit"}
           </button>
         </div>
         </>
@@ -6510,6 +6667,14 @@ export function NewSubmissionForm() {
             {step === "form" ? (
               <>
                 <div className="flex gap-3">
+                  <button
+                    type="button"
+                    className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                    onClick={(event) => void handleSaveToDevice(event)}
+                  >
+                    <IconFloppy className="h-5 w-5 shrink-0" />
+                    <span className="truncate">Save to this device</span>
+                  </button>
                   <button
                     type="button"
                     className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
@@ -6543,9 +6708,16 @@ export function NewSubmissionForm() {
                 <button type="button" className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleBackToForm}>
                   <span className="truncate">Back to Edit</span>
                 </button>
-                <button type="button" className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleFinalSubmit}>
+                <button
+                  type="button"
+                  className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
+                  onClick={handleFinalSubmit}
+                  disabled={isOffline}
+                >
                   <IconSend className="h-5 w-5 shrink-0" />
-                  <span className="line-clamp-2 text-left leading-tight">Confirm & Submit</span>
+                  <span className="line-clamp-2 text-left leading-tight">
+                    {isOffline ? "Offline — Submit Disabled" : "Confirm & Submit"}
+                  </span>
                 </button>
               </>
             )}
