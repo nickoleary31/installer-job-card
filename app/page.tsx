@@ -1,5 +1,14 @@
 "use client";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -164,9 +173,67 @@ type JobCardAutosavePayload = {
   savedAt: string;
   selectedSections: string[];
   data: StoredJobCardDraft["data"];
+  companyId?: string;
+  projectId?: string;
+  companyName?: string;
+  projectName?: string;
+  customer?: string;
+  location?: string;
 };
 
 type OfflineJobCardDraftPayload = OfflineJobCardDraftRecord<StoredJobCardDraft["data"]>;
+
+function getAutosaveKey(companyId: string, projectId: string): string {
+  const c = companyId.trim();
+  const p = projectId.trim();
+  if (c && p) return `${JOB_CARD_AUTOSAVE_KEY}:${c}:${p}`;
+  return JOB_CARD_AUTOSAVE_KEY;
+}
+
+function parseJobCardAutosavePayload(raw: string | null): JobCardAutosavePayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as JobCardAutosavePayload;
+    return parsed?.data && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function autosavePayloadMatchesSelectedContext(
+  payload: JobCardAutosavePayload,
+  selectedCompanyId: string,
+  selectedProjectId: string,
+): boolean {
+  const sc = selectedCompanyId.trim();
+  const sp = selectedProjectId.trim();
+  const pc = (payload.companyId ?? "").trim();
+  const pp = (payload.projectId ?? "").trim();
+  if (sc && sp) return pc === sc && pp === sp;
+  if (!sc && !sp) return !pc && !pp;
+  if (sc && !sp) return pc === sc && !pp;
+  if (!sc && sp) return pp === sp && !pc;
+  return false;
+}
+
+function readMatchingAutosave(selectedCompanyId: string, selectedProjectId: string): JobCardAutosavePayload | null {
+  if (typeof window === "undefined") return null;
+  const sc = selectedCompanyId.trim();
+  const sp = selectedProjectId.trim();
+  const key = getAutosaveKey(sc, sp);
+  const parsed = parseJobCardAutosavePayload(window.localStorage.getItem(key));
+  if (parsed && autosavePayloadMatchesSelectedContext(parsed, sc, sp)) return parsed;
+  return null;
+}
+
+function clearMatchingAutosave(selectedCompanyId: string, selectedProjectId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(getAutosaveKey(selectedCompanyId.trim(), selectedProjectId.trim()));
+  } catch {
+    // ignore
+  }
+}
 
 type DefaultContextIds = {
   companyId: string;
@@ -1196,14 +1263,9 @@ export function NewSubmissionForm() {
       !!window.localStorage.getItem(JOB_CARD_RESUME_DRAFT_ID_KEY) ||
       !!window.localStorage.getItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
     if (hasManualResumeRequest) return null;
-    try {
-      const raw = window.localStorage.getItem(JOB_CARD_AUTOSAVE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as JobCardAutosavePayload;
-      return parsed && parsed.data && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
+    const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+    const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+    return readMatchingAutosave(companyId, projectId);
   });
   const [isOffline, setIsOffline] = useState(false);
   const offlineDraftIdRef = useRef<string | null>(null);
@@ -1211,6 +1273,15 @@ export function NewSubmissionForm() {
   const saveToDeviceGenerationRef = useRef(0);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
   const autosaveCheckedRef = useRef(false);
+  const autosaveRestorePayloadRef = useRef<JobCardAutosavePayload | null>(null);
+  const submissionStatusAutosaveRef = useRef(submissionStatus);
+  const emailSendStatusAutosaveRef = useRef(emailSendStatus);
+  const buildAutosaveBaseRef = useRef(() => ({
+    submissionId: "",
+    savedAt: "",
+    selectedSections: [] as string[],
+    data: {} as StoredJobCardDraft["data"],
+  }));
 
   const availableAdditional = hardwareTypes.filter((h) => h !== primary);
   const inputClassName =
@@ -2782,7 +2853,9 @@ export function NewSubmissionForm() {
       try {
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
-        window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+        const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+        const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+        clearMatchingAutosave(sc, sp);
         const drafts = readMigratedDraftsFromStorage();
         const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
         window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
@@ -2982,7 +3055,9 @@ export function NewSubmissionForm() {
     console.log("[restore] source: autosave");
     restoreFromDraftData(autosaveRestorePayload.data, autosaveRestorePayload.submissionId || generateSubmissionId());
     try {
-      window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+      const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      clearMatchingAutosave(sc, sp);
     } catch {
       // ignore localStorage cleanup errors
     }
@@ -2992,7 +3067,9 @@ export function NewSubmissionForm() {
 
   const handleDiscardAutosave = () => {
     try {
-      window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+      const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      clearMatchingAutosave(sc, sp);
     } catch {
       // ignore localStorage cleanup errors
     }
@@ -3011,7 +3088,9 @@ export function NewSubmissionForm() {
           const draft = await getOfflineJobCardDraftById<StoredJobCardDraft["data"]>(offlineResumeId);
           if (!cancelled && draft) {
             try {
-              window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+              const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+              const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+              clearMatchingAutosave(sc, sp);
             } catch {
               // ignore
             }
@@ -3315,27 +3394,61 @@ export function NewSubmissionForm() {
     };
   }
 
+  useLayoutEffect(() => {
+    autosaveRestorePayloadRef.current = autosaveRestorePayload;
+    submissionStatusAutosaveRef.current = submissionStatus;
+    emailSendStatusAutosaveRef.current = emailSendStatus;
+    buildAutosaveBaseRef.current = () => ({
+      submissionId,
+      savedAt: new Date().toISOString(),
+      selectedSections: [...selectedSections],
+      data: buildCurrentDraftData(getPhotoPersistenceSnapshot()),
+    });
+  });
+
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!autosaveCheckedRef.current) return;
-    if (autosaveRestorePayload) return;
-    if (submissionStatus === "Submitted" && emailSendStatus === "success") return;
-    const timeout = window.setTimeout(() => {
-      try {
-        const photoSnapshot = getPhotoPersistenceSnapshot();
-        const payload: JobCardAutosavePayload = {
-          submissionId,
-          savedAt: new Date().toISOString(),
-          selectedSections: [...selectedSections],
-          data: buildCurrentDraftData(photoSnapshot),
-        };
-        window.localStorage.setItem(JOB_CARD_AUTOSAVE_KEY, JSON.stringify(payload));
-      } catch {
-        // ignore localStorage write errors
-      }
+    const id = window.setInterval(() => {
+      if (!autosaveCheckedRef.current) return;
+      if (autosaveRestorePayloadRef.current) return;
+      const sub = submissionStatusAutosaveRef.current;
+      const email = emailSendStatusAutosaveRef.current;
+      if (sub === "Submitted" && email === "success") return;
+      void (async () => {
+        try {
+          const base = buildAutosaveBaseRef.current();
+          const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+          const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+          let companyName = "";
+          let projectName = "";
+          try {
+            const snap = await getBestStarterSnapshotForOffline();
+            if (snap && companyId) {
+              companyName = snap.companies.find((c) => c.id === companyId)?.name?.trim() || "";
+              const projects = snap.projectsByCompanyId[companyId] || [];
+              projectName = projects.find((p) => p.id === projectId)?.project_name?.trim() || "";
+            }
+          } catch {
+            // ignore snapshot errors; metadata stays partial
+          }
+          const normalizedCore = normalizeUppercaseCoreJob(base.data.coreJob);
+          const payload: JobCardAutosavePayload = {
+            ...base,
+            companyId: companyId || undefined,
+            projectId: projectId || undefined,
+            companyName: companyName || undefined,
+            projectName: projectName || undefined,
+            customer: normalizedCore.customer.trim(),
+            location: normalizedCore.location.trim(),
+          };
+          window.localStorage.setItem(getAutosaveKey(companyId, projectId), JSON.stringify(payload));
+        } catch {
+          // ignore localStorage write errors
+        }
+      })();
     }, 4000);
-    return () => window.clearTimeout(timeout);
-  });
+    return () => window.clearInterval(id);
+  }, []);
 
   const handleSaveDraft = async () => {
     if (isOffline) {
@@ -3390,18 +3503,15 @@ export function NewSubmissionForm() {
   const handleSaveToDevice = async (event?: MouseEvent<HTMLButtonElement>) => {
     event?.preventDefault();
     event?.stopPropagation();
+    console.log("[offline-save] clicked");
     const generation = ++saveToDeviceGenerationRef.current;
-    console.log("[Offline draft] Save to device started", {
-      submissionId,
-      selectedSectionsCount: selectedSections.length,
-      isOffline,
-      generation,
-    });
     setLocalDeviceSaveError(null);
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const draftData = buildCurrentDraftData(photoSnapshot);
     const savedAt = new Date().toISOString();
-    const offlineDraftId = offlineDraftIdRef.current || `offline-${generateId()}`;
+    const previousOfflineId = offlineDraftIdRef.current?.trim() || null;
+    const offlineDraftId = previousOfflineId || `offline-${generateId()}`;
+    offlineDraftIdRef.current = offlineDraftId;
     const normalizedCore = normalizeUppercaseCoreJob(coreJob);
     const companyId =
       typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "" : "";
@@ -3435,20 +3545,18 @@ export function NewSubmissionForm() {
       unitNumber: normalizedCore.unitNumber.trim(),
       workOrderNumber: normalizedCore.workOrder.trim(),
     };
+    console.log("[offline-save] payload built", { offlineDraftId, submissionId, companyId, projectId });
     try {
       await saveOfflineJobCardDraft(payload);
       if (generation !== saveToDeviceGenerationRef.current) {
-        console.log("[Offline draft] Ignoring stale save success", { offlineDraftId, generation });
+        console.log("[offline-save] error", "stale generation — ignoring success");
         return;
       }
-      console.log("[Offline draft] IndexedDB save succeeded — draft id:", offlineDraftId, {
-        submissionId,
-        savedAt,
-      });
+      console.log("[offline-save] saved", { offlineDraftId, submissionId });
       setLocalDeviceSaveError(null);
       offlineDraftIdRef.current = offlineDraftId;
       try {
-        window.localStorage.removeItem(JOB_CARD_AUTOSAVE_KEY);
+        clearMatchingAutosave(companyId, projectId);
       } catch {
         // ignore
       }
@@ -3456,17 +3564,13 @@ export function NewSubmissionForm() {
       setDraftNoticeMessage("Saved to this device");
     } catch (error) {
       if (generation !== saveToDeviceGenerationRef.current) {
-        console.log("[Offline draft] Ignoring stale save failure", {
-          offlineDraftId,
-          generation,
-          message: error instanceof Error ? error.message : String(error),
-        });
+        console.log("[offline-save] error", "stale generation — ignoring failure");
         return;
       }
-      console.error("[Offline draft] IndexedDB save failed", {
-        message: error instanceof Error ? error.message : String(error),
-        error,
-      });
+      console.log("[offline-save] error", error instanceof Error ? error.message : String(error));
+      if (!previousOfflineId) {
+        offlineDraftIdRef.current = null;
+      }
       setLocalDeviceSaveError("Unable to save on this device.");
       setDraftNoticeMessage("Unable to save on this device.");
     }
