@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type MutableRefObject,
   type MouseEvent,
   type ReactNode,
 } from "react";
@@ -232,6 +233,20 @@ function clearMatchingAutosave(selectedCompanyId: string, selectedProjectId: str
     window.localStorage.removeItem(getAutosaveKey(selectedCompanyId.trim(), selectedProjectId.trim()));
   } catch {
     // ignore
+  }
+}
+
+function clearRestoredAutosaveAfterPersist(
+  targetRef: MutableRefObject<{ companyId: string; projectId: string } | null>,
+  reason: string,
+  options?: { log?: boolean },
+): void {
+  const t = targetRef.current;
+  if (!t) return;
+  clearMatchingAutosave(t.companyId, t.projectId);
+  targetRef.current = null;
+  if (options?.log !== false) {
+    console.log("[autosave] cleared after save", reason);
   }
 }
 
@@ -1270,6 +1285,11 @@ export function NewSubmissionForm() {
   const [isOffline, setIsOffline] = useState(false);
   /** IndexedDB offline job card id for this form when resumed from device or after "Save to this device". */
   const offlineDraftIdRef = useRef<string | null>(null);
+  /**
+   * Set when the user taps Resume on the autosave banner. companyId/projectId match the autosave storage key
+   * (including empty strings for the global `jobCard_autosave` bucket) so we clear only that entry after a durable save.
+   */
+  const autosaveRestoredClearTargetRef = useRef<{ companyId: string; projectId: string } | null>(null);
   /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
   const saveToDeviceGenerationRef = useRef(0);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
@@ -2871,6 +2891,7 @@ export function NewSubmissionForm() {
         } catch {
           // ignore
         }
+        clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "submit");
       } catch {
         // ignore localStorage cleanup errors
       }
@@ -3060,12 +3081,14 @@ export function NewSubmissionForm() {
 
   const handleResumeAutosave = () => {
     if (!autosaveRestorePayload) return;
+    const p = autosaveRestorePayload;
+    const pc = (p.companyId ?? "").trim();
+    const pp = (p.projectId ?? "").trim();
+    autosaveRestoredClearTargetRef.current = { companyId: pc, projectId: pp };
     console.log("[restore] source: autosave");
-    restoreFromDraftData(autosaveRestorePayload.data, autosaveRestorePayload.submissionId || generateSubmissionId());
+    restoreFromDraftData(p.data, p.submissionId || generateSubmissionId());
     try {
-      const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-      const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-      clearMatchingAutosave(sc, sp);
+      clearMatchingAutosave(pc, pp);
     } catch {
       // ignore localStorage cleanup errors
     }
@@ -3075,12 +3098,19 @@ export function NewSubmissionForm() {
 
   const handleDiscardAutosave = () => {
     try {
-      const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-      const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-      clearMatchingAutosave(sc, sp);
+      if (autosaveRestorePayload) {
+        const pc = (autosaveRestorePayload.companyId ?? "").trim();
+        const pp = (autosaveRestorePayload.projectId ?? "").trim();
+        clearMatchingAutosave(pc, pp);
+      } else {
+        const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+        const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+        clearMatchingAutosave(sc, sp);
+      }
     } catch {
       // ignore localStorage cleanup errors
     }
+    autosaveRestoredClearTargetRef.current = null;
     setAutosaveRestorePayload(null);
   };
 
@@ -3506,13 +3536,13 @@ export function NewSubmissionForm() {
           } catch {
             // ignore
           }
-          const osc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-          const osp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-          clearMatchingAutosave(osc, osp);
         } catch (cleanupErr) {
           console.warn("[offline-draft] Failed to delete local draft after cloud save", cleanupErr);
         }
       }
+      clearMatchingAutosave(contextIds.companyId.trim(), contextIds.projectId.trim());
+      clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "cloud-draft", { log: false });
+      console.log("[autosave] cleared after cloud save");
       setDraftNoticeMessage("Draft saved to cloud.");
     } catch (error) {
       const details = describeSupabaseError(error);
@@ -3581,6 +3611,7 @@ export function NewSubmissionForm() {
       console.log("[offline-save] saved", { offlineDraftId, submissionId });
       setLocalDeviceSaveError(null);
       offlineDraftIdRef.current = offlineDraftId;
+      clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "save-to-device");
       try {
         clearMatchingAutosave(companyId, projectId);
       } catch {
