@@ -14,6 +14,35 @@ import { supabase } from "@/lib/supabase/client";
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
+function logOfflineStarterCacheError(e: unknown): void {
+  if (e instanceof Error) {
+    console.error("[companies] offline starter cache read failed", {
+      name: e.name,
+      message: e.message,
+      stack: e.stack,
+      raw: e,
+    });
+    return;
+  }
+  console.error("[companies] offline starter cache read failed", {
+    name: typeof e === "object" && e !== null ? (e as { name?: string }).name : undefined,
+    message: String(e),
+    stack: typeof e === "object" && e !== null ? (e as { stack?: string }).stack : undefined,
+    raw: e,
+  });
+}
+
+function offlineStarterCacheUserMessage(error: unknown): string {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (/IndexedDB unavailable/i.test(msg) || /indexedDB is missing/i.test(msg)) {
+    return `${msg} Try allowing site data (not private mode), then open this page online once.`;
+  }
+  if (/IndexedDB read failed/i.test(msg) || /IndexedDB open failed/i.test(msg)) {
+    return `${msg} If this persists, open Companies while online once to refresh the cache.`;
+  }
+  return `Could not read offline company cache: ${msg}`;
+}
+
 type CompanyRow = {
   id: string;
   name: string;
@@ -113,7 +142,7 @@ export default function CompaniesPage() {
           const snap = await getBestStarterSnapshotForOffline(context.userId);
           if (cancelled) return;
           if (!snap) {
-            console.log("[companies] cached snapshot: not found");
+            console.log("[companies] offline: no starter snapshot found (IndexedDB empty or no rows for user)");
             setOfflineSnapshot(null);
             setOfflineCacheMiss(true);
             setCompanies([]);
@@ -131,8 +160,8 @@ export default function CompaniesPage() {
           }
         } catch (e) {
           if (!cancelled) {
-            console.warn("[companies] offline IndexedDB read failed", e);
-            setLoadError("Could not read offline company cache.");
+            logOfflineStarterCacheError(e);
+            setLoadError(offlineStarterCacheUserMessage(e));
             setCompanies([]);
             setOfflineSnapshot(null);
             setOfflineCacheMiss(false);
@@ -328,9 +357,13 @@ export default function CompaniesPage() {
         active: company.active,
       })),
       projectsByCompanyId: prev?.projectsByCompanyId || {},
-    })).catch(() => {
-      // ignore IndexedDB cache write errors
-    });
+    }))
+      .then(() => {
+        console.log("[starter-cache] saved companies", context.userId, visibleCompanies.length);
+      })
+      .catch((err) => {
+        console.error("[starter-cache] companies write failed", err);
+      });
   }, [authLoading, context, isOffline, visibleCompanies]);
 
   return (
@@ -352,11 +385,22 @@ export default function CompaniesPage() {
         {!loading && isOffline && offlineCacheMiss && !loadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
             <p className="font-semibold">No cached companies found. Open this page online once before using offline.</p>
+            {process.env.NODE_ENV === "development" ? (
+              <p className="mt-2 font-mono text-xs text-amber-800/90">
+                [dev] IndexedDB readable but starter snapshot missing — Companies list was never cached for this signed-in user on
+                this device.
+              </p>
+            ) : null}
           </section>
         ) : null}
         {loadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
             Could not load companies: {loadError}
+            {process.env.NODE_ENV === "development" && isOffline ? (
+              <p className="mt-2 font-mono text-xs text-amber-800/90">
+                [dev] Offline path uses IndexedDB only (see console for IndexedDB unavailable vs read failure).
+              </p>
+            ) : null}
           </section>
         ) : null}
         {managementError ? (

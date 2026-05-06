@@ -677,9 +677,13 @@ export default function CompanyProjectsPage() {
           completedSubmissionCount: project.completedSubmissionCount,
         })),
       },
-    })).catch(() => {
-      // ignore IndexedDB cache write errors
-    });
+    }))
+      .then(() => {
+        console.log("[starter-cache] saved projects", companyId, visibleProjects.length);
+      })
+      .catch((err) => {
+        console.error("[starter-cache] projects write failed", err);
+      });
   }, [authLoading, companyId, isOffline, userContext, visibleProjects]);
 
   return (

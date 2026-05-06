@@ -1,3 +1,11 @@
+import {
+  INSTALLER_DB_OFFLINE_DRAFTS_STORE,
+  INSTALLER_OFFLINE_DB_NAME,
+  INSTALLER_OFFLINE_DB_VERSION,
+  describeIndexedDbError,
+  ensureInstallerOfflineObjectStores,
+} from "@/lib/installer-offline-db";
+
 export type OfflineJobCardDraftRecord<TDraftData> = {
   offlineDraftId: string;
   submissionId: string;
@@ -22,26 +30,22 @@ export type OfflineJobCardDraftRecord<TDraftData> = {
 /** Set before navigating to /new-submission to resume a specific IndexedDB draft (offline-safe). */
 export const INSTALLER_OFFLINE_DRAFT_ID_KEY = "installer-offline-draft-id";
 
-const DB_NAME = "installer-sheetz-offline";
-const DB_VERSION = 2;
-const STORE_NAME = "job-card-offline-drafts";
+const STORE_NAME = INSTALLER_DB_OFFLINE_DRAFTS_STORE;
 
 function openOfflineDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === "undefined" || !window.indexedDB) {
-      reject(new Error("IndexedDB not available"));
+      reject(new Error("IndexedDB unavailable: window.indexedDB is missing."));
       return;
     }
-    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    const request = window.indexedDB.open(INSTALLER_OFFLINE_DB_NAME, INSTALLER_OFFLINE_DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        const store = db.createObjectStore(STORE_NAME, { keyPath: "offlineDraftId" });
-        store.createIndex("savedAt", "savedAt", { unique: false });
-      }
+      ensureInstallerOfflineObjectStores(db);
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Failed to open IndexedDB"));
+    request.onerror = () =>
+      reject(describeIndexedDbError("IndexedDB open failed (offline job drafts)", request.error));
   });
 }
 
