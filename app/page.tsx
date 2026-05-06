@@ -1268,6 +1268,7 @@ export function NewSubmissionForm() {
     return readMatchingAutosave(companyId, projectId);
   });
   const [isOffline, setIsOffline] = useState(false);
+  /** IndexedDB offline job card id for this form when resumed from device or after "Save to this device". */
   const offlineDraftIdRef = useRef<string | null>(null);
   /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
   const saveToDeviceGenerationRef = useRef(0);
@@ -2860,8 +2861,15 @@ export function NewSubmissionForm() {
         const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
         window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
         if (offlineDraftIdRef.current) {
-          await deleteOfflineJobCardDraft(offlineDraftIdRef.current);
+          const offlineId = offlineDraftIdRef.current;
+          await deleteOfflineJobCardDraft(offlineId);
+          console.log("[offline-draft] deleted after submit", offlineId);
           offlineDraftIdRef.current = null;
+        }
+        try {
+          window.localStorage.removeItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
+        } catch {
+          // ignore
         }
       } catch {
         // ignore localStorage cleanup errors
@@ -3486,6 +3494,24 @@ export function NewSubmissionForm() {
         saveDraftLocally(nextDraft);
       } catch {
         // ignore local cache sync errors when cloud save succeeds
+      }
+      const activeOfflineDraftId = offlineDraftIdRef.current?.trim();
+      if (activeOfflineDraftId) {
+        try {
+          await deleteOfflineJobCardDraft(activeOfflineDraftId);
+          console.log("[offline-draft] deleted after cloud save", activeOfflineDraftId);
+          offlineDraftIdRef.current = null;
+          try {
+            window.localStorage.removeItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
+          } catch {
+            // ignore
+          }
+          const osc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+          const osp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+          clearMatchingAutosave(osc, osp);
+        } catch (cleanupErr) {
+          console.warn("[offline-draft] Failed to delete local draft after cloud save", cleanupErr);
+        }
       }
       setDraftNoticeMessage("Draft saved to cloud.");
     } catch (error) {
