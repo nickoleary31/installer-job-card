@@ -1290,6 +1290,8 @@ export function NewSubmissionForm() {
    * (including empty strings for the global `jobCard_autosave` bucket) so we clear only that entry after a durable save.
    */
   const autosaveRestoredClearTargetRef = useRef<{ companyId: string; projectId: string } | null>(null);
+  /** When true, background autosave must not persist (exit without saving: avoid rewriting immediately after clearing). */
+  const autosavePersistSuppressedRef = useRef(false);
   /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
   const saveToDeviceGenerationRef = useRef(0);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
@@ -3448,12 +3450,14 @@ export function NewSubmissionForm() {
     if (typeof window === "undefined") return;
     const id = window.setInterval(() => {
       if (!autosaveCheckedRef.current) return;
+      if (autosavePersistSuppressedRef.current) return;
       if (autosaveRestorePayloadRef.current) return;
       const sub = submissionStatusAutosaveRef.current;
       const email = emailSendStatusAutosaveRef.current;
       if (sub === "Submitted" && email === "success") return;
       void (async () => {
         try {
+          if (autosavePersistSuppressedRef.current) return;
           const base = buildAutosaveBaseRef.current();
           const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
           const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
@@ -3461,6 +3465,7 @@ export function NewSubmissionForm() {
           let projectName = "";
           try {
             const snap = await getBestStarterSnapshotForOffline();
+            if (autosavePersistSuppressedRef.current) return;
             if (snap && companyId) {
               companyName = snap.companies.find((c) => c.id === companyId)?.name?.trim() || "";
               const projects = snap.projectsByCompanyId[companyId] || [];
@@ -3469,6 +3474,7 @@ export function NewSubmissionForm() {
           } catch {
             // ignore snapshot errors; metadata stays partial
           }
+          if (autosavePersistSuppressedRef.current) return;
           const normalizedCore = normalizeUppercaseCoreJob(base.data.coreJob);
           const payload: JobCardAutosavePayload = {
             ...base,
@@ -3479,6 +3485,7 @@ export function NewSubmissionForm() {
             customer: normalizedCore.customer.trim(),
             location: normalizedCore.location.trim(),
           };
+          if (autosavePersistSuppressedRef.current) return;
           window.localStorage.setItem(getAutosaveKey(companyId, projectId), JSON.stringify(payload));
         } catch {
           // ignore localStorage write errors
@@ -3662,6 +3669,16 @@ export function NewSubmissionForm() {
 
   const handleExitWithoutSavingConfirm = () => {
     setExitWithoutSavingOpen(false);
+    autosavePersistSuppressedRef.current = true;
+    try {
+      const cc = typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "" : "";
+      const pp = typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "" : "";
+      clearMatchingAutosave(cc, pp);
+      clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "exit-without-saving", { log: false });
+      console.log("[autosave] cleared after exit without saving");
+    } catch {
+      // ignore localStorage cleanup errors
+    }
     handleExitToHome();
   };
 
