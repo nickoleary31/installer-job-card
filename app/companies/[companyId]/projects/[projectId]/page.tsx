@@ -691,11 +691,14 @@ export default function ProjectDashboardPage() {
               ) : null}
             </section>
 
-            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+            <section className="rounded-2xl border-2 border-emerald-200/80 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Project Expenses</h2>
-                  <p className="mt-1 text-sm text-gray-600">Log simple project costs and optionally attach a receipt image.</p>
+                  <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Expenses</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Core project workflow — add receipts, lost-receipt entries, and notes; totals and admin review show up
+                    here.
+                  </p>
                 </div>
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-right">
                   <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Total</p>

@@ -317,21 +317,25 @@ Focus is now:
 usability → scalability → monetization
 
 Phase 7 — SaaS / Multi-Client Foundation
-- tenant-safe company model
-- subscription status per company
-- billing status controls access
-- admin separation: platform admin vs company admin
-- prepare for RLS
+
+* tenant-safe company model
+* subscription status per company
+* billing status controls access
+* admin separation: platform admin vs company admin
+* prepare for RLS
 
 Phase 8 — Dynamic Form Builder
-- form_templates
-- form_fields
-- form_submissions
-- conditional fields
-- photo requirements
-- reusable field groups
+
+* form\_templates
+* form\_fields
+* form\_submissions
+* conditional fields
+* photo requirements
+* reusable field groups
 
 Phase 9 — Subscription Billing
-- Stripe subscriptions
-- company plan limits
-- active/inactive billing status
+
+* Stripe subscriptions
+* company plan limits
+* active/inactive billing status
+

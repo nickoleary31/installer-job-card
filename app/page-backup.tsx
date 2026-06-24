@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 const hardwareTypes = [
   "VAC4",
@@ -10,7 +10,7 @@ const hardwareTypes = [
   "FTxw",
 ];
 
-function VAC4Section({ children }: { children: any }) {
+function VAC4Section({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
