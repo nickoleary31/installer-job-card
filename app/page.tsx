@@ -17,6 +17,8 @@ import {
   type Vac4DescriptionKey,
   type JobCardCp4Payload,
   type JobCardPpdPayload,
+  type JobCardPpdJsonConfigFile,
+  type JobCardPpdJsonConfigForm,
   type JobCardSubmissionPayload,
   type UploadedPhotoMetadata,
   type Vac4OrderedPhotoKey,
@@ -43,6 +45,8 @@ import {
   sanitizeWorkOrderInput,
 } from "@/lib/format";
 import { SerialInput } from "@/components/SerialInput";
+import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import { insertCustomerSiteFileRow, uploadPpdJsonFileToStorage } from "@/lib/ppd-json-storage";
 
 const PHOTO_BUCKET = "job-card-photos";
 
@@ -130,6 +134,7 @@ type StoredPpdDraftPayload = {
   customBracketNotes: string;
   clientApproval: string;
   jsonFileName: string;
+  jsonConfigFile?: JobCardPpdJsonConfigFile;
   relaysUsedForSpeedControl: string;
   redWireDescription: string;
   blackWireDescription: string;
@@ -182,7 +187,18 @@ type JobCardAutosavePayload = {
   location?: string;
 };
 
-type OfflineJobCardDraftPayload = OfflineJobCardDraftRecord<StoredJobCardDraft["data"]>;
+type OfflinePpdJsonFileAttachment = {
+  name: string;
+  type: string;
+  lastModified: number;
+  data: Blob;
+};
+
+type OfflineJobCardDraftPayload = OfflineJobCardDraftRecord<StoredJobCardDraft["data"]> & {
+  attachments?: {
+    ppdJsonFile?: OfflinePpdJsonFileAttachment;
+  };
+};
 
 function getAutosaveKey(companyId: string, projectId: string): string {
   const c = companyId.trim();
@@ -503,13 +519,18 @@ function sanitizePpdCameraLocationsFromDraft(raw: unknown): PpdCameraLocationKey
   return out;
 }
 
+/** PPD hub + per-camera serial fields: letters uppercase in real time; numbers/symbols unchanged. */
+function normalizePpdSerialInput(value: string): string {
+  return value.toUpperCase();
+}
+
 function mergePpdCameraSerialsFromDraft(raw: unknown): Record<PpdCameraLocationKey, string> {
   const base = emptyPpdCameraSerialsByLocation();
   if (!raw || typeof raw !== "object") return base;
   const o = raw as Record<string, unknown>;
   for (const { key } of PPD_CAMERA_LOCATION_OPTIONS) {
     const v = o[key];
-    if (typeof v === "string") base[key] = v;
+    if (typeof v === "string") base[key] = normalizePpdSerialInput(v);
   }
   return base;
 }
@@ -1109,6 +1130,7 @@ function PhotoFieldError({ message }: { message: string | null }) {
 
 export function NewSubmissionForm() {
   const router = useRouter();
+  const { loading: authLoading, context: authUserContext } = useAuthUserContext();
   const [submissionId, setSubmissionId] = useState<string>(() => generateSubmissionId());
   const [step, setStep] = useState<"form" | "review">("form");
   const [coreJob, setCoreJob] = useState<CoreJobFields>({
@@ -1173,6 +1195,10 @@ export function NewSubmissionForm() {
   const [ppdCustomBracketNotes, setPpdCustomBracketNotes] = useState("");
   const [ppdClientApproval, setPpdClientApproval] = useState("");
   const [ppdJsonFileName, setPpdJsonFileName] = useState("");
+  const [ppdJsonLocalFile, setPpdJsonLocalFile] = useState<File | null>(null);
+  const [ppdJsonUploadedConfig, setPpdJsonUploadedConfig] = useState<JobCardPpdJsonConfigFile | null>(null);
+  const [ppdProjectCustomerId, setPpdProjectCustomerId] = useState<string | null>(null);
+  const ppdJsonFileInputRef = useRef<HTMLInputElement | null>(null);
   const [ppdRelaysUsedForSpeedControl, setPpdRelaysUsedForSpeedControl] = useState("");
   const [ppdRedWireDescription, setPpdRedWireDescription] = useState("");
   const [ppdBlackWireDescription, setPpdBlackWireDescription] = useState("");
@@ -1266,6 +1292,8 @@ export function NewSubmissionForm() {
   const photoMetadataByFieldRef = useRef<PhotoMetadataByFieldState>(emptyPhotoMetadataByField());
   const defaultContextIdsRef = useRef<DefaultContextIds | null>(null);
   const restoredFromDraftRef = useRef(false);
+  /** True after the user edits Installer Name via the form (not programmatic prefill or draft restore). */
+  const installerNameUserEditedRef = useRef(false);
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
@@ -1371,6 +1399,16 @@ export function NewSubmissionForm() {
     [additional],
   );
   const ppdShowBlackAlarmGround = ppdShowRelaysSpeedControlQuestion && ppdRelaysUsedForSpeedControl === "Yes";
+
+  const ppdJsonConfigFormEffective: JobCardPpdJsonConfigForm = useMemo(() => {
+    const n = normalizeUppercaseCoreJob(coreJob);
+    return {
+      make: n.equipmentMake.trim(),
+      model: n.equipmentModel.trim(),
+      unitNumber: n.unitNumber.trim(),
+      notes: "",
+    };
+  }, [coreJob]);
 
   const ppdPc = useMemo(() => {
     const out = {} as Record<PpdPhotoKey, number>;
@@ -1839,7 +1877,13 @@ export function NewSubmissionForm() {
         }
       }
       if (!ppdClientApproval.trim()) issues.push("ppd-clientApproval");
-      if (!ppdJsonFileName.trim()) issues.push("ppd-jsonFileName");
+      if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
+        if (isOffline) {
+          issues.push("ppd-jsonOffline");
+        } else {
+          issues.push("ppd-jsonFile");
+        }
+      }
       if (ppdMonitorInstalled !== "Yes" && ppdMonitorInstalled !== "No") issues.push("ppd-monitorInstalled");
       if (ppdCustomBracketsNeeded !== "Yes" && ppdCustomBracketsNeeded !== "No") issues.push("ppd-customBracketsNeeded");
       if (ppdCustomBracketsNeeded === "Yes" && !ppdCustomBracketNotes.trim()) issues.push("ppd-customBracketNotes");
@@ -1997,6 +2041,9 @@ export function NewSubmissionForm() {
   ]);
 
   const setCoreField = (key: keyof CoreJobFields, value: string) => {
+    if (key === "installerName") {
+      installerNameUserEditedRef.current = true;
+    }
     const normalizedValue =
       key === "workOrder"
         ? sanitizeWorkOrderInput(value)
@@ -2697,7 +2744,9 @@ export function NewSubmissionForm() {
           customBracketsNeeded: ppdCustomBracketsNeeded,
           customBracketNotes: ppdCustomBracketNotes,
           clientApproval: ppdClientApproval,
-          jsonFileName: ppdJsonFileName,
+          jsonFileName: ppdJsonLocalFile?.name.trim() || ppdJsonFileName.trim(),
+          ...(ppdJsonUploadedConfig ? { jsonConfigFile: ppdJsonUploadedConfig } : {}),
+          jsonConfigForm: ppdJsonConfigFormEffective,
           relaysUsedForSpeedControl: ppdRelaysUsedForSpeedControl,
           redWireDescription: ppdRedWireDescription,
           blackWireDescription: ppdBlackWireDescription,
@@ -2821,16 +2870,136 @@ export function NewSubmissionForm() {
     setStep("form");
   };
 
+  const insertCustomerSiteFileRowOnce = async (params: {
+    companyId: string;
+    customerId: string | null;
+    projectId: string;
+    submissionId: string;
+    fileName: string;
+    storagePath: string;
+    make: string;
+    model: string;
+    unitNum: string;
+  }) => {
+    const { data: existingRow, error: existingError } = await supabase
+      .from("customer_site_files")
+      .select("id")
+      .eq("submission_id", params.submissionId)
+      .eq("storage_path", params.storagePath)
+      .maybeSingle<{ id: string }>();
+    if (existingError) throw existingError;
+    if (existingRow?.id) return;
+    const { data: userData } = await supabase.auth.getUser();
+    await insertCustomerSiteFileRow({
+      company_id: params.companyId,
+      customer_id: params.customerId,
+      project_id: params.projectId,
+      submission_id: params.submissionId,
+      file_name: params.fileName,
+      storage_path: params.storagePath,
+      make: params.make || null,
+      model: params.model || null,
+      unit_number: params.unitNum || null,
+      notes: null,
+      uploaded_by: userData.user?.id ?? null,
+    });
+  };
+
   const handleConfirmSendEmail = async () => {
     if (!pendingEmailPayload) return;
     setEmailSendStatus("sending");
     setEmailSendErrorMessage(null);
     setPostSubmitSyncWarning(null);
     try {
+      let payloadForSend = pendingEmailPayload;
+
+      if (payloadForSend.selectedSections.includes("PPD") && payloadForSend.ppd) {
+        if (isOffline) {
+          setEmailSendStatus("error");
+          setEmailSendErrorMessage("JSON upload requires online connection.");
+          return;
+        }
+        if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
+          setEmailSendStatus("error");
+          setEmailSendErrorMessage("Select a PPD JSON configuration file (.json).");
+          return;
+        }
+        const ctx = await resolveSelectedOrDefaultContextIds();
+        const { data: projRow, error: projErr } = await supabase
+          .from("projects")
+          .select("customer_id")
+          .eq("id", ctx.projectId)
+          .maybeSingle<{ customer_id: string | null }>();
+        const customerId = !projErr && projRow ? projRow.customer_id?.trim() || null : null;
+        const nj = normalizeUppercaseCoreJob(coreJob);
+        const make = nj.equipmentMake.trim();
+        const model = nj.equipmentModel.trim();
+        const unitNum = nj.unitNumber.trim();
+        let jsonConfigFile: JobCardPpdJsonConfigFile;
+        if (ppdJsonLocalFile) {
+          const { storagePath, publicUrl, uploadedAt } = await uploadPpdJsonFileToStorage(ppdJsonLocalFile, {
+            companyId: ctx.companyId,
+            projectId: ctx.projectId,
+            customerId,
+            unitNumber: unitNum || "unit",
+            make,
+            model,
+            notes: "",
+          });
+          jsonConfigFile = {
+            fileName: ppdJsonLocalFile.name,
+            storagePath,
+            publicUrl,
+            customerId,
+            projectId: ctx.projectId,
+            companyId: ctx.companyId,
+            make,
+            model,
+            unitNumber: unitNum,
+            notes: "",
+            uploadedAt,
+          };
+          setPpdJsonUploadedConfig(jsonConfigFile);
+          setPpdJsonFileName(ppdJsonLocalFile.name);
+          setPpdJsonLocalFile(null);
+        } else {
+          jsonConfigFile = {
+            ...ppdJsonUploadedConfig!,
+            fileName: ppdJsonUploadedConfig!.fileName || ppdJsonFileName.trim() || "config.json",
+            make,
+            model,
+            unitNumber: unitNum,
+            notes: "",
+          };
+        }
+
+        await insertCustomerSiteFileRowOnce({
+          companyId: ctx.companyId,
+          customerId,
+          projectId: ctx.projectId,
+          submissionId: payloadForSend.submissionId,
+          fileName: jsonConfigFile.fileName,
+          storagePath: jsonConfigFile.storagePath,
+          make,
+          model,
+          unitNum,
+        });
+
+        payloadForSend = {
+          ...payloadForSend,
+          ppd: {
+            ...payloadForSend.ppd!,
+            jsonConfigFile,
+            jsonFileName: jsonConfigFile.fileName,
+            jsonConfigForm: ppdJsonConfigFormEffective,
+          },
+        };
+      }
+
       const res = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: pendingEmailPayload }),
+        body: JSON.stringify({ payload: payloadForSend }),
       });
       let data: { error?: string } = {};
       try {
@@ -2850,7 +3019,7 @@ export function NewSubmissionForm() {
       // eslint-disable-next-line react-hooks/purity -- submission completion timestamp (event handler)
       setSubmissionCompletedAt(Date.now());
       setSubmitSuccessMessage("Job card submitted successfully.");
-      const submittedPayload = pendingEmailPayload;
+      const submittedPayload = payloadForSend;
       try {
         const contextIds = await resolveSelectedOrDefaultContextIds();
         const createdAt = new Date().toISOString();
@@ -2943,7 +3112,7 @@ export function NewSubmissionForm() {
     const rawPpd = draft.ppd;
     if (rawPpd !== undefined && rawPpd !== null && typeof rawPpd === "object" && !Array.isArray(rawPpd)) {
       const p = rawPpd as Record<string, unknown>;
-      setPpdHubSerial(draftString(p.hubSerial));
+      setPpdHubSerial(normalizePpdSerialInput(draftString(p.hubSerial)));
       setPpdCameraLocations(sanitizePpdCameraLocationsFromDraft(p.cameraLocations));
       setPpdCameraSerialsByLocation(mergePpdCameraSerialsFromDraft(p.cameraSerialsByLocation));
       setPpdMonitorInstalled(draftString(p.monitorInstalled));
@@ -2951,6 +3120,17 @@ export function NewSubmissionForm() {
       setPpdCustomBracketNotes(draftString(p.customBracketNotes));
       setPpdClientApproval(draftString(p.clientApproval));
       setPpdJsonFileName(draftString(p.jsonFileName));
+      if (p.jsonConfigFile && typeof p.jsonConfigFile === "object" && !Array.isArray(p.jsonConfigFile)) {
+        setPpdJsonUploadedConfig(p.jsonConfigFile as JobCardPpdJsonConfigFile);
+      } else {
+        setPpdJsonUploadedConfig(null);
+      }
+      setPpdJsonLocalFile(null);
+      try {
+        if (ppdJsonFileInputRef.current) ppdJsonFileInputRef.current.value = "";
+      } catch {
+        // ignore
+      }
       setPpdRelaysUsedForSpeedControl(draftString(p.relaysUsedForSpeedControl));
       setPpdRedWireDescription(draftString(p.redWireDescription));
       setPpdBlackWireDescription(draftString(p.blackWireDescription));
@@ -2970,6 +3150,8 @@ export function NewSubmissionForm() {
       setPpdCustomBracketNotes("");
       setPpdClientApproval("");
       setPpdJsonFileName("");
+      setPpdJsonUploadedConfig(null);
+      setPpdJsonLocalFile(null);
       setPpdRelaysUsedForSpeedControl("");
       setPpdRedWireDescription("");
       setPpdBlackWireDescription("");
@@ -3125,7 +3307,7 @@ export function NewSubmissionForm() {
       if (offlineResumeId) {
         let restoredOffline = false;
         try {
-          const draft = await getOfflineJobCardDraftById<StoredJobCardDraft["data"]>(offlineResumeId);
+          const draft = await getOfflineJobCardDraftById<OfflineJobCardDraftPayload["data"]>(offlineResumeId);
           if (!cancelled && draft) {
             try {
               const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
@@ -3144,6 +3326,16 @@ export function NewSubmissionForm() {
               console.log("[restore] source: offline-draft");
               offlineDraftIdRef.current = draft.offlineDraftId;
               restoreFromDraftData(draft.data, draft.submissionId || generateSubmissionId());
+              const localJson = draft.attachments?.ppdJsonFile;
+              if (localJson?.data) {
+                const restoredFile = new File([localJson.data], localJson.name || "config.json", {
+                  type: localJson.type || "application/json",
+                  lastModified: localJson.lastModified || Date.now(),
+                });
+                setPpdJsonLocalFile(restoredFile);
+                setPpdJsonFileName(localJson.name || "config.json");
+                setPpdJsonUploadedConfig(null);
+              }
               setDraftNoticeMessage("Offline draft restored (text fields). Re-upload photos before submitting.");
             }, 0);
             restoredOffline = true;
@@ -3167,6 +3359,13 @@ export function NewSubmissionForm() {
             setTimeout(() => {
               console.log("[restore] source: supabase");
               restoreFromDraftData(resumePayload, restoredId);
+              const uploadedName =
+                typeof resumePayload.ppd?.jsonConfigFile?.fileName === "string"
+                  ? resumePayload.ppd.jsonConfigFile.fileName
+                  : "";
+              if (uploadedName) {
+                setDraftNoticeMessage(`JSON file already uploaded: ${uploadedName}`);
+              }
             }, 0);
           }
         } catch {
@@ -3187,6 +3386,11 @@ export function NewSubmissionForm() {
           setTimeout(() => {
             console.log("[restore] source: supabase");
             restoreFromDraftData(match.data, restoredId);
+            const uploadedName =
+              typeof match.data.ppd?.jsonConfigFile?.fileName === "string" ? match.data.ppd.jsonConfigFile.fileName : "";
+            if (uploadedName) {
+              setDraftNoticeMessage(`JSON file already uploaded: ${uploadedName}`);
+            }
           }, 0);
         }
         window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
@@ -3199,6 +3403,21 @@ export function NewSubmissionForm() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (restoredFromDraftRef.current) return;
+    if (installerNameUserEditedRef.current) return;
+    const suggestion =
+      authUserContext.displayName?.trim() || authUserContext.email?.trim() || "";
+    if (!suggestion) return;
+    setCoreJob((prev) => {
+      if (restoredFromDraftRef.current) return prev;
+      if (installerNameUserEditedRef.current) return prev;
+      if (prev.installerName.trim()) return prev;
+      return { ...prev, installerName: suggestion };
+    });
+  }, [authLoading, authUserContext.displayName, authUserContext.email]);
 
   useEffect(() => {
     autosaveCheckedRef.current = true;
@@ -3219,6 +3438,40 @@ export function NewSubmissionForm() {
       window.removeEventListener("offline", sync);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (typeof window === "undefined") return;
+      if (!selectedSections.includes("PPD") || isOffline) {
+        if (!cancelled) setPpdProjectCustomerId(null);
+        return;
+      }
+      const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      if (!projectId) {
+        if (!cancelled) setPpdProjectCustomerId(null);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from("projects")
+          .select("customer_id")
+          .eq("id", projectId)
+          .maybeSingle<{ customer_id: string | null }>();
+        if (cancelled) return;
+        if (error) {
+          setPpdProjectCustomerId(null);
+          return;
+        }
+        setPpdProjectCustomerId(data?.customer_id ?? null);
+      } catch {
+        if (!cancelled) setPpdProjectCustomerId(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSections, isOffline]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3408,7 +3661,8 @@ export function NewSubmissionForm() {
         customBracketsNeeded: ppdCustomBracketsNeeded,
         customBracketNotes: ppdCustomBracketNotes,
         clientApproval: ppdClientApproval,
-        jsonFileName: ppdJsonFileName,
+        jsonFileName: ppdJsonLocalFile?.name.trim() || ppdJsonFileName.trim(),
+        ...(ppdJsonUploadedConfig ? { jsonConfigFile: ppdJsonUploadedConfig } : {}),
         relaysUsedForSpeedControl: ppdRelaysUsedForSpeedControl,
         redWireDescription: ppdRedWireDescription,
         blackWireDescription: ppdBlackWireDescription,
@@ -3504,7 +3758,7 @@ export function NewSubmissionForm() {
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const draftData = buildCurrentDraftData(photoSnapshot);
     const updatedAt = new Date().toISOString();
-    const nextDraft: StoredJobCardDraft = {
+    let nextDraft: StoredJobCardDraft = {
       submissionId,
       customer: normalizedCoreJob.customer.trim() || "—",
       unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
@@ -3514,6 +3768,79 @@ export function NewSubmissionForm() {
 
     try {
       const contextIds = await resolveSelectedOrDefaultContextIds();
+      let draftDataForSave = draftData;
+      if (selectedSections.includes("PPD") && draftDataForSave.ppd) {
+        const { data: projRow, error: projErr } = await supabase
+          .from("projects")
+          .select("customer_id")
+          .eq("id", contextIds.projectId)
+          .maybeSingle<{ customer_id: string | null }>();
+        const customerId = !projErr && projRow ? projRow.customer_id?.trim() || null : null;
+        const nj = normalizeUppercaseCoreJob(coreJob);
+        const make = nj.equipmentMake.trim();
+        const model = nj.equipmentModel.trim();
+        const unitNum = nj.unitNumber.trim();
+        if (ppdJsonLocalFile) {
+          const { storagePath, publicUrl, uploadedAt } = await uploadPpdJsonFileToStorage(ppdJsonLocalFile, {
+            companyId: contextIds.companyId,
+            projectId: contextIds.projectId,
+            customerId,
+            unitNumber: unitNum || "unit",
+            make,
+            model,
+            notes: "",
+          });
+          const uploadedConfig: JobCardPpdJsonConfigFile = {
+            fileName: ppdJsonLocalFile.name,
+            storagePath,
+            publicUrl,
+            customerId,
+            projectId: contextIds.projectId,
+            companyId: contextIds.companyId,
+            make,
+            model,
+            unitNumber: unitNum,
+            notes: "",
+            uploadedAt,
+          };
+          setPpdJsonUploadedConfig(uploadedConfig);
+          setPpdJsonFileName(ppdJsonLocalFile.name);
+          setPpdJsonLocalFile(null);
+          draftDataForSave = {
+            ...draftDataForSave,
+            ppd: {
+              ...draftDataForSave.ppd,
+              jsonFileName: ppdJsonLocalFile.name,
+              jsonConfigFile: uploadedConfig,
+            },
+          };
+        } else if (ppdJsonUploadedConfig) {
+          draftDataForSave = {
+            ...draftDataForSave,
+            ppd: {
+              ...draftDataForSave.ppd,
+              jsonFileName: ppdJsonUploadedConfig.fileName || draftDataForSave.ppd.jsonFileName,
+              jsonConfigFile: {
+                ...ppdJsonUploadedConfig,
+                customerId,
+                projectId: contextIds.projectId,
+                companyId: contextIds.companyId,
+                make,
+                model,
+                unitNumber: unitNum,
+                notes: "",
+              },
+            },
+          };
+        }
+      }
+      nextDraft = {
+        submissionId,
+        customer: normalizedCoreJob.customer.trim() || "—",
+        unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
+        savedAt: updatedAt,
+        data: draftDataForSave,
+      };
       const { error } = await supabase.from("job_card_drafts").upsert(
         {
           submission_id: submissionId,
@@ -3521,7 +3848,7 @@ export function NewSubmissionForm() {
           project_id: contextIds.projectId,
           customer: nextDraft.customer,
           unit_number: nextDraft.unitNumber,
-          payload: draftData,
+          payload: draftDataForSave,
           updated_at: updatedAt,
         },
         { onConflict: "submission_id" },
@@ -3607,6 +3934,16 @@ export function NewSubmissionForm() {
       location: normalizedCore.location.trim(),
       unitNumber: normalizedCore.unitNumber.trim(),
       workOrderNumber: normalizedCore.workOrder.trim(),
+      attachments: ppdJsonLocalFile
+        ? {
+            ppdJsonFile: {
+              name: ppdJsonLocalFile.name,
+              type: ppdJsonLocalFile.type,
+              lastModified: ppdJsonLocalFile.lastModified,
+              data: ppdJsonLocalFile,
+            },
+          }
+        : undefined,
     };
     console.log("[offline-save] payload built", { offlineDraftId, submissionId, companyId, projectId });
     try {
@@ -3695,7 +4032,11 @@ export function NewSubmissionForm() {
           ? "Add at least one clear photo here."
           : key === "cp4-cameraQuantity"
             ? "Select 1–4 cameras."
-            : "Enter a value or make a selection to continue."}
+            : key === "ppd-jsonFile"
+              ? "Select a .json configuration file."
+              : key === "ppd-jsonOffline"
+                ? "Connect to the internet to upload the PPD JSON file."
+                : "Enter a value or make a selection to continue."}
       </p>
     ) : null;
 
@@ -5445,7 +5786,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.hubMounting} />
                             {requiredHint(cp4PhotoIssueKey("hubMounting"))}
                             <div id="field-cp4-hubMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-hubMountingDescription")}>Connection note<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-hubMountingDescription")}>Mounting note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-hubMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4HubMountingDescription}
@@ -5474,7 +5815,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.microphoneMounting} />
                             {requiredHint(cp4PhotoIssueKey("microphoneMounting"))}
                             <div id="field-cp4-microphoneMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-microphoneMountingDescription")}>Connection note<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-microphoneMountingDescription")}>Mounting note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-microphoneMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4MicrophoneMountingDescription}
@@ -5504,7 +5845,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.remoteControlMounting} />
                             {requiredHint(cp4PhotoIssueKey("remoteControlMounting"))}
                             <div id="field-cp4-remoteControlMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-remoteControlMountingDescription")}>Connection note<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-remoteControlMountingDescription")}>Mounting note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-remoteControlMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4RemoteControlMountingDescription}
@@ -5533,7 +5874,7 @@ export function NewSubmissionForm() {
                             <PhotoFieldError message={cp4PhotoErrors.gpsSensorMounting} />
                             {requiredHint(cp4PhotoIssueKey("gpsSensorMounting"))}
                             <div id="field-cp4-gpsSensorMountingDescription" className="mt-3">
-                              <label className={fieldLabelClass("cp4-gpsSensorMountingDescription")}>Connection note<RequiredMark /></label>
+                              <label className={fieldLabelClass("cp4-gpsSensorMountingDescription")}>Mounting note<RequiredMark /></label>
                               <textarea
                                 className={`${fieldInputClass("cp4-gpsSensorMountingDescription")} min-h-[80px] resize-y py-3`}
                                 value={cp4GpsSensorMountingDescription}
@@ -5821,6 +6162,97 @@ export function NewSubmissionForm() {
                   </div>
 
                   <div className="space-y-6">
+                    <div className="space-y-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-800 dark:bg-emerald-950/30 sm:p-5">
+                      <p className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                        PPD JSON configuration
+                      </p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Upload the PPD JSON configuration file for this unit.
+                      </p>
+
+                      {isOffline ? (
+                        <p
+                          id="field-ppd-jsonOffline"
+                          className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+                          role="status"
+                        >
+                          Cloud upload requires an online connection. You can still choose a .json file now — it will be
+                          saved with this device draft.
+                          {requiredHint("ppd-jsonOffline")}
+                        </p>
+                      ) : null}
+
+                      {ppdProjectCustomerId === null && !isOffline ? (
+                        <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                          No customer/site linked on this project — file will be stored under customer-sites/unassigned.
+                        </p>
+                      ) : null}
+
+                      <div id="field-ppd-jsonFile">
+                        <label className={fieldLabelClass("ppd-jsonFile")}>
+                          JSON file (.json)
+                          <RequiredMark />
+                        </label>
+                        <input
+                          ref={ppdJsonFileInputRef}
+                          type="file"
+                          accept=".json,application/json"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            const lower = f.name.toLowerCase();
+                            if (!lower.endsWith(".json")) {
+                              setDraftNoticeMessage("Only .json files are allowed.");
+                              e.target.value = "";
+                              return;
+                            }
+                            setPpdJsonLocalFile(f);
+                            setPpdJsonFileName(f.name);
+                            setPpdJsonUploadedConfig(null);
+                            clearFieldHighlight("ppd-jsonFile");
+                            clearFieldHighlight("ppd-jsonOffline");
+                          }}
+                        />
+                        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                          <button
+                            type="button"
+                            className={btnSecondaryClassName}
+                            onClick={() => ppdJsonFileInputRef.current?.click()}
+                          >
+                            Choose JSON file
+                          </button>
+                          <p className="text-sm text-gray-800 dark:text-gray-200">
+                            {ppdJsonLocalFile ? (
+                              <span className="font-semibold">{ppdJsonLocalFile.name}</span>
+                            ) : ppdJsonUploadedConfig ? (
+                              <span className="font-semibold">
+                                JSON file already uploaded: {ppdJsonUploadedConfig.fileName || ppdJsonFileName}
+                              </span>
+                            ) : (
+                              <span className="text-gray-500 dark:text-gray-400">No file selected</span>
+                            )}
+                          </p>
+                          {ppdJsonLocalFile || ppdJsonUploadedConfig ? (
+                            <button
+                              type="button"
+                              className="text-sm font-semibold text-red-700 underline dark:text-red-400"
+                              onClick={() => {
+                                setPpdJsonLocalFile(null);
+                                setPpdJsonFileName("");
+                                setPpdJsonUploadedConfig(null);
+                                if (ppdJsonFileInputRef.current) ppdJsonFileInputRef.current.value = "";
+                                clearFieldHighlight("ppd-jsonFile");
+                              }}
+                            >
+                              Remove file
+                            </button>
+                          ) : null}
+                        </div>
+                        {requiredHint("ppd-jsonFile")}
+                      </div>
+                    </div>
+
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-ppd-hubSerial" className="sm:col-span-2">
                         <SerialInput
@@ -5831,7 +6263,7 @@ export function NewSubmissionForm() {
                           value={ppdHubSerial}
                           placeholder="Scan or type serial"
                           onChange={(v) => {
-                            setPpdHubSerial(v);
+                            setPpdHubSerial(normalizePpdSerialInput(v));
                             clearFieldHighlight("ppd-hubSerial");
                           }}
                         />
@@ -5864,7 +6296,10 @@ export function NewSubmissionForm() {
                             value={ppdCameraSerialsByLocation[key]}
                             placeholder="Scan or type serial"
                             onChange={(v) => {
-                              setPpdCameraSerialsByLocation((prev) => ({ ...prev, [key]: v }));
+                              setPpdCameraSerialsByLocation((prev) => ({
+                                ...prev,
+                                [key]: normalizePpdSerialInput(v),
+                              }));
                               clearFieldHighlight(`ppd-cameraSerial-${key}`);
                             }}
                           />
@@ -5887,22 +6322,6 @@ export function NewSubmissionForm() {
                         }}
                       />
                       {requiredHint("ppd-clientApproval")}
-                    </div>
-
-                    <div id="field-ppd-jsonFileName">
-                      <label className={fieldLabelClass("ppd-jsonFileName")}>
-                        Name of JSON file sent to PM
-                        <RequiredMark />
-                      </label>
-                      <input
-                        className={fieldInputClass("ppd-jsonFileName")}
-                        value={ppdJsonFileName}
-                        onChange={(e) => {
-                          setPpdJsonFileName(e.target.value);
-                          clearFieldHighlight("ppd-jsonFileName");
-                        }}
-                      />
-                      {requiredHint("ppd-jsonFileName")}
                     </div>
 
                     <div id="field-ppd-customBracketsNeeded">
@@ -6773,7 +7192,10 @@ export function NewSubmissionForm() {
                   <SummaryRow label="Hub serial #" value={ppdHubSerial} />
                   <SummaryRow label="Camera serials" value={ppdCameraSerialsReviewSummary} />
                   <SummaryRow label="Client rep. approval" value={ppdClientApproval} />
-                  <SummaryRow label="JSON to PM" value={ppdJsonFileName} />
+                  <SummaryRow
+                    label="PPD JSON file"
+                    value={ppdJsonLocalFile?.name || ppdJsonFileName || "—"}
+                  />
                   <SummaryRow label="Modifications or custom brackets needed?" value={ppdCustomBracketsNeeded} />
                   {ppdCustomBracketsNeeded === "Yes" ? (
                     <SummaryRow label="Notes (modifications / brackets)" value={ppdCustomBracketNotes} />
@@ -7050,15 +7472,15 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/companies");
+    router.replace("/home");
   }, [router]);
 
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl px-4 sm:px-5 sm:py-2">
         <section className="rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-          <p className="text-sm font-medium text-gray-700">Redirecting to company selection...</p>
-          <Link href="/companies" className="mt-2 inline-block text-sm font-semibold text-blue-700 hover:underline">
+          <p className="text-sm font-medium text-gray-700">Opening home...</p>
+          <Link href="/home" className="mt-2 inline-block text-sm font-semibold text-blue-700 hover:underline">
             Continue
           </Link>
         </section>

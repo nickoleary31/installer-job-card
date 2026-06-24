@@ -21,6 +21,37 @@ function stringOrEmpty(v: unknown) {
   return typeof v === "string" ? v : "";
 }
 
+function normalizePpdJsonConfigForm(raw: unknown): JobCardPpdPayload["jsonConfigForm"] {
+  if (!isRecord(raw)) return undefined;
+  return {
+    make: stringOrEmpty(raw.make),
+    model: stringOrEmpty(raw.model),
+    unitNumber: stringOrEmpty(raw.unitNumber),
+    notes: stringOrEmpty(raw.notes),
+  };
+}
+
+function normalizePpdJsonConfigFilePayload(raw: unknown): JobCardPpdPayload["jsonConfigFile"] {
+  if (!isRecord(raw)) return undefined;
+  if (!stringOrEmpty(raw.fileName).trim() && !stringOrEmpty(raw.storagePath).trim()) return undefined;
+  const cid = raw.customerId;
+  const customerId =
+    cid === null ? null : typeof cid === "string" && cid.trim() ? cid.trim() : null;
+  return {
+    fileName: stringOrEmpty(raw.fileName),
+    storagePath: stringOrEmpty(raw.storagePath),
+    publicUrl: stringOrEmpty(raw.publicUrl),
+    customerId,
+    projectId: stringOrEmpty(raw.projectId),
+    companyId: stringOrEmpty(raw.companyId),
+    make: stringOrEmpty(raw.make),
+    model: stringOrEmpty(raw.model),
+    unitNumber: stringOrEmpty(raw.unitNumber),
+    notes: stringOrEmpty(raw.notes),
+    uploadedAt: stringOrEmpty(raw.uploadedAt),
+  };
+}
+
 function normalizePpdPayload(raw: unknown): JobCardPpdPayload | undefined {
   if (!isRecord(raw)) return undefined;
   const serialsRaw = isRecord(raw.cameraSerialsByLocation) ? raw.cameraSerialsByLocation : {};
@@ -31,6 +62,8 @@ function normalizePpdPayload(raw: unknown): JobCardPpdPayload | undefined {
   const cameraLocations = Array.isArray(raw.cameraLocations)
     ? raw.cameraLocations.filter((x): x is string => typeof x === "string")
     : [];
+  const jsonConfigForm = normalizePpdJsonConfigForm(raw.jsonConfigForm);
+  const jsonConfigFile = normalizePpdJsonConfigFilePayload(raw.jsonConfigFile);
   return {
     hubSerial: stringOrEmpty(raw.hubSerial),
     cameraLocations,
@@ -40,6 +73,8 @@ function normalizePpdPayload(raw: unknown): JobCardPpdPayload | undefined {
     customBracketNotes: stringOrEmpty(raw.customBracketNotes),
     clientApproval: stringOrEmpty(raw.clientApproval),
     jsonFileName: stringOrEmpty(raw.jsonFileName),
+    ...(jsonConfigForm ? { jsonConfigForm } : {}),
+    ...(jsonConfigFile ? { jsonConfigFile } : {}),
     relaysUsedForSpeedControl: stringOrEmpty(raw.relaysUsedForSpeedControl),
     redWireDescription: stringOrEmpty(raw.redWireDescription),
     blackWireDescription: stringOrEmpty(raw.blackWireDescription),

@@ -29,6 +29,29 @@ export type CoreJobFields = {
   installerName: string;
 };
 
+/** Metadata for uploaded PPD JSON config (Supabase Storage + site repository). */
+export type JobCardPpdJsonConfigFile = {
+  fileName: string;
+  storagePath: string;
+  publicUrl: string;
+  customerId: string | null;
+  projectId: string;
+  companyId: string;
+  make: string;
+  model: string;
+  unitNumber: string;
+  notes: string;
+  uploadedAt: string;
+};
+
+/** Form snapshot for email / preview (make/model/unit/notes alongside JSON file). */
+export type JobCardPpdJsonConfigForm = {
+  make: string;
+  model: string;
+  unitNumber: string;
+  notes: string;
+};
+
 /** PPD text fields included on submission when PPD hardware is selected. */
 export type JobCardPpdPayload = {
   hubSerial: string;
@@ -38,7 +61,12 @@ export type JobCardPpdPayload = {
   customBracketsNeeded: string;
   customBracketNotes: string;
   clientApproval: string;
+  /** Display / legacy: human-readable file name (selected upload or typed label). */
   jsonFileName: string;
+  /** Set after successful upload with submission email. */
+  jsonConfigFile?: JobCardPpdJsonConfigFile;
+  /** Mirrors PPD JSON section fields for email when upload not yet stored. */
+  jsonConfigForm?: JobCardPpdJsonConfigForm;
   relaysUsedForSpeedControl: string;
   redWireDescription: string;
   blackWireDescription: string;
@@ -262,6 +290,23 @@ function formatPpdInstallLines(ppd: JobCardPpdPayload): string[] {
   lines.push(`Custom bracket notes: ${textOrDash(ppd.customBracketNotes)}`);
   lines.push(`Client approval: ${textOrDash(ppd.clientApproval)}`);
   lines.push(`JSON file name: ${textOrDash(ppd.jsonFileName)}`);
+  if (ppd.jsonConfigFile) {
+    const j = ppd.jsonConfigFile;
+    lines.push(`PPD JSON — make: ${textOrDash(j.make)}`);
+    lines.push(`PPD JSON — model: ${textOrDash(j.model)}`);
+    lines.push(`PPD JSON — unit #: ${textOrDash(j.unitNumber)}`);
+    if (j.notes?.trim()) lines.push(`PPD JSON — notes: ${textOrDash(j.notes)}`);
+    lines.push(`PPD JSON file (uploaded): ${textOrDash(j.fileName)}`);
+    lines.push(`PPD JSON storage path: ${textOrDash(j.storagePath)}`);
+    if (j.publicUrl?.trim()) lines.push(`PPD JSON link: ${j.publicUrl.trim()}`);
+    lines.push(`PPD JSON uploaded: ${textOrDash(j.uploadedAt)}`);
+  } else if (ppd.jsonConfigForm) {
+    const jf = ppd.jsonConfigForm;
+    lines.push(`PPD JSON — make: ${textOrDash(jf.make)}`);
+    lines.push(`PPD JSON — model: ${textOrDash(jf.model)}`);
+    lines.push(`PPD JSON — unit #: ${textOrDash(jf.unitNumber)}`);
+    if (jf.notes?.trim()) lines.push(`PPD JSON — notes: ${textOrDash(jf.notes)}`);
+  }
   lines.push(`Relays used for speed control: ${displayValue(ppd.relaysUsedForSpeedControl)}`);
   lines.push(`Red wire: ${displayValue(ppd.redWireDescription)}`);
   lines.push(`Black wire: ${displayValue(ppd.blackWireDescription)}`);

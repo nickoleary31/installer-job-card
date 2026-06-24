@@ -25,6 +25,14 @@ export type OfflineJobCardDraftRecord<TDraftData> = {
   workOrder?: string;
   /** @deprecated Legacy rows — listing uses selectedSections */
   hardwareSummary?: string;
+  attachments?: {
+    ppdJsonFile?: {
+      name: string;
+      type: string;
+      lastModified: number;
+      data: Blob;
+    };
+  };
 };
 
 /** Set before navigating to /new-submission to resume a specific IndexedDB draft (offline-safe). */
