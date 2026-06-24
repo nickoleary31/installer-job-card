@@ -27,7 +27,7 @@ export default function LoginPage() {
         password,
       });
       if (signInError) throw signInError;
-      router.push("/companies");
+      router.push("/home");
       router.refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to log in";
@@ -72,7 +72,7 @@ export default function LoginPage() {
           {error ? <p className="mt-3 text-sm font-semibold text-red-700">{error}</p> : null}
 
           <div className="mt-5 flex items-center justify-between">
-            <Link href="/companies" className="text-sm font-semibold text-blue-700 hover:underline">
+            <Link href="/home" className="text-sm font-semibold text-blue-700 hover:underline">
               Back to app
             </Link>
             <button

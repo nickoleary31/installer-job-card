@@ -662,6 +662,8 @@ export default function CompanyProjectsPage() {
       cachedAt: new Date().toISOString(),
       profile: {
         globalRole: userContext.globalRole,
+        displayName: userContext.displayName,
+        email: userContext.email,
         companyIds: [...userContext.companyIds],
         companyRolesById: { ...userContext.companyRolesById },
       },

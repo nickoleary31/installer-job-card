@@ -27,6 +27,8 @@ export type StarterDataSnapshot = {
   cachedAt: string;
   profile: {
     globalRole: "admin" | "technician" | null;
+    displayName?: string | null;
+    email?: string | null;
     companyIds: string[];
     companyRolesById: Record<string, "admin" | "technician">;
   };

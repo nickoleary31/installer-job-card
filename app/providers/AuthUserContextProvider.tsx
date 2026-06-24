@@ -11,6 +11,8 @@ type AuthUserContextState = {
 
 const emptyContext: AuthUserContext = {
   userId: null,
+  displayName: null,
+  email: null,
   globalRole: null,
   companyIds: [],
   companyRolesById: {},
@@ -48,6 +50,8 @@ export function AuthUserContextProvider({ children }: { children: React.ReactNod
         }
         console.info("[auth-context]", {
           userId: context.userId,
+          displayName: context.displayName,
+          email: context.email,
           globalRole: context.globalRole,
           companyIds: context.companyIds,
           companyRolesById: context.companyRolesById,

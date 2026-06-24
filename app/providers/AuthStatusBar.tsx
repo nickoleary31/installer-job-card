@@ -64,6 +64,9 @@ export default function AuthStatusBar() {
     }
   };
 
+  const signedInIdentity =
+    context.displayName?.trim() || context.email?.trim() || context.userId || null;
+
   return (
     <div className="border-b border-gray-200 bg-white px-4 py-2 text-xs text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
       {hasMounted && !isOnline ? (
@@ -73,10 +76,10 @@ export default function AuthStatusBar() {
       ) : null}
       <div className="mx-auto w-full max-w-6xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
+          <Link href="/home" className="flex min-w-0 items-center gap-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <Image src="/icon.png" alt="Installer Sheetz" width={24} height={24} className="h-6 w-6 rounded" />
             <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">Installer Sheetz</p>
-          </div>
+          </Link>
           <div className="flex items-center gap-2">
             {context.userId ? (
               <button
@@ -97,8 +100,11 @@ export default function AuthStatusBar() {
             ) : null}
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="mt-2 hidden flex-wrap items-center justify-between gap-2 sm:flex">
           <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Link href="/home" className="font-semibold text-blue-700 hover:underline dark:text-blue-300">
+              Home
+            </Link>
             <Link
               href="/companies"
               className="font-semibold text-blue-700 hover:underline dark:text-blue-300"
@@ -122,7 +128,7 @@ export default function AuthStatusBar() {
             {loading
               ? "Checking session..."
               : context.userId
-                ? `Signed in as ${context.userId}`
+                ? `Signed in as ${signedInIdentity}`
                 : "Not signed in"}
           </p>
         </div>

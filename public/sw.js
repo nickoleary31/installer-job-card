@@ -1,8 +1,11 @@
-const CACHE_NAME = "installer-shell-v6";
+const CACHE_NAME = "installer-shell-v7";
 
 /** Same-origin shells — open each route online once for freshest offline replay */
 const APP_SHELL_URLS = [
   "/",
+  "/home",
+  "/installs",
+  "/expenses",
   "/companies",
   "/new-submission",
   "/offline-drafts",
@@ -133,6 +136,29 @@ async function handleNavigate(request) {
       if (companiesDoc) {
         console.log("[SW] navigation fallback used: cached /companies (app shell fallback)");
         return companiesDoc;
+      }
+    }
+
+    /** Dashboard hubs — prefer exact shell; otherwise reuse cached home shell */
+    if (
+      pathname === "/home" ||
+      pathname.startsWith("/home/") ||
+      pathname === "/installs" ||
+      pathname.startsWith("/installs/") ||
+      pathname === "/expenses" ||
+      pathname.startsWith("/expenses/")
+    ) {
+      let hubDoc = await cache.match(pathname);
+      if (!hubDoc) hubDoc = await cache.match(`${self.origin}${pathname}`);
+      if (hubDoc) {
+        console.log("[SW] navigation fallback used: cached hub shell", pathname);
+        return hubDoc;
+      }
+      let homeDoc = await cache.match("/home");
+      if (!homeDoc) homeDoc = await cache.match(`${self.origin}/home`);
+      if (homeDoc) {
+        console.log("[SW] navigation fallback used: cached /home for hub route", pathname);
+        return homeDoc;
       }
     }
 

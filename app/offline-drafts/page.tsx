@@ -1,7 +1,6 @@
 "use client";
 
 /* Full-document <a href> navigation is required for reliable offline/PWA replay (Next <Link> prefetch/router is not). */
-/* eslint-disable @next/next/no-html-link-for-pages */
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -83,8 +82,11 @@ export default function OfflineDraftsPage() {
       <div className="mx-auto max-w-2xl space-y-5">
         <header>
           <p className="flex flex-wrap gap-x-4 gap-y-1">
-            <a href="/companies" className="text-sm font-semibold text-blue-700 hover:underline">
-              ← Companies
+            <a href="/home" className="text-sm font-semibold text-blue-700 hover:underline">
+              ← Home
+            </a>
+            <a href="/installs" className="text-sm font-semibold text-blue-700 hover:underline">
+              Installs
             </a>
             <a href="/new-submission" className="text-sm font-semibold text-blue-700 hover:underline">
               New submission

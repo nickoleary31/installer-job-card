@@ -348,6 +348,8 @@ export default function CompaniesPage() {
       cachedAt: new Date().toISOString(),
       profile: {
         globalRole: context.globalRole,
+        displayName: context.displayName,
+        email: context.email,
         companyIds: [...context.companyIds],
         companyRolesById: { ...context.companyRolesById },
       },
