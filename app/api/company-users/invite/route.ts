@@ -1,22 +1,14 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-type RequestBody = {
-  companyId?: unknown;
-  email?: unknown;
-  displayName?: unknown;
-  role?: unknown;
-};
-
-type RequesterProfile = {
-  id: string;
-  global_role: "admin" | "technician" | null;
-};
-
-type RequesterMembership = {
-  role: "admin" | "technician";
-  is_active: boolean;
-};
+import {
+  asString,
+  authorizeCompanyUserManager,
+  createServiceRoleClient,
+  extractBearerToken,
+  getSupabaseServerEnv,
+  isValidEmail,
+  isValidRole,
+  missingConfigError,
+} from "@/lib/company-users/admin-api";
 
 type UserProfileRow = {
   id: string;
@@ -26,20 +18,8 @@ type UserProfileRow = {
   is_active: boolean | null;
 };
 
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function isValidRole(value: string): value is "admin" | "technician" {
-  return value === "admin" || value === "technician";
-}
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
 async function findAuthUserByEmail(
-  serviceClient: { auth: { admin: { listUsers: (args: { page: number; perPage: number }) => Promise<{ data: { users: Array<{ id: string; email?: string | null }> } | null; error: { message: string } | null }> } } },
+  serviceClient: NonNullable<ReturnType<typeof createServiceRoleClient>>,
   email: string,
 ): Promise<{ id: string; email?: string } | null> {
   let page = 1;
@@ -56,40 +36,30 @@ async function findAuthUserByEmail(
 }
 
 export async function POST(req: Request) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+  const env = getSupabaseServerEnv();
 
-  if (!serviceRoleKey) {
-    return NextResponse.json({ error: "Server is not configured for user invitations." }, { status: 500 });
+  if (env.missingServiceRole.length > 0) {
+    return NextResponse.json({ error: missingConfigError(env.missingServiceRole) }, { status: 500 });
   }
-  if (!url || !anonKey) {
-    return NextResponse.json({ error: "Server is missing Supabase configuration." }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get("authorization") || "";
-  const bearerPrefix = "Bearer ";
-  const token = authHeader.startsWith(bearerPrefix) ? authHeader.slice(bearerPrefix.length).trim() : "";
-  if (!token) {
-    return NextResponse.json({ error: "Missing authorization token." }, { status: 401 });
+  if (env.missingPublic.length > 0) {
+    return NextResponse.json(
+      {
+        error: `User invitations are unavailable because ${env.missingPublic.join(" and ")} ${
+          env.missingPublic.length === 1 ? "is" : "are"
+        } not configured on the server.`,
+      },
+      { status: 500 },
+    );
   }
 
-  const anonClient = createClient(url, anonKey);
-  const serviceClient = createClient(url, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-
-  const {
-    data: { user: requesterUser },
-    error: requesterAuthError,
-  } = await anonClient.auth.getUser(token);
-  if (requesterAuthError || !requesterUser) {
-    return NextResponse.json({ error: "Unauthorized requester." }, { status: 401 });
+  const serviceClient = createServiceRoleClient(env);
+  if (!serviceClient) {
+    return NextResponse.json({ error: missingConfigError(["SUPABASE_SERVICE_ROLE_KEY"]) }, { status: 500 });
   }
 
-  let rawBody: RequestBody;
+  let rawBody: { companyId?: unknown; email?: unknown; displayName?: unknown; role?: unknown };
   try {
-    rawBody = (await req.json()) as RequestBody;
+    rawBody = (await req.json()) as typeof rawBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
@@ -99,36 +69,16 @@ export async function POST(req: Request) {
   const displayName = asString(rawBody.displayName).trim();
   const role = asString(rawBody.role).trim();
 
-  if (!companyId) return NextResponse.json({ error: "Company is required." }, { status: 400 });
   if (!isValidEmail(email)) return NextResponse.json({ error: "A valid email is required." }, { status: 400 });
   if (!isValidRole(role)) return NextResponse.json({ error: "Role must be admin or technician." }, { status: 400 });
 
-  const { data: requesterProfile, error: requesterProfileError } = await serviceClient
-    .from("user_profiles")
-    .select("id, global_role")
-    .eq("id", requesterUser.id)
-    .maybeSingle<RequesterProfile>();
-  if (requesterProfileError || !requesterProfile) {
-    return NextResponse.json({ error: "Requester profile not found." }, { status: 403 });
-  }
-
-  const isGlobalAdmin = requesterProfile.global_role === "admin";
-  let isActiveCompanyAdmin = false;
-  if (!isGlobalAdmin) {
-    const { data: requesterMembership, error: requesterMembershipError } = await serviceClient
-      .from("company_memberships")
-      .select("role, is_active")
-      .eq("company_id", companyId)
-      .eq("user_id", requesterUser.id)
-      .maybeSingle<RequesterMembership>();
-    if (requesterMembershipError) {
-      return NextResponse.json({ error: "Failed to validate requester permissions." }, { status: 403 });
-    }
-    isActiveCompanyAdmin = !!requesterMembership && requesterMembership.role === "admin" && requesterMembership.is_active;
-  }
-
-  if (!isGlobalAdmin && !isActiveCompanyAdmin) {
-    return NextResponse.json({ error: "Only global admins or active company admins can invite users." }, { status: 403 });
+  const auth = await authorizeCompanyUserManager({
+    env,
+    accessToken: extractBearerToken(req),
+    companyId,
+  });
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   const { data: existingProfileRows, error: existingProfileError } = await serviceClient
@@ -146,24 +96,29 @@ export async function POST(req: Request) {
   let operationMessage = "Existing user linked to company.";
 
   if (!targetUserId) {
-    const existingAuthUser = await findAuthUserByEmail(serviceClient, email);
-    if (existingAuthUser?.id) {
-      targetUserId = existingAuthUser.id;
-      wasExistingUser = true;
-      operationMessage = "Existing auth user linked to company.";
-      const { error: profileUpsertError } = await serviceClient.from("user_profiles").upsert(
-        {
-          id: targetUserId,
-          email,
-          display_name: displayName || null,
-          global_role: "technician",
-          is_active: true,
-        },
-        { onConflict: "id" },
-      );
-      if (profileUpsertError) {
-        return NextResponse.json({ error: profileUpsertError.message }, { status: 500 });
+    try {
+      const existingAuthUser = await findAuthUserByEmail(serviceClient, email);
+      if (existingAuthUser?.id) {
+        targetUserId = existingAuthUser.id;
+        wasExistingUser = true;
+        operationMessage = "Existing auth user linked to company.";
+        const { error: profileUpsertError } = await serviceClient.from("user_profiles").upsert(
+          {
+            id: targetUserId,
+            email,
+            display_name: displayName || null,
+            global_role: "technician",
+            is_active: true,
+          },
+          { onConflict: "id" },
+        );
+        if (profileUpsertError) {
+          return NextResponse.json({ error: profileUpsertError.message }, { status: 500 });
+        }
       }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to look up existing auth users.";
+      return NextResponse.json({ error: message }, { status: 500 });
     }
   }
 
@@ -192,6 +147,22 @@ export async function POST(req: Request) {
     if (profileInsertError) {
       return NextResponse.json({ error: profileInsertError.message }, { status: 500 });
     }
+  } else if (existingProfile) {
+    const { data: existingMembership } = await serviceClient
+      .from("company_memberships")
+      .select("is_active")
+      .eq("company_id", companyId)
+      .eq("user_id", targetUserId)
+      .maybeSingle<{ is_active: boolean }>();
+    if (existingMembership?.is_active) {
+      return NextResponse.json({
+        ok: true,
+        userId: targetUserId,
+        existingUser: true,
+        alreadyActive: true,
+        message: "This user is already an active member of this company. Use Add Existing User instead of inviting again.",
+      });
+    }
   }
 
   const { error: membershipError } = await serviceClient.from("company_memberships").upsert(
@@ -202,7 +173,7 @@ export async function POST(req: Request) {
       is_active: true,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: "company_id,user_id" },
+    { onConflict: "user_id,company_id" },
   );
   if (membershipError) {
     return NextResponse.json({ error: membershipError.message }, { status: 500 });

@@ -30,6 +30,25 @@ import {
 } from "@/lib/job-card-submission";
 import { supabase } from "@/lib/supabase/client";
 import {
+  LINXUP_ASSET_TRACKER_FORM_ID,
+  LINXUP_LINXCAM_FORM_ID,
+  LINXUP_VEHICLE_TRACKER_FORM_ID,
+  LINXUP_VEHICLE_TYPE_OPTIONS,
+  buildLinxUpPayload,
+  isLinxUpAssetTrackerFormId,
+  isLinxUpLinxCamFormId,
+  isLinxUpSectionKey,
+  isLinxUpVehicleTrackerFormId,
+} from "@/lib/linxup";
+import {
+  buildFormScopedAutosaveKey,
+  getFormDefinitionBySectionKey,
+  getFormsForCompanyName,
+  isSectionKeyAllowedForCompany,
+  resolveCompanySlug,
+  type FormDefinition,
+} from "@/lib/form-registry";
+import {
   deleteOfflineJobCardDraft,
   getOfflineJobCardDraftById,
   INSTALLER_OFFLINE_DRAFT_ID_KEY,
@@ -161,6 +180,33 @@ type StoredJobCardDraft = {
     ppd?: StoredPpdDraftPayload;
     /** CP4 text/select fields only (local photos are not in draft JSON). Omit when CP4 not selected or on older drafts. */
     cp4?: StoredCp4DraftPayload;
+    /** Registry form id when known. */
+    formId?: string;
+    /** Registry submission type. */
+    submissionType?: string;
+    /** Shared LinxUp profile fields (product identity is formId/submissionType). */
+    linxup?: {
+      vehicleType: string;
+      hoursMiles: string;
+      year?: string;
+      powerConnectionDescription?: string;
+      groundConnectionDescription?: string;
+      ignitionConnectionDescription?: string;
+      vehicleTracker?: {
+        obdPortConnected: string;
+        installationNotes: string;
+        powerConnectionDescription?: string;
+        groundConnectionDescription?: string;
+        ignitionConnectionDescription?: string;
+      };
+      linxCam?: {
+        obdPortConnected: string;
+        installationNotes?: string;
+        powerConnectionDescription?: string;
+        groundConnectionDescription?: string;
+        ignitionConnectionDescription?: string;
+      };
+    };
     photoUploads?: UploadedPhotoMetadata[];
     photoSummary: {
       vac4PhotoFileNames: VacPhotoFileNames;
@@ -200,9 +246,11 @@ type OfflineJobCardDraftPayload = OfflineJobCardDraftRecord<StoredJobCardDraft["
   };
 };
 
-function getAutosaveKey(companyId: string, projectId: string): string {
+function getAutosaveKey(companyId: string, projectId: string, formId?: string): string {
   const c = companyId.trim();
   const p = projectId.trim();
+  const f = (formId || "").trim();
+  if (c && p && f) return buildFormScopedAutosaveKey({ companyId: c, projectId: p, formId: f });
   if (c && p) return `${JOB_CARD_AUTOSAVE_KEY}:${c}:${p}`;
   return JOB_CARD_AUTOSAVE_KEY;
 }
@@ -233,20 +281,61 @@ function autosavePayloadMatchesSelectedContext(
   return false;
 }
 
-function readMatchingAutosave(selectedCompanyId: string, selectedProjectId: string): JobCardAutosavePayload | null {
+function readMatchingAutosave(
+  selectedCompanyId: string,
+  selectedProjectId: string,
+  formId?: string,
+): JobCardAutosavePayload | null {
   if (typeof window === "undefined") return null;
   const sc = selectedCompanyId.trim();
   const sp = selectedProjectId.trim();
-  const key = getAutosaveKey(sc, sp);
-  const parsed = parseJobCardAutosavePayload(window.localStorage.getItem(key));
-  if (parsed && autosavePayloadMatchesSelectedContext(parsed, sc, sp)) return parsed;
+  const f = (formId || "").trim();
+
+  if (f) {
+    const scoped = parseJobCardAutosavePayload(window.localStorage.getItem(getAutosaveKey(sc, sp, f)));
+    if (scoped && autosavePayloadMatchesSelectedContext(scoped, sc, sp)) return scoped;
+  }
+
+  // Legacy company+project key (pre form-scoped drafts) — restore for Powerfleet/Matrix compatibility.
+  const legacy = parseJobCardAutosavePayload(window.localStorage.getItem(getAutosaveKey(sc, sp)));
+  if (legacy && autosavePayloadMatchesSelectedContext(legacy, sc, sp)) {
+    if (!f) return legacy;
+    const legacyFormId =
+      (legacy.data?.formId || "").trim() ||
+      getFormDefinitionBySectionKey(legacy.data?.hardwareSelection?.primary)?.id ||
+      "";
+    if (!legacyFormId || legacyFormId === f) return legacy;
+  }
+
+  // Do not scan arbitrary form-scoped keys when formId is unknown — that can restore a
+  // Vehicle Tracker draft into a LinxCam session (or vice versa).
+
   return null;
 }
 
-function clearMatchingAutosave(selectedCompanyId: string, selectedProjectId: string): void {
+function clearMatchingAutosave(
+  selectedCompanyId: string,
+  selectedProjectId: string,
+  formId?: string,
+): void {
   if (typeof window === "undefined") return;
+  const sc = selectedCompanyId.trim();
+  const sp = selectedProjectId.trim();
+  const f = (formId || "").trim();
   try {
-    window.localStorage.removeItem(getAutosaveKey(selectedCompanyId.trim(), selectedProjectId.trim()));
+    if (f) {
+      window.localStorage.removeItem(getAutosaveKey(sc, sp, f));
+    }
+    window.localStorage.removeItem(getAutosaveKey(sc, sp));
+    if (!f && sc && sp) {
+      const prefix = `${JOB_CARD_AUTOSAVE_KEY}:${sc}:${sp}:`;
+      const toRemove: string[] = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (key && key.startsWith(prefix)) toRemove.push(key);
+      }
+      for (const key of toRemove) window.localStorage.removeItem(key);
+    }
   } catch {
     // ignore
   }
@@ -280,6 +369,9 @@ type ProjectAutofillRow = {
 type CustomerLookupRow = {
   customer_name: string | null;
   full_address: string | null;
+  site_contact_name?: string | null;
+  contact_number?: string | null;
+  contact_email?: string | null;
 };
 
 type ProjectContextPayload = {
@@ -320,6 +412,9 @@ function normalizeUppercaseCoreJob(core: CoreJobFields): CoreJobFields {
     equipmentModel: formatUpper(core.equipmentModel),
     equipmentSerial: formatUpper(core.equipmentSerial),
     unitNumber: formatUpper(core.unitNumber),
+    primaryContact: core.primaryContact ?? "",
+    contactNumber: core.contactNumber ?? "",
+    contactEmail: core.contactEmail ?? "",
   };
 }
 
@@ -344,15 +439,6 @@ function readMigratedDraftsFromStorage(): StoredJobCardDraft[] {
     return [];
   }
 }
-
-const hardwareTypes = [
-  "VAC4",
-  "CP4",
-  "PPD",
-  "Speed Transmon",
-  "Speed SSC",
-  "FTxw",
-];
 
 /** PPD local-only photo slots (no Supabase upload in this phase). */
 const PPD_PHOTO_KEYS = [
@@ -391,10 +477,50 @@ const CP4_PHOTO_KEYS = [
 ] as const;
 type Cp4PhotoKey = (typeof CP4_PHOTO_KEYS)[number];
 
+/** LinxUp Asset Tracker photo slots (uploaded like CP4; metadata in `photoMetadataByField`). */
+const LINXUP_AT_PHOTO_KEYS = [
+  "assetTrackerTag",
+  "powerConnection",
+  "groundConnection",
+  "ignitionConnection",
+  "finalInstall",
+] as const;
+type LinxupAtPhotoKey = (typeof LINXUP_AT_PHOTO_KEYS)[number];
+
+/** LinxUp Vehicle Tracker photo slots. */
+const LINXUP_VT_PHOTO_KEYS = [
+  "vehicleTrackerTag",
+  "greenActivityLight",
+  "installation",
+  "finalInstall",
+  "powerConnection",
+  "groundConnection",
+  "ignitionConnection",
+] as const;
+type LinxupVtPhotoKey = (typeof LINXUP_VT_PHOTO_KEYS)[number];
+
+/** LinxUp LinxCam photo slots. */
+const LINXUP_LC_PHOTO_KEYS = [
+  "linxCamTag",
+  "greenActivityLight",
+  "installation",
+  "finalInstall",
+  "powerConnection",
+  "groundConnection",
+  "ignitionConnection",
+] as const;
+type LinxupLcPhotoKey = (typeof LINXUP_LC_PHOTO_KEYS)[number];
+
 /** Namespaced Supabase `fieldName` / metadata keys for PPD job-card photos (draft + submission). */
 type PpdUploadFieldName = { [K in PpdPhotoKey]: `ppd_${K}` }[PpdPhotoKey];
 /** Namespaced Supabase `fieldName` / metadata keys for CP4 job-card photos (draft + submission). */
 type Cp4UploadFieldName = { [K in Cp4PhotoKey]: `cp4_${K}` }[Cp4PhotoKey];
+/** Namespaced Supabase `fieldName` / metadata keys for LinxUp Asset Tracker photos. */
+type LinxupAtUploadFieldName = { [K in LinxupAtPhotoKey]: `linxup_at_${K}` }[LinxupAtPhotoKey];
+/** Namespaced Supabase `fieldName` / metadata keys for LinxUp Vehicle Tracker photos. */
+type LinxupVtUploadFieldName = { [K in LinxupVtPhotoKey]: `linxup_vt_${K}` }[LinxupVtPhotoKey];
+/** Namespaced Supabase `fieldName` / metadata keys for LinxUp LinxCam photos. */
+type LinxupLcUploadFieldName = { [K in LinxupLcPhotoKey]: `linxup_lc_${K}` }[LinxupLcPhotoKey];
 
 function ppdUploadFieldFor(key: PpdPhotoKey): PpdUploadFieldName {
   return `ppd_${key}` as PpdUploadFieldName;
@@ -402,11 +528,29 @@ function ppdUploadFieldFor(key: PpdPhotoKey): PpdUploadFieldName {
 function cp4UploadFieldFor(key: Cp4PhotoKey): Cp4UploadFieldName {
   return `cp4_${key}` as Cp4UploadFieldName;
 }
+function linxupAtUploadFieldFor(key: LinxupAtPhotoKey): LinxupAtUploadFieldName {
+  return `linxup_at_${key}` as LinxupAtUploadFieldName;
+}
+function linxupVtUploadFieldFor(key: LinxupVtPhotoKey): LinxupVtUploadFieldName {
+  return `linxup_vt_${key}` as LinxupVtUploadFieldName;
+}
+function linxupLcUploadFieldFor(key: LinxupLcPhotoKey): LinxupLcUploadFieldName {
+  return `linxup_lc_${key}` as LinxupLcUploadFieldName;
+}
 function ppdKeyFromUploadField(field: PpdUploadFieldName): PpdPhotoKey {
   return field.slice(4) as PpdPhotoKey;
 }
 function cp4KeyFromUploadField(field: Cp4UploadFieldName): Cp4PhotoKey {
   return field.slice(4) as Cp4PhotoKey;
+}
+function linxupAtKeyFromUploadField(field: LinxupAtUploadFieldName): LinxupAtPhotoKey {
+  return field.slice("linxup_at_".length) as LinxupAtPhotoKey;
+}
+function linxupVtKeyFromUploadField(field: LinxupVtUploadFieldName): LinxupVtPhotoKey {
+  return field.slice("linxup_vt_".length) as LinxupVtPhotoKey;
+}
+function linxupLcKeyFromUploadField(field: LinxupLcUploadFieldName): LinxupLcPhotoKey {
+  return field.slice("linxup_lc_".length) as LinxupLcPhotoKey;
 }
 
 /** CP4 text/select fields persisted on job card drafts (JSON). CP4 photos use `photoUploads` like VAC. */
@@ -454,6 +598,42 @@ function emptyCp4PhotoFiles(): Record<Cp4PhotoKey, File[]> {
 function emptyCp4PhotoErrors(): Record<Cp4PhotoKey, string | null> {
   const out = {} as Record<Cp4PhotoKey, string | null>;
   for (const k of CP4_PHOTO_KEYS) out[k] = null;
+  return out;
+}
+
+function emptyLinxupAtPhotoFiles(): Record<LinxupAtPhotoKey, File[]> {
+  const out = {} as Record<LinxupAtPhotoKey, File[]>;
+  for (const k of LINXUP_AT_PHOTO_KEYS) out[k] = [];
+  return out;
+}
+
+function emptyLinxupAtPhotoErrors(): Record<LinxupAtPhotoKey, string | null> {
+  const out = {} as Record<LinxupAtPhotoKey, string | null>;
+  for (const k of LINXUP_AT_PHOTO_KEYS) out[k] = null;
+  return out;
+}
+
+function emptyLinxupVtPhotoFiles(): Record<LinxupVtPhotoKey, File[]> {
+  const out = {} as Record<LinxupVtPhotoKey, File[]>;
+  for (const k of LINXUP_VT_PHOTO_KEYS) out[k] = [];
+  return out;
+}
+
+function emptyLinxupVtPhotoErrors(): Record<LinxupVtPhotoKey, string | null> {
+  const out = {} as Record<LinxupVtPhotoKey, string | null>;
+  for (const k of LINXUP_VT_PHOTO_KEYS) out[k] = null;
+  return out;
+}
+
+function emptyLinxupLcPhotoFiles(): Record<LinxupLcPhotoKey, File[]> {
+  const out = {} as Record<LinxupLcPhotoKey, File[]>;
+  for (const k of LINXUP_LC_PHOTO_KEYS) out[k] = [];
+  return out;
+}
+
+function emptyLinxupLcPhotoErrors(): Record<LinxupLcPhotoKey, string | null> {
+  const out = {} as Record<LinxupLcPhotoKey, string | null>;
+  for (const k of LINXUP_LC_PHOTO_KEYS) out[k] = null;
   return out;
 }
 
@@ -617,7 +797,14 @@ type VehiclePictureFileNames = { [K in VehiclePictureKey]: string[] };
 type VehiclePictureFilesState = { [K in VehiclePictureKey]: File[] };
 type VehiclePictureUrlsState = { [K in VehiclePictureKey]: string[] };
 type VehiclePictureErrorsState = { [K in VehiclePictureKey]: string | null };
-type UploadFieldName = keyof VacPhotoFileNames | VehiclePictureKey | PpdUploadFieldName | Cp4UploadFieldName;
+type UploadFieldName =
+  | keyof VacPhotoFileNames
+  | VehiclePictureKey
+  | PpdUploadFieldName
+  | Cp4UploadFieldName
+  | LinxupAtUploadFieldName
+  | LinxupVtUploadFieldName
+  | LinxupLcUploadFieldName;
 type PhotoMetadataByFieldState = { [K in UploadFieldName]: UploadedPhotoMetadata[] };
 
 const emptyVehiclePictureFileNames = (): VehiclePictureFileNames => ({
@@ -652,6 +839,9 @@ const emptyPhotoMetadataByField = (): PhotoMetadataByFieldState => {
   o.vehicleRear = [];
   for (const k of PPD_PHOTO_KEYS) o[ppdUploadFieldFor(k)] = [];
   for (const k of CP4_PHOTO_KEYS) o[cp4UploadFieldFor(k)] = [];
+  for (const k of LINXUP_AT_PHOTO_KEYS) o[linxupAtUploadFieldFor(k)] = [];
+  for (const k of LINXUP_VT_PHOTO_KEYS) o[linxupVtUploadFieldFor(k)] = [];
+  for (const k of LINXUP_LC_PHOTO_KEYS) o[linxupLcUploadFieldFor(k)] = [];
   return o as PhotoMetadataByFieldState;
 };
 
@@ -706,6 +896,34 @@ const CP4_PHOTO_LABELS: Record<Cp4PhotoKey, string> = {
   alarmIn2: "CP4 — alarm IN 2",
 };
 
+const LINXUP_AT_PHOTO_LABELS: Record<LinxupAtPhotoKey, string> = {
+  assetTrackerTag: "Asset Tracker — tag",
+  powerConnection: "Asset Tracker — power connection",
+  groundConnection: "Asset Tracker — ground connection",
+  ignitionConnection: "Asset Tracker — ignition connection",
+  finalInstall: "Asset Tracker — final install",
+};
+
+const LINXUP_VT_PHOTO_LABELS: Record<LinxupVtPhotoKey, string> = {
+  vehicleTrackerTag: "Vehicle Tracker — tag",
+  greenActivityLight: "Vehicle Tracker — green activity light",
+  installation: "Vehicle Tracker — installation",
+  finalInstall: "Vehicle Tracker — final installation",
+  powerConnection: "Vehicle Tracker — power connection",
+  groundConnection: "Vehicle Tracker — ground connection",
+  ignitionConnection: "Vehicle Tracker — ignition connection",
+};
+
+const LINXUP_LC_PHOTO_LABELS: Record<LinxupLcPhotoKey, string> = {
+  linxCamTag: "LinxCam — tag",
+  greenActivityLight: "LinxCam — green activity light",
+  installation: "LinxCam — installation",
+  finalInstall: "LinxCam — final installation",
+  powerConnection: "LinxCam — power connection",
+  groundConnection: "LinxCam — ground connection",
+  ignitionConnection: "LinxCam — ignition connection",
+};
+
 const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
   ...PHOTO_FIELD_LABELS_BASE,
   ...Object.fromEntries(PPD_PHOTO_KEYS.map((k) => [ppdUploadFieldFor(k), PPD_PHOTO_LABELS[k]])) as Record<
@@ -714,6 +932,18 @@ const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
   >,
   ...Object.fromEntries(CP4_PHOTO_KEYS.map((k) => [cp4UploadFieldFor(k), CP4_PHOTO_LABELS[k]])) as Record<
     Cp4UploadFieldName,
+    string
+  >,
+  ...Object.fromEntries(LINXUP_AT_PHOTO_KEYS.map((k) => [linxupAtUploadFieldFor(k), LINXUP_AT_PHOTO_LABELS[k]])) as Record<
+    LinxupAtUploadFieldName,
+    string
+  >,
+  ...Object.fromEntries(LINXUP_VT_PHOTO_KEYS.map((k) => [linxupVtUploadFieldFor(k), LINXUP_VT_PHOTO_LABELS[k]])) as Record<
+    LinxupVtUploadFieldName,
+    string
+  >,
+  ...Object.fromEntries(LINXUP_LC_PHOTO_KEYS.map((k) => [linxupLcUploadFieldFor(k), LINXUP_LC_PHOTO_LABELS[k]])) as Record<
+    LinxupLcUploadFieldName,
     string
   >,
 };
@@ -734,6 +964,18 @@ function isPpdUploadField(f: UploadFieldName): f is PpdUploadFieldName {
 
 function isCp4UploadField(f: UploadFieldName): f is Cp4UploadFieldName {
   return CP4_PHOTO_KEYS.some((k) => f === cp4UploadFieldFor(k));
+}
+
+function isLinxupAtUploadField(f: UploadFieldName): f is LinxupAtUploadFieldName {
+  return LINXUP_AT_PHOTO_KEYS.some((k) => f === linxupAtUploadFieldFor(k));
+}
+
+function isLinxupVtUploadField(f: UploadFieldName): f is LinxupVtUploadFieldName {
+  return LINXUP_VT_PHOTO_KEYS.some((k) => f === linxupVtUploadFieldFor(k));
+}
+
+function isLinxupLcUploadField(f: UploadFieldName): f is LinxupLcUploadFieldName {
+  return LINXUP_LC_PHOTO_KEYS.some((k) => f === linxupLcUploadFieldFor(k));
 }
 
 function VAC4Section({ children }: { children: ReactNode }) {
@@ -1143,7 +1385,41 @@ export function NewSubmissionForm() {
     equipmentModel: "",
     equipmentSerial: "",
     installerName: "",
+    primaryContact: "",
+    contactNumber: "",
+    contactEmail: "",
   });
+  const [selectedCompanyName, setSelectedCompanyName] = useState<string | null>(null);
+  /** False until selected company name is resolved from localStorage company id (or confirmed missing). */
+  const [companyContextReady, setCompanyContextReady] = useState(false);
+  const [linxupVehicleType, setLinxupVehicleType] = useState("");
+  const [linxupHoursMiles, setLinxupHoursMiles] = useState("");
+  const [linxupYear, setLinxupYear] = useState("");
+  const [linxupPowerConnectionDescription, setLinxupPowerConnectionDescription] = useState("");
+  const [linxupGroundConnectionDescription, setLinxupGroundConnectionDescription] = useState("");
+  const [linxupIgnitionConnectionDescription, setLinxupIgnitionConnectionDescription] = useState("");
+  const [linxupAtPhotoFiles, setLinxupAtPhotoFiles] = useState<Record<LinxupAtPhotoKey, File[]>>(() => emptyLinxupAtPhotoFiles());
+  const [linxupAtPhotoErrors, setLinxupAtPhotoErrors] = useState<Record<LinxupAtPhotoKey, string | null>>(() =>
+    emptyLinxupAtPhotoErrors(),
+  );
+  const [linxupVtObdPortConnected, setLinxupVtObdPortConnected] = useState("");
+  const [linxupVtInstallationNotes, setLinxupVtInstallationNotes] = useState("");
+  const [linxupVtPowerConnectionDescription, setLinxupVtPowerConnectionDescription] = useState("");
+  const [linxupVtGroundConnectionDescription, setLinxupVtGroundConnectionDescription] = useState("");
+  const [linxupVtIgnitionConnectionDescription, setLinxupVtIgnitionConnectionDescription] = useState("");
+  const [linxupVtPhotoFiles, setLinxupVtPhotoFiles] = useState<Record<LinxupVtPhotoKey, File[]>>(() => emptyLinxupVtPhotoFiles());
+  const [linxupVtPhotoErrors, setLinxupVtPhotoErrors] = useState<Record<LinxupVtPhotoKey, string | null>>(() =>
+    emptyLinxupVtPhotoErrors(),
+  );
+  const [linxupLcObdPortConnected, setLinxupLcObdPortConnected] = useState("");
+  const [linxupLcInstallationNotes, setLinxupLcInstallationNotes] = useState("");
+  const [linxupLcPowerConnectionDescription, setLinxupLcPowerConnectionDescription] = useState("");
+  const [linxupLcGroundConnectionDescription, setLinxupLcGroundConnectionDescription] = useState("");
+  const [linxupLcIgnitionConnectionDescription, setLinxupLcIgnitionConnectionDescription] = useState("");
+  const [linxupLcPhotoFiles, setLinxupLcPhotoFiles] = useState<Record<LinxupLcPhotoKey, File[]>>(() => emptyLinxupLcPhotoFiles());
+  const [linxupLcPhotoErrors, setLinxupLcPhotoErrors] = useState<Record<LinxupLcPhotoKey, string | null>>(() =>
+    emptyLinxupLcPhotoErrors(),
+  );
   const [submissionCompletedAt, setSubmissionCompletedAt] = useState<number | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<"Draft" | "Submitted">("Draft");
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
@@ -1283,6 +1559,42 @@ export function NewSubmissionForm() {
       }));
   };
 
+  const remoteThumbsForLinxupAtField = (key: LinxupAtPhotoKey): RemoteThumb[] => {
+    const uf = linxupAtUploadFieldFor(key);
+    return photoMetadataByField[uf]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
+  };
+
+  const remoteThumbsForLinxupVtField = (key: LinxupVtPhotoKey): RemoteThumb[] => {
+    const uf = linxupVtUploadFieldFor(key);
+    return photoMetadataByField[uf]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
+  };
+
+  const remoteThumbsForLinxupLcField = (key: LinxupLcPhotoKey): RemoteThumb[] => {
+    const uf = linxupLcUploadFieldFor(key);
+    return photoMetadataByField[uf]
+      .filter((p) => p.publicUrl?.trim())
+      .map((p) => ({
+        publicUrl: p.publicUrl.trim(),
+        filename: p.filename,
+        storagePath: p.storagePath,
+        uploadedAt: p.uploadedAt,
+      }));
+  };
+
   const [vacPhotoErrors, setVacPhotoErrors] = useState<VacPhotoErrorsState>(() => emptyVacPhotoErrors());
   const [vehiclePictureFiles, setVehiclePictureFiles] = useState<VehiclePictureFilesState>(() => emptyVehiclePictureFiles());
   const [vehiclePictureUrls, setVehiclePictureUrls] = useState<VehiclePictureUrlsState>(() => emptyVehiclePictureUrls());
@@ -1334,7 +1646,57 @@ export function NewSubmissionForm() {
     data: {} as StoredJobCardDraft["data"],
   }));
 
-  const availableAdditional = hardwareTypes.filter((h) => h !== primary);
+  const allowedForms = useMemo(
+    () => getFormsForCompanyName(selectedCompanyName),
+    [selectedCompanyName],
+  );
+  const companySlug = useMemo(
+    () => resolveCompanySlug(selectedCompanyName),
+    [selectedCompanyName],
+  );
+  /** Registry forms only when company slug is known. Never fall back to all Powerfleet forms while loading. */
+  const allowedPrimaryOptions = useMemo(() => {
+    if (!companyContextReady) return [];
+    if (companySlug) return allowedForms.map((f) => f.sectionKey);
+    return [];
+  }, [allowedForms, companySlug, companyContextReady]);
+  const primaryFormOptions = useMemo(() => {
+    if (!companyContextReady) return [];
+    if (companySlug) return allowedForms;
+    return [];
+  }, [allowedForms, companySlug, companyContextReady]);
+  /**
+   * Drop a primary that is not assigned to the current company (e.g. after company context changes).
+   * Requires company name to be loaded — never treat an unresolved company as allowing all forms.
+   */
+  const effectivePrimary =
+    primary &&
+    selectedCompanyName &&
+    isSectionKeyAllowedForCompany(selectedCompanyName, primary)
+      ? primary
+      : "";
+  const selectedPrimaryForm: FormDefinition | undefined = useMemo(
+    () => getFormDefinitionBySectionKey(effectivePrimary),
+    [effectivePrimary],
+  );
+  /** Company only has LinxUp products — use shared profile before a product is chosen. */
+  const companyUsesLinxUpProfile = useMemo(
+    () => allowedForms.length > 0 && allowedForms.every((f) => f.profileId === "linxup_install"),
+    [allowedForms],
+  );
+  /** True when rendering the shared LinxUp field profile. */
+  const isLinxUpProfile = companyUsesLinxUpProfile || isLinxUpSectionKey(effectivePrimary);
+  const availableAdditional = allowedPrimaryOptions.filter((h) => h !== effectivePrimary);
+  const selectedSections = [effectivePrimary, ...additional].filter(Boolean);
+  const isLinxUpAssetTracker = selectedSections.some(
+    (section) => section === LINXUP_ASSET_TRACKER_FORM_ID || isLinxUpAssetTrackerFormId(section),
+  );
+  const isLinxUpVehicleTracker = selectedSections.some(
+    (section) => section === LINXUP_VEHICLE_TRACKER_FORM_ID || isLinxUpVehicleTrackerFormId(section),
+  );
+  const isLinxUpLinxCam = selectedSections.some(
+    (section) => section === LINXUP_LINXCAM_FORM_ID || isLinxUpLinxCamFormId(section),
+  );
   const inputClassName =
     "w-full min-h-[52px] px-4 py-3.5 text-base border border-gray-200 rounded-xl bg-white text-gray-900 placeholder-gray-400 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-400 dark:focus:border-blue-400 dark:focus:ring-blue-900/40";
   const selectClassName =
@@ -1375,7 +1737,6 @@ export function NewSubmissionForm() {
       setAdditional([...additional, type]);
     }
   };
-  const selectedSections = [primary, ...additional].filter(Boolean);
 
   const ppdVehicleVolts = useMemo(
     () => parseVehicleVoltageVolts(vac4DriveType, vac4VehicleVoltage, vac4VehicleVoltageOther),
@@ -1455,6 +1816,75 @@ export function NewSubmissionForm() {
     }
     return out;
   }, [cp4PhotoFiles, photoMetadataByField]);
+
+  const linxupAtPc = useMemo(() => {
+    const out = {} as Record<LinxupAtPhotoKey, number>;
+    for (const k of LINXUP_AT_PHOTO_KEYS) {
+      const uf = linxupAtUploadFieldFor(k);
+      out[k] = Math.max(
+        linxupAtPhotoFiles[k].length,
+        photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).length,
+      );
+    }
+    return out;
+  }, [linxupAtPhotoFiles, photoMetadataByField]);
+
+  const linxupAtPhotoFileNames = useMemo(() => {
+    const out = {} as Record<LinxupAtPhotoKey, string[]>;
+    for (const k of LINXUP_AT_PHOTO_KEYS) {
+      const uf = linxupAtUploadFieldFor(k);
+      const fromFiles = linxupAtPhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
+    return out;
+  }, [linxupAtPhotoFiles, photoMetadataByField]);
+
+  const linxupVtPc = useMemo(() => {
+    const out = {} as Record<LinxupVtPhotoKey, number>;
+    for (const k of LINXUP_VT_PHOTO_KEYS) {
+      const uf = linxupVtUploadFieldFor(k);
+      out[k] = Math.max(
+        linxupVtPhotoFiles[k].length,
+        photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).length,
+      );
+    }
+    return out;
+  }, [linxupVtPhotoFiles, photoMetadataByField]);
+
+  const linxupVtPhotoFileNames = useMemo(() => {
+    const out = {} as Record<LinxupVtPhotoKey, string[]>;
+    for (const k of LINXUP_VT_PHOTO_KEYS) {
+      const uf = linxupVtUploadFieldFor(k);
+      const fromFiles = linxupVtPhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
+    return out;
+  }, [linxupVtPhotoFiles, photoMetadataByField]);
+
+  const linxupLcPc = useMemo(() => {
+    const out = {} as Record<LinxupLcPhotoKey, number>;
+    for (const k of LINXUP_LC_PHOTO_KEYS) {
+      const uf = linxupLcUploadFieldFor(k);
+      out[k] = Math.max(
+        linxupLcPhotoFiles[k].length,
+        photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).length,
+      );
+    }
+    return out;
+  }, [linxupLcPhotoFiles, photoMetadataByField]);
+
+  const linxupLcPhotoFileNames = useMemo(() => {
+    const out = {} as Record<LinxupLcPhotoKey, string[]>;
+    for (const k of LINXUP_LC_PHOTO_KEYS) {
+      const uf = linxupLcUploadFieldFor(k);
+      const fromFiles = linxupLcPhotoFiles[k].map((f) => f.name);
+      const fromMeta = photoMetadataByField[uf].filter((p) => p.publicUrl?.trim()).map((p) => p.filename);
+      out[k] = fromFiles.length > 0 ? fromFiles : fromMeta;
+    }
+    return out;
+  }, [linxupLcPhotoFiles, photoMetadataByField]);
 
   const ppdCameraSerialsReviewSummary = useMemo(() => {
     const parts = PPD_CAMERA_LOCATION_OPTIONS.filter((o) => ppdCameraLocations.includes(o.key)).map(
@@ -1755,13 +2185,9 @@ export function NewSubmissionForm() {
     };
   };
 
-  const requiredCoreValues = [
-    coreJob.customer,
-    coreJob.location,
-    coreJob.workOrder,
-    coreJob.serviceAppointment,
-    coreJob.installerName,
-  ];
+  const requiredCoreValues = isLinxUpProfile
+    ? [coreJob.customer, coreJob.location, coreJob.installerName]
+    : [coreJob.customer, coreJob.location, coreJob.workOrder, coreJob.serviceAppointment, coreJob.installerName];
   const requiredCoreFilledCount = requiredCoreValues.filter((v) => v.trim()).length;
   const hasCoreOrVehicleInfo = [
     coreJob.customer,
@@ -1777,23 +2203,35 @@ export function NewSubmissionForm() {
   const coreSectionStatus: SectionStepStatus =
     requiredCoreFilledCount === 0
       ? "Not Started"
-      : requiredCoreFilledCount === 5
+      : requiredCoreFilledCount === requiredCoreValues.length
         ? "Complete"
         : "In Progress";
 
   const hardwareSectionStatus: SectionStepStatus =
-    !primary ? "Not Started" : hasAdditional === "Yes" || hasAdditional === "No" ? "Complete" : "In Progress";
-  const hasAnsweredAdditionalHardwareQuestion = hasAdditional === "Yes" || hasAdditional === "No";
-  const isVehicleInfoComplete =
-    coreJob.equipmentMake.trim().length > 0 &&
-    coreJob.equipmentModel.trim().length > 0 &&
-    coreJob.equipmentSerial.trim().length > 0 &&
-    coreJob.unitNumber.trim().length > 0 &&
-    vac4VehicleType.trim().length > 0 &&
-    vac4DriveType.trim().length > 0 &&
-    (vac4VehicleType !== "Other" || vac4OtherVehicleType.trim().length > 0) &&
-    (vac4DriveType !== "Electric" ||
-      (vac4VehicleVoltage.trim().length > 0 && (vac4VehicleVoltage !== "Other" || vac4VehicleVoltageOther.trim().length > 0)));
+    !effectivePrimary
+      ? "Not Started"
+      : hasAdditional === "Yes" || hasAdditional === "No"
+        ? "Complete"
+        : "In Progress";
+  const isVehicleInfoComplete = isLinxUpProfile
+    ? coreJob.equipmentMake.trim().length > 0 &&
+      coreJob.equipmentModel.trim().length > 0 &&
+      coreJob.equipmentSerial.trim().length > 0 &&
+      coreJob.unitNumber.trim().length > 0 &&
+      linxupVehicleType.trim().length > 0 &&
+      linxupHoursMiles.trim().length > 0
+    : coreJob.equipmentMake.trim().length > 0 &&
+      coreJob.equipmentModel.trim().length > 0 &&
+      coreJob.equipmentSerial.trim().length > 0 &&
+      coreJob.unitNumber.trim().length > 0 &&
+      vac4VehicleType.trim().length > 0 &&
+      vac4DriveType.trim().length > 0 &&
+      (vac4VehicleType !== "Other" || vac4OtherVehicleType.trim().length > 0) &&
+      (vac4DriveType !== "Electric" ||
+        (vac4VehicleVoltage.trim().length > 0 && (vac4VehicleVoltage !== "Other" || vac4VehicleVoltageOther.trim().length > 0)));
+  const hasAnsweredAdditionalHardwareQuestion =
+    (hasAdditional === "Yes" || hasAdditional === "No") &&
+    (!isLinxUpProfile || (!!effectivePrimary && isVehicleInfoComplete));
 
   const hardwareStatusSections = [...new Set(selectedSections)];
 
@@ -1801,6 +2239,98 @@ export function NewSubmissionForm() {
 
   const collectReviewValidationIssues = (): string[] => {
     const issues: string[] = [];
+
+    if (!companyContextReady || !selectedCompanyName || !resolveCompanySlug(selectedCompanyName)) {
+      issues.push("hw-primary");
+      return issues;
+    }
+
+    if (isLinxUpProfile) {
+      if (!effectivePrimary || !isSectionKeyAllowedForCompany(selectedCompanyName, effectivePrimary)) {
+        issues.push("hw-primary");
+      }
+      if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
+      for (const extra of additional) {
+        if (!isSectionKeyAllowedForCompany(selectedCompanyName, extra)) {
+          issues.push("hw-hasAdditional");
+          break;
+        }
+      }
+      if (!coreJob.customer.trim()) issues.push("core-customer");
+      if (!coreJob.location.trim()) issues.push("core-location");
+      if (!coreJob.installerName.trim()) issues.push("core-installerName");
+      if (coreJob.contactEmail?.trim() && !coreJob.contactEmail.includes("@")) issues.push("core-contactEmail");
+      if (!coreJob.equipmentMake.trim()) issues.push("vehicle-equipmentMake");
+      if (!coreJob.equipmentModel.trim()) issues.push("vehicle-equipmentModel");
+      if (!coreJob.equipmentSerial.trim()) issues.push("vehicle-equipmentSerial");
+      if (!coreJob.unitNumber.trim()) issues.push("vehicle-unitNumber");
+      if (!linxupVehicleType.trim()) issues.push("linxup-vehicleType");
+      if (!linxupHoursMiles.trim()) issues.push("linxup-hoursMiles");
+      if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
+      if (isLinxUpVehicleTracker) {
+        if (linxupVtPc.vehicleTrackerTag < 1) issues.push("photo-linxup-vt-vehicleTrackerTag");
+        if (linxupVtObdPortConnected !== "Yes" && linxupVtObdPortConnected !== "No") {
+          issues.push("linxup-vt-obdPortConnected");
+        }
+        if (linxupVtObdPortConnected === "Yes") {
+          if (linxupVtPc.greenActivityLight < 1) issues.push("photo-linxup-vt-greenActivityLight");
+          if (linxupVtPc.installation < 1) issues.push("photo-linxup-vt-installation");
+          if (!linxupVtInstallationNotes.trim()) issues.push("linxup-vt-installationNotes");
+        } else if (linxupVtObdPortConnected === "No") {
+          if (!linxupVtPowerConnectionDescription.trim()) issues.push("linxup-vt-powerConnectionDescription");
+          if (linxupVtPc.powerConnection < 1) issues.push("photo-linxup-vt-powerConnection");
+          if (!linxupVtGroundConnectionDescription.trim()) issues.push("linxup-vt-groundConnectionDescription");
+          if (linxupVtPc.groundConnection < 1) issues.push("photo-linxup-vt-groundConnection");
+          if (!linxupVtIgnitionConnectionDescription.trim()) issues.push("linxup-vt-ignitionConnectionDescription");
+          if (linxupVtPc.ignitionConnection < 1) issues.push("photo-linxup-vt-ignitionConnection");
+          if (linxupVtPc.greenActivityLight < 1) issues.push("photo-linxup-vt-greenActivityLight");
+          if (linxupVtPc.finalInstall < 1) issues.push("photo-linxup-vt-finalInstall");
+          if (!linxupVtInstallationNotes.trim()) issues.push("linxup-vt-installationNotes");
+        }
+      }
+      if (isLinxUpLinxCam) {
+        if (linxupLcPc.linxCamTag < 1) issues.push("photo-linxup-lc-linxCamTag");
+        if (linxupLcObdPortConnected !== "Yes" && linxupLcObdPortConnected !== "No") {
+          issues.push("linxup-lc-obdPortConnected");
+        }
+        if (linxupLcObdPortConnected === "Yes") {
+          if (linxupLcPc.greenActivityLight < 1) issues.push("photo-linxup-lc-greenActivityLight");
+          if (linxupLcPc.installation < 1) issues.push("photo-linxup-lc-installation");
+        } else if (linxupLcObdPortConnected === "No") {
+          if (!linxupLcPowerConnectionDescription.trim()) issues.push("linxup-lc-powerConnectionDescription");
+          if (linxupLcPc.powerConnection < 1) issues.push("photo-linxup-lc-powerConnection");
+          if (!linxupLcGroundConnectionDescription.trim()) issues.push("linxup-lc-groundConnectionDescription");
+          if (linxupLcPc.groundConnection < 1) issues.push("photo-linxup-lc-groundConnection");
+          if (!linxupLcIgnitionConnectionDescription.trim()) issues.push("linxup-lc-ignitionConnectionDescription");
+          if (linxupLcPc.ignitionConnection < 1) issues.push("photo-linxup-lc-ignitionConnection");
+          if (linxupLcPc.greenActivityLight < 1) issues.push("photo-linxup-lc-greenActivityLight");
+          if (linxupLcPc.finalInstall < 1) issues.push("photo-linxup-lc-finalInstall");
+          if (!linxupLcInstallationNotes.trim()) issues.push("linxup-lc-installationNotes");
+        }
+      }
+      if (isLinxUpAssetTracker) {
+        if (linxupAtPc.assetTrackerTag < 1) issues.push("photo-linxup-at-assetTrackerTag");
+        if (!linxupPowerConnectionDescription.trim()) issues.push("linxup-at-powerConnectionDescription");
+        if (linxupAtPc.powerConnection < 1) issues.push("photo-linxup-at-powerConnection");
+        if (!linxupGroundConnectionDescription.trim()) issues.push("linxup-at-groundConnectionDescription");
+        if (linxupAtPc.groundConnection < 1) issues.push("photo-linxup-at-groundConnection");
+        if (!linxupIgnitionConnectionDescription.trim()) issues.push("linxup-at-ignitionConnectionDescription");
+        if (linxupAtPc.ignitionConnection < 1) issues.push("photo-linxup-at-ignitionConnection");
+        if (linxupAtPc.finalInstall < 1) issues.push("photo-linxup-at-finalInstall");
+      }
+      return issues;
+    }
+
+    if (!effectivePrimary || !isSectionKeyAllowedForCompany(selectedCompanyName, effectivePrimary)) {
+      issues.push("hw-primary");
+    }
+    for (const extra of additional) {
+      if (!isSectionKeyAllowedForCompany(selectedCompanyName, extra)) {
+        issues.push("hw-hasAdditional");
+        break;
+      }
+    }
+
     if (!coreJob.customer.trim()) issues.push("core-customer");
     if (!coreJob.location.trim()) issues.push("core-location");
     if (!coreJob.workOrder.trim()) issues.push("core-workOrder");
@@ -1812,7 +2342,6 @@ export function NewSubmissionForm() {
     if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
     if (vehiclePictureCounts.vehicleSide < 1) issues.push("photo-vehicleSide");
     if (!coreJob.installerName.trim()) issues.push("core-installerName");
-    if (!primary) issues.push("hw-primary");
     if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
 
     if (selectedSections.includes("VAC4")) {
@@ -2083,7 +2612,7 @@ export function NewSubmissionForm() {
     });
   };
 
-  type PhotoStorageGroup = "vac4" | "vehicle" | "ppd" | "cp4";
+  type PhotoStorageGroup = "vac4" | "vehicle" | "ppd" | "cp4" | "linxup";
 
   type UploadFailureLog = {
     error: unknown;
@@ -2310,7 +2839,13 @@ export function NewSubmissionForm() {
           ? ppdPhotoFiles[ppdKeyFromUploadField(field)].length
           : isCp4UploadField(field)
             ? cp4PhotoFiles[cp4KeyFromUploadField(field)].length
-            : 0;
+            : isLinxupAtUploadField(field)
+              ? linxupAtPhotoFiles[linxupAtKeyFromUploadField(field)].length
+              : isLinxupVtUploadField(field)
+                ? linxupVtPhotoFiles[linxupVtKeyFromUploadField(field)].length
+                : isLinxupLcUploadField(field)
+                  ? linxupLcPhotoFiles[linxupLcKeyFromUploadField(field)].length
+                  : 0;
 
     if (isVacPhotoField(field)) {
       updatePhotoFieldHighlight(field, Math.max(localCount, nextUrls.length));
@@ -2320,6 +2855,12 @@ export function NewSubmissionForm() {
       syncPpdPhotoHighlightFromCounts(ppdKeyFromUploadField(field), localCount, nextUrls.length);
     } else if (isCp4UploadField(field)) {
       syncCp4PhotoHighlightFromCounts(cp4KeyFromUploadField(field), localCount, nextUrls.length);
+    } else if (isLinxupAtUploadField(field)) {
+      syncLinxupAtPhotoHighlightFromCounts(linxupAtKeyFromUploadField(field), localCount, nextUrls.length);
+    } else if (isLinxupVtUploadField(field)) {
+      syncLinxupVtPhotoHighlightFromCounts(linxupVtKeyFromUploadField(field), localCount, nextUrls.length);
+    } else if (isLinxupLcUploadField(field)) {
+      syncLinxupLcPhotoHighlightFromCounts(linxupLcKeyFromUploadField(field), localCount, nextUrls.length);
     }
 
     if (targetStorage) {
@@ -2711,6 +3252,276 @@ export function NewSubmissionForm() {
     syncCp4PhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
   };
 
+  const linxupAtPhotoIssueKey = (key: LinxupAtPhotoKey) => `photo-linxup-at-${key}`;
+
+  const syncLinxupAtPhotoHighlightFromCounts = (key: LinxupAtPhotoKey, localLen: number, remoteCount: number) => {
+    const photoKey = linxupAtPhotoIssueKey(key);
+    const total = Math.max(localLen, remoteCount);
+    if (total < 1) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(photoKey);
+        return next;
+      });
+    } else {
+      setReviewHighlights((prev) => {
+        if (!prev.has(photoKey)) return prev;
+        const next = new Set(prev);
+        next.delete(photoKey);
+        if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+        return next;
+      });
+    }
+  };
+
+  const removeLinxupAtLocalPhoto = (key: LinxupAtPhotoKey, targetFile: File) => {
+    setLinxupAtPhotoFiles((p) => ({ ...p, [key]: p[key].filter((f) => f !== targetFile) }));
+  };
+
+  const applyLinxupAtPhotoUpload = async (key: LinxupAtPhotoKey, e: ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    const uploadField = linxupAtUploadFieldFor(key);
+    const photoKey = linxupAtPhotoIssueKey(key);
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType && picked.length > 0) {
+      setLinxupAtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setLinxupAtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    if (picked.length === 0) {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+      setLinxupAtPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+      }
+      setLinxupAtPhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      syncLinxupAtPhotoHighlightFromCounts(key, 0, 0);
+      return;
+    }
+
+    const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+    setLinxupAtPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+    const uploadResult = await uploadPhotosToStorage("linxup", uploadField, [picked[0]]);
+    const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+    if (nextMeta.length === 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: prevMeta }));
+      setLinxupAtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+      clearFieldHighlight(photoKey);
+      syncLinxupAtPhotoHighlightFromCounts(key, 1, prevMeta.filter((m) => m.publicUrl?.trim()).length);
+      return;
+    }
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
+    }
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+    setLinxupAtPhotoFiles((p) => ({ ...p, [key]: [] }));
+    for (const m of prevMeta) {
+      if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+        void deleteJobCardPhotoObject(m.storagePath);
+      }
+    }
+    setLinxupAtPhotoErrors((er) => ({ ...er, [key]: null }));
+    clearFieldHighlight(photoKey);
+    syncLinxupAtPhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
+  };
+
+  const linxupVtPhotoIssueKey = (key: LinxupVtPhotoKey) => `photo-linxup-vt-${key}`;
+
+  const syncLinxupVtPhotoHighlightFromCounts = (key: LinxupVtPhotoKey, localLen: number, remoteCount: number) => {
+    const photoKey = linxupVtPhotoIssueKey(key);
+    const total = Math.max(localLen, remoteCount);
+    if (total < 1) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(photoKey);
+        return next;
+      });
+    } else {
+      setReviewHighlights((prev) => {
+        if (!prev.has(photoKey)) return prev;
+        const next = new Set(prev);
+        next.delete(photoKey);
+        if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+        return next;
+      });
+    }
+  };
+
+  const removeLinxupVtLocalPhoto = (key: LinxupVtPhotoKey, targetFile: File) => {
+    setLinxupVtPhotoFiles((p) => ({ ...p, [key]: p[key].filter((f) => f !== targetFile) }));
+  };
+
+  const applyLinxupVtPhotoUpload = async (key: LinxupVtPhotoKey, e: ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    const uploadField = linxupVtUploadFieldFor(key);
+    const photoKey = linxupVtPhotoIssueKey(key);
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType && picked.length > 0) {
+      setLinxupVtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setLinxupVtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    if (picked.length === 0) {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+      setLinxupVtPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+      }
+      setLinxupVtPhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      syncLinxupVtPhotoHighlightFromCounts(key, 0, 0);
+      return;
+    }
+
+    const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+    setLinxupVtPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+    const uploadResult = await uploadPhotosToStorage("linxup", uploadField, [picked[0]]);
+    const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+    if (nextMeta.length === 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: prevMeta }));
+      setLinxupVtPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+      clearFieldHighlight(photoKey);
+      syncLinxupVtPhotoHighlightFromCounts(key, 1, prevMeta.filter((m) => m.publicUrl?.trim()).length);
+      return;
+    }
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
+    }
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+    setLinxupVtPhotoFiles((p) => ({ ...p, [key]: [] }));
+    for (const m of prevMeta) {
+      if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+        void deleteJobCardPhotoObject(m.storagePath);
+      }
+    }
+    setLinxupVtPhotoErrors((er) => ({ ...er, [key]: null }));
+    clearFieldHighlight(photoKey);
+    syncLinxupVtPhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
+  };
+
+  const linxupLcPhotoIssueKey = (key: LinxupLcPhotoKey) => `photo-linxup-lc-${key}`;
+
+  const syncLinxupLcPhotoHighlightFromCounts = (key: LinxupLcPhotoKey, localLen: number, remoteCount: number) => {
+    const photoKey = linxupLcPhotoIssueKey(key);
+    const total = Math.max(localLen, remoteCount);
+    if (total < 1) {
+      setReviewHighlights((prev) => {
+        const next = new Set(prev);
+        next.add(photoKey);
+        return next;
+      });
+    } else {
+      setReviewHighlights((prev) => {
+        if (!prev.has(photoKey)) return prev;
+        const next = new Set(prev);
+        next.delete(photoKey);
+        if (next.size === 0) queueMicrotask(() => setReviewBlockMessage(null));
+        return next;
+      });
+    }
+  };
+
+  const removeLinxupLcLocalPhoto = (key: LinxupLcPhotoKey, targetFile: File) => {
+    setLinxupLcPhotoFiles((p) => ({ ...p, [key]: p[key].filter((f) => f !== targetFile) }));
+  };
+
+  const applyLinxupLcPhotoUpload = async (key: LinxupLcPhotoKey, e: ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    const uploadField = linxupLcUploadFieldFor(key);
+    const photoKey = linxupLcPhotoIssueKey(key);
+
+    const hasInvalidType = picked.some((f) => {
+      const mime = f.type.toLowerCase();
+      const name = f.name.toLowerCase();
+      const allowedMime = mime === "image/jpeg" || mime === "image/png";
+      const allowedExt = name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png");
+      return !(allowedMime || allowedExt);
+    });
+    if (hasInvalidType && picked.length > 0) {
+      setLinxupLcPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_TYPE }));
+      return;
+    }
+
+    const overSize = picked.find((f) => f.size > MAX_FILE_BYTES);
+    if (overSize) {
+      setLinxupLcPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_FILE_SIZE }));
+      return;
+    }
+
+    if (picked.length === 0) {
+      const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+      setLinxupLcPhotoFiles((p) => ({ ...p, [key]: [] }));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: [] }));
+      for (const m of prevMeta) {
+        if (m.storagePath) void deleteJobCardPhotoObject(m.storagePath);
+      }
+      setLinxupLcPhotoErrors((er) => ({ ...er, [key]: null }));
+      clearFieldHighlight(photoKey);
+      syncLinxupLcPhotoHighlightFromCounts(key, 0, 0);
+      return;
+    }
+
+    const prevMeta = [...photoMetadataByFieldRef.current[uploadField]];
+    setLinxupLcPhotoFiles((p) => ({ ...p, [key]: [picked[0]] }));
+    const uploadResult = await uploadPhotosToStorage("linxup", uploadField, [picked[0]]);
+    const nextMeta = dedupeUploadedPhotoMeta(uploadResult.uploadedPhotos);
+    if (nextMeta.length === 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("error", f));
+      setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: prevMeta }));
+      setLinxupLcPhotoErrors((er) => ({ ...er, [key]: UPLOAD_ERR_UPLOAD_FAILED }));
+      clearFieldHighlight(photoKey);
+      syncLinxupLcPhotoHighlightFromCounts(key, 1, prevMeta.filter((m) => m.publicUrl?.trim()).length);
+      return;
+    }
+    if (!uploadResult.ok && uploadResult.failures.length > 0) {
+      uploadResult.failures.forEach((f) => logSupabaseUploadIssue("warn", f));
+    }
+    setPhotoMetadataByFieldSafe((p) => ({ ...p, [uploadField]: nextMeta }));
+    setLinxupLcPhotoFiles((p) => ({ ...p, [key]: [] }));
+    for (const m of prevMeta) {
+      if (m.storagePath && !nextMeta.some((n) => n.storagePath === m.storagePath)) {
+        void deleteJobCardPhotoObject(m.storagePath);
+      }
+    }
+    setLinxupLcPhotoErrors((er) => ({ ...er, [key]: null }));
+    clearFieldHighlight(photoKey);
+    syncLinxupLcPhotoHighlightFromCounts(key, 0, nextMeta.filter((m) => m.publicUrl?.trim()).length);
+  };
+
   const handleReviewClick = () => {
     setSubmitSuccessMessage(null);
     setEmailSubmissionPreview(null);
@@ -2735,6 +3546,40 @@ export function NewSubmissionForm() {
     const photoSnapshot = getPhotoPersistenceSnapshot();
     const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
     const projectContext = await resolveProjectContextPayload();
+
+    // Authorize against the project's company from trusted storage/DB — not only React UI state.
+    let trustedCompanyName = selectedCompanyName?.trim() || "";
+    try {
+      if (typeof window !== "undefined" && !window.navigator.onLine) {
+        const snap = await getBestStarterSnapshotForOffline();
+        const fromSnap = snap?.companies.find((c) => c.id === projectContext.companyId)?.name?.trim() || "";
+        if (fromSnap) trustedCompanyName = fromSnap;
+      } else if (projectContext.companyId) {
+        const { data: companyRow, error: companyError } = await supabase
+          .from("companies")
+          .select("name")
+          .eq("id", projectContext.companyId)
+          .maybeSingle<{ name: string }>();
+        if (!companyError && companyRow?.name?.trim()) {
+          trustedCompanyName = companyRow.name.trim();
+        }
+      }
+    } catch {
+      // keep selectedCompanyName fallback
+    }
+
+    if (!trustedCompanyName || !resolveCompanySlug(trustedCompanyName)) {
+      throw new Error("Project company is not loaded or is not assigned any forms.");
+    }
+    if (!effectivePrimary || !isSectionKeyAllowedForCompany(trustedCompanyName, effectivePrimary)) {
+      throw new Error("Selected form is not assigned to this company.");
+    }
+    for (const extra of additional) {
+      if (!isSectionKeyAllowedForCompany(trustedCompanyName, extra)) {
+        throw new Error("Selected additional form is not assigned to this company.");
+      }
+    }
+
     const ppdPayload: JobCardPpdPayload | undefined = selectedSections.includes("PPD")
       ? {
           hubSerial: ppdHubSerial,
@@ -2783,6 +3628,46 @@ export function NewSubmissionForm() {
           powerConverterDescription: cp4PowerConverterDescription,
         }
       : undefined;
+    const linxupPayload = isLinxUpProfile && selectedPrimaryForm
+      ? buildLinxUpPayload({
+          formId: selectedPrimaryForm.id,
+          customer: normalizedCoreJob.customer,
+          location: normalizedCoreJob.location,
+          primaryContact: normalizedCoreJob.primaryContact ?? "",
+          contactNumber: normalizedCoreJob.contactNumber ?? "",
+          contactEmail: normalizedCoreJob.contactEmail ?? "",
+          year: linxupYear,
+          make: normalizedCoreJob.equipmentMake,
+          model: normalizedCoreJob.equipmentModel,
+          serialVin: normalizedCoreJob.equipmentSerial,
+          assetNumber: normalizedCoreJob.unitNumber,
+          vehicleType: linxupVehicleType,
+          hoursMiles: linxupHoursMiles,
+          powerConnectionDescription: linxupPowerConnectionDescription,
+          groundConnectionDescription: linxupGroundConnectionDescription,
+          ignitionConnectionDescription: linxupIgnitionConnectionDescription,
+          includeAssetTrackerFields: isLinxUpAssetTracker,
+          vehicleTracker: isLinxUpVehicleTracker
+            ? {
+                obdPortConnected: linxupVtObdPortConnected,
+                installationNotes: linxupVtInstallationNotes,
+                powerConnectionDescription: linxupVtPowerConnectionDescription,
+                groundConnectionDescription: linxupVtGroundConnectionDescription,
+                ignitionConnectionDescription: linxupVtIgnitionConnectionDescription,
+              }
+            : null,
+          linxCam: isLinxUpLinxCam
+            ? {
+                obdPortConnected: linxupLcObdPortConnected,
+                installationNotes: linxupLcInstallationNotes,
+                powerConnectionDescription: linxupLcPowerConnectionDescription,
+                groundConnectionDescription: linxupLcGroundConnectionDescription,
+                ignitionConnectionDescription: linxupLcIgnitionConnectionDescription,
+              }
+            : null,
+        })
+      : undefined;
+
     return {
       submissionId,
       submissionTimestamp: new Date().toISOString(),
@@ -2793,14 +3678,18 @@ export function NewSubmissionForm() {
       projectRecipientEmails: projectContext.projectRecipientEmails,
       coreJobInfo: { ...normalizedCoreJob },
       hardwareSelection: {
-        primary,
+        primary: effectivePrimary,
         hasAdditional,
         additional: [...additional],
       },
       selectedSections: [...selectedSections],
+      ...(selectedPrimaryForm
+        ? { formId: selectedPrimaryForm.id, submissionType: selectedPrimaryForm.submissionType }
+        : {}),
       photoUploads: [...photoSnapshot.photoUploads],
       ...(ppdPayload ? { ppd: ppdPayload } : {}),
       ...(cp4Payload ? { cp4: cp4Payload } : {}),
+      ...(linxupPayload ? { linxup: linxupPayload } : {}),
       vac4: {
       vehicleType: vac4VehicleType,
       otherVehicleType: vac4OtherVehicleType,
@@ -2862,7 +3751,11 @@ export function NewSubmissionForm() {
       externalFromPayload.length > 0 ? externalFromPayload : projectExternalRecipientEmails;
     setEmailSubmissionPreview({
       externalRecipientEmails,
-      subject: formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber),
+      subject: formatEmailSubject(
+        payload.coreJobInfo.customer,
+        payload.linxup?.assetNumber || payload.coreJobInfo.unitNumber,
+        payload.linxup?.productLabel || selectedPrimaryForm?.label,
+      ),
       body: formatEmailBodyFromPayload(payload),
     });
     setReviewHighlights(new Set());
@@ -3210,12 +4103,92 @@ export function NewSubmissionForm() {
       setCp4PowerConverterDescription("");
     }
 
+    if (draft.linxup || (draft.formId && draft.formId.startsWith("linxup_")) || isLinxUpSectionKey(draft.hardwareSelection?.primary)) {
+      const lx = draft.linxup as {
+        vehicleType?: unknown;
+        hoursMiles?: unknown;
+        year?: unknown;
+        powerConnectionDescription?: unknown;
+        groundConnectionDescription?: unknown;
+        ignitionConnectionDescription?: unknown;
+        vehicleTracker?: {
+          obdPortConnected?: unknown;
+          installationNotes?: unknown;
+          powerConnectionDescription?: unknown;
+          groundConnectionDescription?: unknown;
+          ignitionConnectionDescription?: unknown;
+        };
+        linxCam?: {
+          obdPortConnected?: unknown;
+          installationNotes?: unknown;
+          powerConnectionDescription?: unknown;
+          groundConnectionDescription?: unknown;
+          ignitionConnectionDescription?: unknown;
+        };
+      } | undefined;
+      setLinxupVehicleType(typeof lx?.vehicleType === "string" ? lx.vehicleType : "");
+      setLinxupHoursMiles(typeof lx?.hoursMiles === "string" ? lx.hoursMiles : "");
+      setLinxupYear(typeof lx?.year === "string" ? lx.year : "");
+      setLinxupPowerConnectionDescription(typeof lx?.powerConnectionDescription === "string" ? lx.powerConnectionDescription : "");
+      setLinxupGroundConnectionDescription(typeof lx?.groundConnectionDescription === "string" ? lx.groundConnectionDescription : "");
+      setLinxupIgnitionConnectionDescription(
+        typeof lx?.ignitionConnectionDescription === "string" ? lx.ignitionConnectionDescription : "",
+      );
+      const vt = lx?.vehicleTracker;
+      setLinxupVtObdPortConnected(typeof vt?.obdPortConnected === "string" ? vt.obdPortConnected : "");
+      setLinxupVtInstallationNotes(typeof vt?.installationNotes === "string" ? vt.installationNotes : "");
+      setLinxupVtPowerConnectionDescription(
+        typeof vt?.powerConnectionDescription === "string" ? vt.powerConnectionDescription : "",
+      );
+      setLinxupVtGroundConnectionDescription(
+        typeof vt?.groundConnectionDescription === "string" ? vt.groundConnectionDescription : "",
+      );
+      setLinxupVtIgnitionConnectionDescription(
+        typeof vt?.ignitionConnectionDescription === "string" ? vt.ignitionConnectionDescription : "",
+      );
+      const lc = lx?.linxCam;
+      setLinxupLcObdPortConnected(typeof lc?.obdPortConnected === "string" ? lc.obdPortConnected : "");
+      setLinxupLcInstallationNotes(typeof lc?.installationNotes === "string" ? lc.installationNotes : "");
+      setLinxupLcPowerConnectionDescription(
+        typeof lc?.powerConnectionDescription === "string" ? lc.powerConnectionDescription : "",
+      );
+      setLinxupLcGroundConnectionDescription(
+        typeof lc?.groundConnectionDescription === "string" ? lc.groundConnectionDescription : "",
+      );
+      setLinxupLcIgnitionConnectionDescription(
+        typeof lc?.ignitionConnectionDescription === "string" ? lc.ignitionConnectionDescription : "",
+      );
+    } else {
+      setLinxupVehicleType("");
+      setLinxupHoursMiles("");
+      setLinxupYear("");
+      setLinxupPowerConnectionDescription("");
+      setLinxupGroundConnectionDescription("");
+      setLinxupIgnitionConnectionDescription("");
+      setLinxupVtObdPortConnected("");
+      setLinxupVtInstallationNotes("");
+      setLinxupVtPowerConnectionDescription("");
+      setLinxupVtGroundConnectionDescription("");
+      setLinxupVtIgnitionConnectionDescription("");
+      setLinxupLcObdPortConnected("");
+      setLinxupLcInstallationNotes("");
+      setLinxupLcPowerConnectionDescription("");
+      setLinxupLcGroundConnectionDescription("");
+      setLinxupLcIgnitionConnectionDescription("");
+    }
+
     // VAC/vehicle/PPD/CP4 photos: rebuild from saved upload metadata (`photoUploads`). Local File buffers stay empty.
     setVacPhotoFiles(emptyVacPhotoFiles());
     setPpdPhotoFiles(emptyPpdPhotoFiles());
     setPpdPhotoErrors(emptyPpdPhotoErrors());
     setCp4PhotoFiles(emptyCp4PhotoFiles());
     setCp4PhotoErrors(emptyCp4PhotoErrors());
+    setLinxupAtPhotoFiles(emptyLinxupAtPhotoFiles());
+    setLinxupAtPhotoErrors(emptyLinxupAtPhotoErrors());
+    setLinxupVtPhotoFiles(emptyLinxupVtPhotoFiles());
+    setLinxupVtPhotoErrors(emptyLinxupVtPhotoErrors());
+    setLinxupLcPhotoFiles(emptyLinxupLcPhotoFiles());
+    setLinxupLcPhotoErrors(emptyLinxupLcPhotoErrors());
     const restoredUploads = draft.photoUploads || draft.photoSummary?.photoUploads || [];
     const restoredMetadataByField = emptyPhotoMetadataByField();
     for (const photo of restoredUploads) {
@@ -3231,6 +4204,9 @@ export function NewSubmissionForm() {
       "vehicleRear",
       ...PPD_PHOTO_KEYS.map((k) => ppdUploadFieldFor(k)),
       ...CP4_PHOTO_KEYS.map((k) => cp4UploadFieldFor(k)),
+      ...LINXUP_AT_PHOTO_KEYS.map((k) => linxupAtUploadFieldFor(k)),
+      ...LINXUP_VT_PHOTO_KEYS.map((k) => linxupVtUploadFieldFor(k)),
+      ...LINXUP_LC_PHOTO_KEYS.map((k) => linxupLcUploadFieldFor(k)),
     ];
     for (const k of allPhotoFieldKeys) {
       restoredMetadataByField[k] = dedupeUploadedPhotoMeta(restoredMetadataByField[k]);
@@ -3440,6 +4416,60 @@ export function NewSubmissionForm() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    const loadCompanyName = async () => {
+      setCompanyContextReady(false);
+      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      if (!companyId) {
+        if (!cancelled) {
+          setSelectedCompanyName(null);
+          setCompanyContextReady(true);
+        }
+        return;
+      }
+      if (!window.navigator.onLine) {
+        try {
+          const snap = await getBestStarterSnapshotForOffline();
+          if (cancelled) return;
+          const company = snap?.companies.find((c) => c.id === companyId);
+          setSelectedCompanyName(company?.name?.trim() || null);
+          setCompanyContextReady(true);
+        } catch {
+          if (!cancelled) {
+            setSelectedCompanyName(null);
+            setCompanyContextReady(true);
+          }
+        }
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from("companies")
+          .select("name")
+          .eq("id", companyId)
+          .maybeSingle<{ name: string }>();
+        if (cancelled) return;
+        if (!error && data) {
+          setSelectedCompanyName(data.name?.trim() || null);
+        } else {
+          setSelectedCompanyName(null);
+        }
+        setCompanyContextReady(true);
+      } catch {
+        if (!cancelled) {
+          setSelectedCompanyName(null);
+          setCompanyContextReady(true);
+        }
+      }
+    };
+    void loadCompanyName();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (typeof window === "undefined") return;
@@ -3527,17 +4557,36 @@ export function NewSubmissionForm() {
         let projectCustomer = data.customer_name?.trim() || "";
         let projectLocation = data.location?.trim() || "";
 
+        let contactNameFromCustomer = "";
+        let contactNumberFromCustomer = "";
+        let contactEmailFromCustomer = "";
+
         if (data.customer_id) {
-          const { data: customerRow, error: customerError } = await supabase
+          let customerRow: CustomerLookupRow | null = null;
+          const withEmail = await supabase
             .from("customers")
-            .select("customer_name, full_address")
+            .select("customer_name, full_address, site_contact_name, contact_number, contact_email")
             .eq("id", data.customer_id)
             .maybeSingle<CustomerLookupRow>();
-          if (!customerError && customerRow) {
+          if (!withEmail.error && withEmail.data) {
+            customerRow = withEmail.data;
+          } else {
+            // Pre-migration DBs may lack contact_email — retry without it so autofill still works.
+            const withoutEmail = await supabase
+              .from("customers")
+              .select("customer_name, full_address, site_contact_name, contact_number")
+              .eq("id", data.customer_id)
+              .maybeSingle<CustomerLookupRow>();
+            if (!withoutEmail.error && withoutEmail.data) customerRow = withoutEmail.data;
+          }
+          if (customerRow) {
             const customerNameFromCustomer = customerRow.customer_name?.trim() || "";
             const locationFromCustomer = customerRow.full_address?.trim() || "";
             if (customerNameFromCustomer) projectCustomer = customerNameFromCustomer;
             if (locationFromCustomer) projectLocation = locationFromCustomer;
+            contactNameFromCustomer = customerRow.site_contact_name?.trim() || "";
+            contactNumberFromCustomer = customerRow.contact_number?.trim() || "";
+            contactEmailFromCustomer = customerRow.contact_email?.trim() || "";
           }
         }
         if (!projectCustomer && !projectLocation) return;
@@ -3546,8 +4595,28 @@ export function NewSubmissionForm() {
           if (restoredFromDraftRef.current) return prev;
           const nextCustomer = prev.customer.trim() ? prev.customer : projectCustomer;
           const nextLocation = prev.location.trim() ? prev.location : projectLocation;
-          if (nextCustomer === prev.customer && nextLocation === prev.location) return prev;
-          return { ...prev, customer: nextCustomer, location: nextLocation };
+          const nextPrimaryContact =
+            (prev.primaryContact ?? "").trim() ? (prev.primaryContact ?? "") : contactNameFromCustomer;
+          const nextContactNumber =
+            (prev.contactNumber ?? "").trim() ? (prev.contactNumber ?? "") : contactNumberFromCustomer;
+          const nextContactEmail =
+            (prev.contactEmail ?? "").trim() ? (prev.contactEmail ?? "") : contactEmailFromCustomer;
+          if (
+            nextCustomer === prev.customer &&
+            nextLocation === prev.location &&
+            nextPrimaryContact === (prev.primaryContact ?? "") &&
+            nextContactNumber === (prev.contactNumber ?? "") &&
+            nextContactEmail === (prev.contactEmail ?? "")
+          )
+            return prev;
+          return {
+            ...prev,
+            customer: nextCustomer,
+            location: nextLocation,
+            primaryContact: nextPrimaryContact,
+            contactNumber: nextContactNumber,
+            contactEmail: nextContactEmail,
+          };
         });
       } catch {
         // ignore project autofill errors
@@ -3626,7 +4695,56 @@ export function NewSubmissionForm() {
 
     return {
       coreJob: normalizedCoreJob,
-      hardwareSelection: { primary, hasAdditional, additional },
+      hardwareSelection: { primary: effectivePrimary, hasAdditional, additional },
+      ...(selectedPrimaryForm
+        ? { formId: selectedPrimaryForm.id, submissionType: selectedPrimaryForm.submissionType }
+        : {}),
+      ...(isLinxUpProfile
+        ? {
+            linxup: {
+              vehicleType: linxupVehicleType,
+              hoursMiles: linxupHoursMiles,
+              year: linxupYear,
+              ...(isLinxUpAssetTracker
+                ? {
+                    powerConnectionDescription: linxupPowerConnectionDescription,
+                    groundConnectionDescription: linxupGroundConnectionDescription,
+                    ignitionConnectionDescription: linxupIgnitionConnectionDescription,
+                  }
+                : {}),
+              ...(isLinxUpVehicleTracker
+                ? {
+                    vehicleTracker: {
+                      obdPortConnected: linxupVtObdPortConnected,
+                      installationNotes: linxupVtInstallationNotes,
+                      ...(linxupVtObdPortConnected === "No"
+                        ? {
+                            powerConnectionDescription: linxupVtPowerConnectionDescription,
+                            groundConnectionDescription: linxupVtGroundConnectionDescription,
+                            ignitionConnectionDescription: linxupVtIgnitionConnectionDescription,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+              ...(isLinxUpLinxCam
+                ? {
+                    linxCam: {
+                      obdPortConnected: linxupLcObdPortConnected,
+                      ...(linxupLcObdPortConnected === "No"
+                        ? {
+                            installationNotes: linxupLcInstallationNotes,
+                            powerConnectionDescription: linxupLcPowerConnectionDescription,
+                            groundConnectionDescription: linxupLcGroundConnectionDescription,
+                            ignitionConnectionDescription: linxupLcIgnitionConnectionDescription,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
       vac4: {
         vehicleType: vac4VehicleType,
         otherVehicleType: vac4OtherVehicleType,
@@ -3740,7 +4858,15 @@ export function NewSubmissionForm() {
             location: normalizedCore.location.trim(),
           };
           if (autosavePersistSuppressedRef.current) return;
-          window.localStorage.setItem(getAutosaveKey(companyId, projectId), JSON.stringify(payload));
+          const formId =
+            (base.data.formId || "").trim() ||
+            getFormDefinitionBySectionKey(base.data.hardwareSelection?.primary)?.id ||
+            "";
+          // Require company+project; for form-scoped isolation require formId when a primary is chosen.
+          // Never write a shared project key after a form is selected (prevents LinxUp product collisions).
+          if (!companyId || !projectId) return;
+          if (base.data.hardwareSelection?.primary && !formId) return;
+          window.localStorage.setItem(getAutosaveKey(companyId, projectId, formId || undefined), JSON.stringify(payload));
         } catch {
           // ignore localStorage write errors
         }
@@ -4236,10 +5362,28 @@ export function NewSubmissionForm() {
 
         {!isJobCardSubmitted && !emailSubmissionPreview && (step === "form" ? (
         <>
+        {!companyContextReady ? (
+          <section className={cardClassName}>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              Loading project company before form selection…
+            </p>
+          </section>
+        ) : !companySlug ? (
+          <section className={cardClassName}>
+            <p className="text-sm font-semibold text-red-800 dark:text-red-300">
+              This company is not assigned any forms in the registry. Select a Powerfleet, Matrix, or LinxUp project.
+            </p>
+          </section>
+        ) : null}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           <SectionStatusCard title="Core Job Info" tone="blue" icon={IconClipboard} status={coreSectionStatus} />
-          <SectionStatusCard title="Hardware Selection" tone="green" icon={IconChip} status={hardwareSectionStatus} />
-          {hardwareStatusSections.map((section) => (
+          <SectionStatusCard
+            title={isLinxUpProfile ? "Product Selection" : "Hardware Selection"}
+            tone="green"
+            icon={IconChip}
+            status={hardwareSectionStatus}
+          />
+          {!isLinxUpProfile && hardwareStatusSections.map((section) => (
             <SectionStatusCard
               key={section}
               title={["VAC4", "CP4", "PPD"].includes(section) ? `${section} hardware` : `${section} Section`}
@@ -4292,43 +5436,88 @@ export function NewSubmissionForm() {
               {requiredHint("core-location")}
             </div>
 
-            <div id="field-core-workOrder">
-              <label className={fieldLabelClass("core-workOrder")}>
-                Work Order #
-                <RequiredMark />
-              </label>
-              <div className="relative">
-                <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
-                  WO-
-                </span>
-                <input
-                  className={`${fieldInputClass("core-workOrder")} pl-16`}
-                  placeholder="12345"
-                  value={coreJob.workOrder}
-                  onChange={(e) => setCoreField("workOrder", e.target.value)}
-                />
+            {!isLinxUpProfile && (
+              <div id="field-core-workOrder">
+                <label className={fieldLabelClass("core-workOrder")}>
+                  Work Order #
+                  <RequiredMark />
+                </label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
+                    WO-
+                  </span>
+                  <input
+                    className={`${fieldInputClass("core-workOrder")} pl-16`}
+                    placeholder="12345"
+                    value={coreJob.workOrder}
+                    onChange={(e) => setCoreField("workOrder", e.target.value)}
+                  />
+                </div>
+                {requiredHint("core-workOrder")}
               </div>
-              {requiredHint("core-workOrder")}
-            </div>
+            )}
 
-            <div id="field-core-serviceAppointment">
-              <label className={fieldLabelClass("core-serviceAppointment")}>
-                Service Appointment #
-                <RequiredMark />
-              </label>
-              <div className="relative">
-                <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
-                  SA-
-                </span>
+            {!isLinxUpProfile && (
+              <div id="field-core-serviceAppointment">
+                <label className={fieldLabelClass("core-serviceAppointment")}>
+                  Service Appointment #
+                  <RequiredMark />
+                </label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute inset-y-0 left-4 inline-flex items-center text-base font-semibold text-gray-500">
+                    SA-
+                  </span>
+                  <input
+                    className={`${fieldInputClass("core-serviceAppointment")} pl-16`}
+                    placeholder="98765"
+                    value={coreJob.serviceAppointment}
+                    onChange={(e) => setCoreField("serviceAppointment", e.target.value)}
+                  />
+                </div>
+                {requiredHint("core-serviceAppointment")}
+              </div>
+            )}
+
+            {isLinxUpProfile && (
+              <div id="field-core-primaryContact">
+                <label className={labelClassName}>Primary Contact</label>
                 <input
-                  className={`${fieldInputClass("core-serviceAppointment")} pl-16`}
-                  placeholder="98765"
-                  value={coreJob.serviceAppointment}
-                  onChange={(e) => setCoreField("serviceAppointment", e.target.value)}
+                  className={inputClassName}
+                  placeholder="exp: Jane Doe"
+                  value={coreJob.primaryContact ?? ""}
+                  onChange={(e) => setCoreField("primaryContact", e.target.value)}
                 />
               </div>
-              {requiredHint("core-serviceAppointment")}
-            </div>
+            )}
+
+            {isLinxUpProfile && (
+              <div id="field-core-contactNumber">
+                <label className={labelClassName}>Contact Number</label>
+                <input
+                  className={inputClassName}
+                  placeholder="exp: 555-123-4567"
+                  value={coreJob.contactNumber ?? ""}
+                  onChange={(e) => setCoreField("contactNumber", e.target.value)}
+                />
+              </div>
+            )}
+
+            {isLinxUpProfile && (
+              <div id="field-core-contactEmail">
+                <label className={fieldLabelClass("core-contactEmail")}>Contact Email</label>
+                <input
+                  className={fieldInputClass("core-contactEmail")}
+                  placeholder="exp: jane@acme.com"
+                  type="email"
+                  value={coreJob.contactEmail ?? ""}
+                  onChange={(e) => {
+                    setCoreField("contactEmail", e.target.value);
+                    clearFieldHighlight("core-contactEmail");
+                  }}
+                />
+                {requiredHint("core-contactEmail")}
+              </div>
+            )}
 
             <div id="field-core-installerName">
               <label className={fieldLabelClass("core-installerName")}>
@@ -4351,6 +5540,18 @@ export function NewSubmissionForm() {
           <FormSectionHeader title="Vehicle Information" tone="purple" />
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-x-6 md:gap-y-5">
+            {isLinxUpProfile && (
+              <div id="field-linxup-year">
+                <label className={labelClassName}>Year</label>
+                <input
+                  className={inputClassName}
+                  placeholder="exp: 2022"
+                  value={linxupYear}
+                  onChange={(e) => setLinxupYear(e.target.value)}
+                />
+              </div>
+            )}
+
             <div id="field-vehicle-equipmentMake">
               <label className={fieldLabelClass("vehicle-equipmentMake")}>
                 Make
@@ -4381,7 +5582,7 @@ export function NewSubmissionForm() {
 
             <div id="field-vehicle-serialNumber">
               <label className={fieldLabelClass("vehicle-equipmentSerial")}>
-                Serial #
+                {isLinxUpProfile ? "Serial/VIN" : "Serial #"}
                 <RequiredMark />
               </label>
               <input
@@ -4395,7 +5596,7 @@ export function NewSubmissionForm() {
 
             <div id="field-vehicle-unitNumber">
               <label className={fieldLabelClass("vehicle-unitNumber")}>
-                Unit #
+                {isLinxUpProfile ? "Asset Number" : "Unit #"}
                 <RequiredMark />
               </label>
               <input
@@ -4407,68 +5608,112 @@ export function NewSubmissionForm() {
               {requiredHint("vehicle-unitNumber")}
             </div>
 
-            <div id="field-vac4-vehicleType">
-              <label className={fieldLabelClass("vac4-vehicleType")}>
-                Vehicle Type
-                <RequiredMark />
-              </label>
-              <select
-                className={fieldSelectClass("vac4-vehicleType")}
-                value={vac4VehicleType}
-                onChange={(e) => {
-                  setVac4VehicleType(e.target.value);
-                  clearFieldHighlight("vac4-vehicleType");
-                }}
-              >
-                <option value="" className="text-gray-400">
-                  Select vehicle type
-                </option>
-                <option>Forklift Rider</option>
-                <option>Forklift Stand-up</option>
-                <option>Man Lift</option>
-                <option>Order Picker</option>
-                <option>Pallet Jack Rider</option>
-                <option>Pallet Jack Walkie</option>
-                <option>Reach Truck</option>
-                <option>Stacker Rider</option>
-                <option>Stacker Walkie</option>
-                <option>Sweeper/Scrubber</option>
-                <option>Tugger/Tow Tractor</option>
-                <option>Turret Truck</option>
-                <option>Other</option>
-              </select>
-              {requiredHint("vac4-vehicleType")}
-            </div>
+            {isLinxUpProfile ? (
+              <div id="field-linxup-vehicleType">
+                <label className={fieldLabelClass("linxup-vehicleType")}>
+                  Vehicle Type
+                  <RequiredMark />
+                </label>
+                <select
+                  className={fieldSelectClass("linxup-vehicleType")}
+                  value={linxupVehicleType}
+                  onChange={(e) => {
+                    setLinxupVehicleType(e.target.value);
+                    clearFieldHighlight("linxup-vehicleType");
+                  }}
+                >
+                  <option value="" className="text-gray-400">
+                    Select vehicle type
+                  </option>
+                  {LINXUP_VEHICLE_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt}>{opt}</option>
+                  ))}
+                </select>
+                {requiredHint("linxup-vehicleType")}
+              </div>
+            ) : (
+              <div id="field-vac4-vehicleType">
+                <label className={fieldLabelClass("vac4-vehicleType")}>
+                  Vehicle Type
+                  <RequiredMark />
+                </label>
+                <select
+                  className={fieldSelectClass("vac4-vehicleType")}
+                  value={vac4VehicleType}
+                  onChange={(e) => {
+                    setVac4VehicleType(e.target.value);
+                    clearFieldHighlight("vac4-vehicleType");
+                  }}
+                >
+                  <option value="" className="text-gray-400">
+                    Select vehicle type
+                  </option>
+                  <option>Forklift Rider</option>
+                  <option>Forklift Stand-up</option>
+                  <option>Man Lift</option>
+                  <option>Order Picker</option>
+                  <option>Pallet Jack Rider</option>
+                  <option>Pallet Jack Walkie</option>
+                  <option>Reach Truck</option>
+                  <option>Stacker Rider</option>
+                  <option>Stacker Walkie</option>
+                  <option>Sweeper/Scrubber</option>
+                  <option>Tugger/Tow Tractor</option>
+                  <option>Turret Truck</option>
+                  <option>Other</option>
+                </select>
+                {requiredHint("vac4-vehicleType")}
+              </div>
+            )}
 
-            <div id="field-vac4-driveType">
-              <label className={fieldLabelClass("vac4-driveType")}>
-                Drive Type
-                <RequiredMark />
-              </label>
-              <select
-                className={fieldSelectClass("vac4-driveType")}
-                value={vac4DriveType}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setVac4DriveType(v);
-                  clearFieldHighlight("vac4-driveType");
-                  if (v !== "Electric") {
-                    setVac4VehicleVoltage("");
-                    setVac4VehicleVoltageOther("");
-                  }
-                }}
-              >
-                <option value="" className="text-gray-400">
-                  Select drive type
-                </option>
-                <option>Electric</option>
-                <option>Internal Combustion</option>
-                <option>Other</option>
-              </select>
-              {requiredHint("vac4-driveType")}
-            </div>
+            {isLinxUpProfile ? (
+              <div id="field-linxup-hoursMiles">
+                <label className={fieldLabelClass("linxup-hoursMiles")}>
+                  Hours / Miles
+                  <RequiredMark />
+                </label>
+                <input
+                  className={fieldInputClass("linxup-hoursMiles")}
+                  placeholder="exp: 1234"
+                  value={linxupHoursMiles}
+                  onChange={(e) => {
+                    setLinxupHoursMiles(e.target.value);
+                    clearFieldHighlight("linxup-hoursMiles");
+                  }}
+                />
+                {requiredHint("linxup-hoursMiles")}
+              </div>
+            ) : (
+              <div id="field-vac4-driveType">
+                <label className={fieldLabelClass("vac4-driveType")}>
+                  Drive Type
+                  <RequiredMark />
+                </label>
+                <select
+                  className={fieldSelectClass("vac4-driveType")}
+                  value={vac4DriveType}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setVac4DriveType(v);
+                    clearFieldHighlight("vac4-driveType");
+                    if (v !== "Electric") {
+                      setVac4VehicleVoltage("");
+                      setVac4VehicleVoltageOther("");
+                    }
+                  }}
+                >
+                  <option value="" className="text-gray-400">
+                    Select drive type
+                  </option>
+                  <option>Electric</option>
+                  <option>Internal Combustion</option>
+                  <option>Other</option>
+                </select>
+                {requiredHint("vac4-driveType")}
+              </div>
+            )}
 
-            {vac4DriveType === "Electric" && (
+            {!isLinxUpProfile && vac4DriveType === "Electric" && (
               <div className="space-y-5 md:col-span-2">
                 <div id="field-vac4-vehicleVoltage">
                   <label className={fieldLabelClass("vac4-vehicleVoltage")}>
@@ -4520,7 +5765,7 @@ export function NewSubmissionForm() {
               </div>
             )}
 
-            {vac4VehicleType === "Other" && (
+            {!isLinxUpProfile && vac4VehicleType === "Other" && (
               <div id="field-vac4-otherVehicleType" className="md:col-span-2">
                 <label className={fieldLabelClass("vac4-otherVehicleType")}>
                   Other Vehicle Type
@@ -4637,41 +5882,53 @@ export function NewSubmissionForm() {
           </div>
         </section>
 
-        {/* Hardware Selection */}
+        {/* Product / Hardware Selection (registry-driven) */}
         {isVehicleInfoComplete ? (
           <section className={cardClassName}>
-            <FormSectionHeader title="Hardware Selection" tone="green" />
+            <FormSectionHeader
+              title={isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install") ? "Product Selection" : "Hardware Selection"}
+              tone="green"
+            />
 
             <div className="space-y-5">
               <div id="field-hw-primary">
                 <label className={fieldLabelClass("hw-primary")}>
-                  Primary Hardware / Install Type
+                  {allowedForms.some((f) => f.profileId === "linxup_install")
+                    ? "Product / Install Type"
+                    : "Primary Hardware / Install Type"}
                   <RequiredMark />
                 </label>
                 <select
                   className={fieldSelectClass("hw-primary")}
-                  value={primary}
+                  value={effectivePrimary}
                   onChange={(e) => {
-                    setPrimary(e.target.value);
+                    const next = e.target.value;
+                    if (next && selectedCompanyName && !isSectionKeyAllowedForCompany(selectedCompanyName, next)) {
+                      setDraftNoticeMessage("That form is not assigned to this company.");
+                      return;
+                    }
+                    setPrimary(next);
+                    setAdditional((prev) => prev.filter((item) => item !== next));
                     clearFieldHighlight("hw-primary");
                   }}
                 >
                   <option value="" className="text-gray-400">
-                    Select Primary Hardware
+                    Select product / install type
                   </option>
-                  <option value="VAC4">VAC4</option>
-                  <option value="CP4">CP4</option>
-                  <option value="PPD">PPD</option>
-                  <option value="Speed Transmon">Speed Transmon</option>
-                  <option value="Speed SSC">Speed SSC</option>
-                  <option value="FTxw">FTxw</option>
+                  {(primaryFormOptions.length > 0 ? primaryFormOptions : []).map((form) => (
+                    <option key={form.sectionKey} value={form.sectionKey}>
+                      {form.label}
+                    </option>
+                  ))}
                 </select>
                 {requiredHint("hw-primary")}
               </div>
 
               <div id="field-hw-hasAdditional">
                 <label className={fieldLabelClass("hw-hasAdditional")}>
-                  Is any additional hardware being installed?
+                  {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+                    ? "Is any additional device being installed?"
+                    : "Is any additional hardware being installed?"}
                   <RequiredMark />
                 </label>
                 <select
@@ -4687,7 +5944,9 @@ export function NewSubmissionForm() {
                   }}
                 >
                   <option value="" className="text-gray-400">
-                    Any additional hardware?
+                    {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+                      ? "Any additional device?"
+                      : "Any additional hardware?"}
                   </option>
                   <option value="Yes">Yes</option>
                   <option value="No">No</option>
@@ -4695,7 +5954,7 @@ export function NewSubmissionForm() {
                 {requiredHint("hw-hasAdditional")}
               </div>
 
-              {hasAdditional === "Yes" && primary && (
+              {hasAdditional === "Yes" && effectivePrimary ? (
                 <div className="space-y-3 pt-1">
                   {availableAdditional.map((type) => (
                     <label key={type} className={checkboxRowClassName}>
@@ -4705,26 +5964,928 @@ export function NewSubmissionForm() {
                         checked={additional.includes(type)}
                         onChange={() => toggleAdditional(type)}
                       />
-                      <span>{type}</span>
+                      <span>{getFormDefinitionBySectionKey(type)?.label || type}</span>
                     </label>
                   ))}
                 </div>
-              )}
+              ) : null}
             </div>
           </section>
         ) : (
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
-              Complete all required Vehicle Information fields before selecting hardware.
+              Complete all required Vehicle Information fields before selecting{" "}
+              {allowedForms.some((f) => f.profileId === "linxup_install") ? "a product" : "hardware"}.
             </p>
           </section>
         )}
 
-        {primary && !hasAnsweredAdditionalHardwareQuestion && (
+        {effectivePrimary && !hasAnsweredAdditionalHardwareQuestion && (
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-              Please answer &quot;Is any additional hardware being installed?&quot; to continue.
+              {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+                ? 'Please answer "Is any additional device being installed?" to continue.'
+                : 'Please answer "Is any additional hardware being installed?" to continue.'}
             </p>
+          </section>
+        )}
+
+        {hasAnsweredAdditionalHardwareQuestion && isLinxUpVehicleTracker && (
+          <section className={`${cardClassName} space-y-6`}>
+            <FormSectionHeader title="Vehicle Tracker" tone="green" />
+
+            <div id={`field-${linxupVtPhotoIssueKey("vehicleTrackerTag")}`}>
+              <label className={fieldLabelClass(linxupVtPhotoIssueKey("vehicleTrackerTag"))}>
+                Picture of vehicle tracker tag
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-vt-photo-vehicleTrackerTag"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupVtPhotoUpload("vehicleTrackerTag", e)}
+              />
+              <label
+                htmlFor="linxup-vt-photo-vehicleTrackerTag"
+                className={photoPickClass(linxupVtPhotoIssueKey("vehicleTrackerTag"), true, linxupVtPc.vehicleTrackerTag >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupVtPc.vehicleTrackerTag} names={linxupVtPhotoFileNames.vehicleTrackerTag} />
+              <PhotoThumbnailGrid
+                files={linxupVtPhotoFiles.vehicleTrackerTag}
+                remotePhotos={remoteThumbsForLinxupVtField("vehicleTrackerTag")}
+                onRemoveLocal={(file) => removeLinxupVtLocalPhoto("vehicleTrackerTag", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("vehicleTrackerTag"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupVtPc.vehicleTrackerTag >= 1} />
+              <PhotoFieldError message={linxupVtPhotoErrors.vehicleTrackerTag} />
+              {requiredHint(linxupVtPhotoIssueKey("vehicleTrackerTag"))}
+            </div>
+
+            <div id="field-linxup-vt-obdPortConnected">
+              <label className={fieldLabelClass("linxup-vt-obdPortConnected")}>
+                Is tracker connected via OBD Port?
+                <RequiredMark />
+              </label>
+              <select
+                className={fieldSelectClass("linxup-vt-obdPortConnected")}
+                value={linxupVtObdPortConnected}
+                onChange={(e) => {
+                  setLinxupVtObdPortConnected(e.target.value);
+                  clearFieldHighlight("linxup-vt-obdPortConnected");
+                }}
+              >
+                <option value="">Select Yes or No</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+              {requiredHint("linxup-vt-obdPortConnected")}
+            </div>
+
+            {linxupVtObdPortConnected === "Yes" && (
+              <>
+                <div id={`field-${linxupVtPhotoIssueKey("greenActivityLight")}`}>
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("greenActivityLight"))}>
+                    Picture of green activity light
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-greenActivityLight-obd"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("greenActivityLight", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-greenActivityLight-obd"
+                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), true, linxupVtPc.greenActivityLight >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.greenActivityLight} names={linxupVtPhotoFileNames.greenActivityLight} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.greenActivityLight}
+                    remotePhotos={remoteThumbsForLinxupVtField("greenActivityLight")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("greenActivityLight", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("greenActivityLight"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.greenActivityLight >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.greenActivityLight} />
+                  {requiredHint(linxupVtPhotoIssueKey("greenActivityLight"))}
+                </div>
+
+                <div id={`field-${linxupVtPhotoIssueKey("installation")}`}>
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("installation"))}>
+                    Picture of installation
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-installation"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("installation", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-installation"
+                    className={photoPickClass(linxupVtPhotoIssueKey("installation"), true, linxupVtPc.installation >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.installation} names={linxupVtPhotoFileNames.installation} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.installation}
+                    remotePhotos={remoteThumbsForLinxupVtField("installation")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("installation", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("installation"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.installation >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.installation} />
+                  {requiredHint(linxupVtPhotoIssueKey("installation"))}
+                </div>
+
+                <div id="field-linxup-vt-installationNotes">
+                  <label className={fieldLabelClass("linxup-vt-installationNotes")}>
+                    Installation notes
+                    <RequiredMark />
+                  </label>
+                  <textarea
+                    className={`${fieldInputClass("linxup-vt-installationNotes")} min-h-[80px] resize-y py-3`}
+                    value={linxupVtInstallationNotes}
+                    placeholder="exp: OBD plug seated under dash, cable secured"
+                    onChange={(e) => {
+                      setLinxupVtInstallationNotes(e.target.value);
+                      clearFieldHighlight("linxup-vt-installationNotes");
+                    }}
+                  />
+                  {requiredHint("linxup-vt-installationNotes")}
+                </div>
+              </>
+            )}
+
+            {linxupVtObdPortConnected === "No" && (
+              <>
+                <div id={`field-${linxupVtPhotoIssueKey("powerConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("powerConnection"))}>
+                    Power connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-powerConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("powerConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-powerConnection"
+                    className={photoPickClass(linxupVtPhotoIssueKey("powerConnection"), true, linxupVtPc.powerConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.powerConnection} names={linxupVtPhotoFileNames.powerConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.powerConnection}
+                    remotePhotos={remoteThumbsForLinxupVtField("powerConnection")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("powerConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("powerConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.powerConnection >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.powerConnection} />
+                  {requiredHint(linxupVtPhotoIssueKey("powerConnection"))}
+                  <div id="field-linxup-vt-powerConnectionDescription">
+                    <label className={fieldLabelClass("linxup-vt-powerConnectionDescription")}>
+                      Power connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-vt-powerConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupVtPowerConnectionDescription}
+                      placeholder="exp: Fused power tap at battery positive"
+                      onChange={(e) => {
+                        setLinxupVtPowerConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-vt-powerConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-vt-powerConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupVtPhotoIssueKey("groundConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("groundConnection"))}>
+                    Ground connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-groundConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("groundConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-groundConnection"
+                    className={photoPickClass(linxupVtPhotoIssueKey("groundConnection"), true, linxupVtPc.groundConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.groundConnection} names={linxupVtPhotoFileNames.groundConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.groundConnection}
+                    remotePhotos={remoteThumbsForLinxupVtField("groundConnection")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("groundConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("groundConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.groundConnection >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.groundConnection} />
+                  {requiredHint(linxupVtPhotoIssueKey("groundConnection"))}
+                  <div id="field-linxup-vt-groundConnectionDescription">
+                    <label className={fieldLabelClass("linxup-vt-groundConnectionDescription")}>
+                      Ground connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-vt-groundConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupVtGroundConnectionDescription}
+                      placeholder="exp: Chassis ground stud near battery box"
+                      onChange={(e) => {
+                        setLinxupVtGroundConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-vt-groundConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-vt-groundConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupVtPhotoIssueKey("ignitionConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("ignitionConnection"))}>
+                    Ignition connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-ignitionConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("ignitionConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-ignitionConnection"
+                    className={photoPickClass(linxupVtPhotoIssueKey("ignitionConnection"), true, linxupVtPc.ignitionConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.ignitionConnection} names={linxupVtPhotoFileNames.ignitionConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.ignitionConnection}
+                    remotePhotos={remoteThumbsForLinxupVtField("ignitionConnection")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("ignitionConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("ignitionConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.ignitionConnection >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.ignitionConnection} />
+                  {requiredHint(linxupVtPhotoIssueKey("ignitionConnection"))}
+                  <div id="field-linxup-vt-ignitionConnectionDescription">
+                    <label className={fieldLabelClass("linxup-vt-ignitionConnectionDescription")}>
+                      Ignition connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-vt-ignitionConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupVtIgnitionConnectionDescription}
+                      placeholder="exp: Ignition-switched circuit at fuse panel"
+                      onChange={(e) => {
+                        setLinxupVtIgnitionConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-vt-ignitionConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-vt-ignitionConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupVtPhotoIssueKey("greenActivityLight")}`}>
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("greenActivityLight"))}>
+                    Picture of green activity light
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-greenActivityLight-hardwire"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("greenActivityLight", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-greenActivityLight-hardwire"
+                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), true, linxupVtPc.greenActivityLight >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.greenActivityLight} names={linxupVtPhotoFileNames.greenActivityLight} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.greenActivityLight}
+                    remotePhotos={remoteThumbsForLinxupVtField("greenActivityLight")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("greenActivityLight", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("greenActivityLight"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.greenActivityLight >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.greenActivityLight} />
+                  {requiredHint(linxupVtPhotoIssueKey("greenActivityLight"))}
+                </div>
+
+                <div id={`field-${linxupVtPhotoIssueKey("finalInstall")}`}>
+                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("finalInstall"))}>
+                    Picture of final installation
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-vt-photo-finalInstall"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupVtPhotoUpload("finalInstall", e)}
+                  />
+                  <label
+                    htmlFor="linxup-vt-photo-finalInstall"
+                    className={photoPickClass(linxupVtPhotoIssueKey("finalInstall"), true, linxupVtPc.finalInstall >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupVtPc.finalInstall} names={linxupVtPhotoFileNames.finalInstall} />
+                  <PhotoThumbnailGrid
+                    files={linxupVtPhotoFiles.finalInstall}
+                    remotePhotos={remoteThumbsForLinxupVtField("finalInstall")}
+                    onRemoveLocal={(file) => removeLinxupVtLocalPhoto("finalInstall", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupVtUploadFieldFor("finalInstall"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupVtPc.finalInstall >= 1} />
+                  <PhotoFieldError message={linxupVtPhotoErrors.finalInstall} />
+                  {requiredHint(linxupVtPhotoIssueKey("finalInstall"))}
+                </div>
+
+                <div id="field-linxup-vt-installationNotes">
+                  <label className={fieldLabelClass("linxup-vt-installationNotes")}>
+                    Installation notes
+                    <RequiredMark />
+                  </label>
+                  <textarea
+                    className={`${fieldInputClass("linxup-vt-installationNotes")} min-h-[80px] resize-y py-3`}
+                    value={linxupVtInstallationNotes}
+                    placeholder="exp: Hardwired under dash, cable secured away from pedals"
+                    onChange={(e) => {
+                      setLinxupVtInstallationNotes(e.target.value);
+                      clearFieldHighlight("linxup-vt-installationNotes");
+                    }}
+                  />
+                  {requiredHint("linxup-vt-installationNotes")}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {hasAnsweredAdditionalHardwareQuestion && isLinxUpLinxCam && (
+          <section className={`${cardClassName} space-y-6`}>
+            <FormSectionHeader title="LinxCam" tone="green" />
+
+            <div id={`field-${linxupLcPhotoIssueKey("linxCamTag")}`}>
+              <label className={fieldLabelClass(linxupLcPhotoIssueKey("linxCamTag"))}>
+                Picture of LinxCam tag
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-lc-photo-linxCamTag"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupLcPhotoUpload("linxCamTag", e)}
+              />
+              <label
+                htmlFor="linxup-lc-photo-linxCamTag"
+                className={photoPickClass(linxupLcPhotoIssueKey("linxCamTag"), true, linxupLcPc.linxCamTag >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupLcPc.linxCamTag} names={linxupLcPhotoFileNames.linxCamTag} />
+              <PhotoThumbnailGrid
+                files={linxupLcPhotoFiles.linxCamTag}
+                remotePhotos={remoteThumbsForLinxupLcField("linxCamTag")}
+                onRemoveLocal={(file) => removeLinxupLcLocalPhoto("linxCamTag", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("linxCamTag"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupLcPc.linxCamTag >= 1} />
+              <PhotoFieldError message={linxupLcPhotoErrors.linxCamTag} />
+              {requiredHint(linxupLcPhotoIssueKey("linxCamTag"))}
+            </div>
+
+            <div id="field-linxup-lc-obdPortConnected">
+              <label className={fieldLabelClass("linxup-lc-obdPortConnected")}>
+                Is LinxCam connected via OBD Port?
+                <RequiredMark />
+              </label>
+              <select
+                className={fieldSelectClass("linxup-lc-obdPortConnected")}
+                value={linxupLcObdPortConnected}
+                onChange={(e) => {
+                  setLinxupLcObdPortConnected(e.target.value);
+                  clearFieldHighlight("linxup-lc-obdPortConnected");
+                }}
+              >
+                <option value="">Select Yes or No</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+              {requiredHint("linxup-lc-obdPortConnected")}
+            </div>
+
+            {linxupLcObdPortConnected === "Yes" && (
+              <>
+                <div id={`field-${linxupLcPhotoIssueKey("greenActivityLight")}`}>
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("greenActivityLight"))}>
+                    Picture of green activity light
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-greenActivityLight-obd"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("greenActivityLight", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-greenActivityLight-obd"
+                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), true, linxupLcPc.greenActivityLight >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.greenActivityLight} names={linxupLcPhotoFileNames.greenActivityLight} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.greenActivityLight}
+                    remotePhotos={remoteThumbsForLinxupLcField("greenActivityLight")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("greenActivityLight", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("greenActivityLight"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.greenActivityLight >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.greenActivityLight} />
+                  {requiredHint(linxupLcPhotoIssueKey("greenActivityLight"))}
+                </div>
+
+                <div id={`field-${linxupLcPhotoIssueKey("installation")}`}>
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("installation"))}>
+                    Picture of installation
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-installation"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("installation", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-installation"
+                    className={photoPickClass(linxupLcPhotoIssueKey("installation"), true, linxupLcPc.installation >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.installation} names={linxupLcPhotoFileNames.installation} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.installation}
+                    remotePhotos={remoteThumbsForLinxupLcField("installation")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("installation", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("installation"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.installation >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.installation} />
+                  {requiredHint(linxupLcPhotoIssueKey("installation"))}
+                </div>
+              </>
+            )}
+
+            {linxupLcObdPortConnected === "No" && (
+              <>
+                <div id={`field-${linxupLcPhotoIssueKey("powerConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("powerConnection"))}>
+                    Power connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-powerConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("powerConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-powerConnection"
+                    className={photoPickClass(linxupLcPhotoIssueKey("powerConnection"), true, linxupLcPc.powerConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.powerConnection} names={linxupLcPhotoFileNames.powerConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.powerConnection}
+                    remotePhotos={remoteThumbsForLinxupLcField("powerConnection")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("powerConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("powerConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.powerConnection >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.powerConnection} />
+                  {requiredHint(linxupLcPhotoIssueKey("powerConnection"))}
+                  <div id="field-linxup-lc-powerConnectionDescription">
+                    <label className={fieldLabelClass("linxup-lc-powerConnectionDescription")}>
+                      Power connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-lc-powerConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupLcPowerConnectionDescription}
+                      placeholder="exp: Fused power tap at battery positive"
+                      onChange={(e) => {
+                        setLinxupLcPowerConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-lc-powerConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-lc-powerConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupLcPhotoIssueKey("groundConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("groundConnection"))}>
+                    Ground connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-groundConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("groundConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-groundConnection"
+                    className={photoPickClass(linxupLcPhotoIssueKey("groundConnection"), true, linxupLcPc.groundConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.groundConnection} names={linxupLcPhotoFileNames.groundConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.groundConnection}
+                    remotePhotos={remoteThumbsForLinxupLcField("groundConnection")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("groundConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("groundConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.groundConnection >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.groundConnection} />
+                  {requiredHint(linxupLcPhotoIssueKey("groundConnection"))}
+                  <div id="field-linxup-lc-groundConnectionDescription">
+                    <label className={fieldLabelClass("linxup-lc-groundConnectionDescription")}>
+                      Ground connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-lc-groundConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupLcGroundConnectionDescription}
+                      placeholder="exp: Chassis ground stud near battery box"
+                      onChange={(e) => {
+                        setLinxupLcGroundConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-lc-groundConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-lc-groundConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupLcPhotoIssueKey("ignitionConnection")}`} className="space-y-3">
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("ignitionConnection"))}>
+                    Ignition connection and picture
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-ignitionConnection"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("ignitionConnection", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-ignitionConnection"
+                    className={photoPickClass(linxupLcPhotoIssueKey("ignitionConnection"), true, linxupLcPc.ignitionConnection >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.ignitionConnection} names={linxupLcPhotoFileNames.ignitionConnection} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.ignitionConnection}
+                    remotePhotos={remoteThumbsForLinxupLcField("ignitionConnection")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("ignitionConnection", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("ignitionConnection"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.ignitionConnection >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.ignitionConnection} />
+                  {requiredHint(linxupLcPhotoIssueKey("ignitionConnection"))}
+                  <div id="field-linxup-lc-ignitionConnectionDescription">
+                    <label className={fieldLabelClass("linxup-lc-ignitionConnectionDescription")}>
+                      Ignition connection note
+                      <RequiredMark />
+                    </label>
+                    <textarea
+                      className={`${fieldInputClass("linxup-lc-ignitionConnectionDescription")} min-h-[80px] resize-y py-3`}
+                      value={linxupLcIgnitionConnectionDescription}
+                      placeholder="exp: Ignition-switched circuit at fuse panel"
+                      onChange={(e) => {
+                        setLinxupLcIgnitionConnectionDescription(e.target.value);
+                        clearFieldHighlight("linxup-lc-ignitionConnectionDescription");
+                      }}
+                    />
+                    {requiredHint("linxup-lc-ignitionConnectionDescription")}
+                  </div>
+                </div>
+
+                <div id={`field-${linxupLcPhotoIssueKey("greenActivityLight")}`}>
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("greenActivityLight"))}>
+                    Picture of green activity light
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-greenActivityLight-hardwire"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("greenActivityLight", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-greenActivityLight-hardwire"
+                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), true, linxupLcPc.greenActivityLight >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.greenActivityLight} names={linxupLcPhotoFileNames.greenActivityLight} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.greenActivityLight}
+                    remotePhotos={remoteThumbsForLinxupLcField("greenActivityLight")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("greenActivityLight", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("greenActivityLight"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.greenActivityLight >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.greenActivityLight} />
+                  {requiredHint(linxupLcPhotoIssueKey("greenActivityLight"))}
+                </div>
+
+                <div id={`field-${linxupLcPhotoIssueKey("finalInstall")}`}>
+                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("finalInstall"))}>
+                    Picture of final installation
+                    <RequiredMark />
+                  </label>
+                  <input
+                    id="linxup-lc-photo-finalInstall"
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => void applyLinxupLcPhotoUpload("finalInstall", e)}
+                  />
+                  <label
+                    htmlFor="linxup-lc-photo-finalInstall"
+                    className={photoPickClass(linxupLcPhotoIssueKey("finalInstall"), true, linxupLcPc.finalInstall >= 1)}
+                  >
+                    {PHOTO_UPLOAD_LABEL_SINGLE}
+                  </label>
+                  <PhotoUploadFeedback count={linxupLcPc.finalInstall} names={linxupLcPhotoFileNames.finalInstall} />
+                  <PhotoThumbnailGrid
+                    files={linxupLcPhotoFiles.finalInstall}
+                    remotePhotos={remoteThumbsForLinxupLcField("finalInstall")}
+                    onRemoveLocal={(file) => removeLinxupLcLocalPhoto("finalInstall", file)}
+                    onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupLcUploadFieldFor("finalInstall"), remote)}
+                  />
+                  <PhotoUploadedBadge show={linxupLcPc.finalInstall >= 1} />
+                  <PhotoFieldError message={linxupLcPhotoErrors.finalInstall} />
+                  {requiredHint(linxupLcPhotoIssueKey("finalInstall"))}
+                </div>
+
+                <div id="field-linxup-lc-installationNotes">
+                  <label className={fieldLabelClass("linxup-lc-installationNotes")}>
+                    Installation notes
+                    <RequiredMark />
+                  </label>
+                  <textarea
+                    className={`${fieldInputClass("linxup-lc-installationNotes")} min-h-[80px] resize-y py-3`}
+                    value={linxupLcInstallationNotes}
+                    placeholder="exp: Hardwired under dash, cable secured away from pedals"
+                    onChange={(e) => {
+                      setLinxupLcInstallationNotes(e.target.value);
+                      clearFieldHighlight("linxup-lc-installationNotes");
+                    }}
+                  />
+                  {requiredHint("linxup-lc-installationNotes")}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {hasAnsweredAdditionalHardwareQuestion && isLinxUpAssetTracker && (
+          <section className={`${cardClassName} space-y-6`}>
+            <FormSectionHeader title="Asset Tracker" tone="green" />
+
+            <div id={`field-${linxupAtPhotoIssueKey("assetTrackerTag")}`}>
+              <label className={fieldLabelClass(linxupAtPhotoIssueKey("assetTrackerTag"))}>
+                Picture of asset tracker tag
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-at-photo-assetTrackerTag"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupAtPhotoUpload("assetTrackerTag", e)}
+              />
+              <label
+                htmlFor="linxup-at-photo-assetTrackerTag"
+                className={photoPickClass(linxupAtPhotoIssueKey("assetTrackerTag"), true, linxupAtPc.assetTrackerTag >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupAtPc.assetTrackerTag} names={linxupAtPhotoFileNames.assetTrackerTag} />
+              <PhotoThumbnailGrid
+                files={linxupAtPhotoFiles.assetTrackerTag}
+                remotePhotos={remoteThumbsForLinxupAtField("assetTrackerTag")}
+                onRemoveLocal={(file) => removeLinxupAtLocalPhoto("assetTrackerTag", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupAtUploadFieldFor("assetTrackerTag"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupAtPc.assetTrackerTag >= 1} />
+              <PhotoFieldError message={linxupAtPhotoErrors.assetTrackerTag} />
+              {requiredHint(linxupAtPhotoIssueKey("assetTrackerTag"))}
+            </div>
+
+            <div id={`field-${linxupAtPhotoIssueKey("powerConnection")}`} className="space-y-3">
+              <label className={fieldLabelClass(linxupAtPhotoIssueKey("powerConnection"))}>
+                Power connection and picture
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-at-photo-powerConnection"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupAtPhotoUpload("powerConnection", e)}
+              />
+              <label
+                htmlFor="linxup-at-photo-powerConnection"
+                className={photoPickClass(linxupAtPhotoIssueKey("powerConnection"), true, linxupAtPc.powerConnection >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupAtPc.powerConnection} names={linxupAtPhotoFileNames.powerConnection} />
+              <PhotoThumbnailGrid
+                files={linxupAtPhotoFiles.powerConnection}
+                remotePhotos={remoteThumbsForLinxupAtField("powerConnection")}
+                onRemoveLocal={(file) => removeLinxupAtLocalPhoto("powerConnection", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupAtUploadFieldFor("powerConnection"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupAtPc.powerConnection >= 1} />
+              <PhotoFieldError message={linxupAtPhotoErrors.powerConnection} />
+              {requiredHint(linxupAtPhotoIssueKey("powerConnection"))}
+              <div id="field-linxup-at-powerConnectionDescription">
+                <label className={fieldLabelClass("linxup-at-powerConnectionDescription")}>
+                  Power connection note
+                  <RequiredMark />
+                </label>
+                <textarea
+                  className={`${fieldInputClass("linxup-at-powerConnectionDescription")} min-h-[80px] resize-y py-3`}
+                  value={linxupPowerConnectionDescription}
+                  placeholder="exp: Fused power tap at battery positive, ring terminal crimped"
+                  onChange={(e) => {
+                    setLinxupPowerConnectionDescription(e.target.value);
+                    clearFieldHighlight("linxup-at-powerConnectionDescription");
+                  }}
+                />
+                {requiredHint("linxup-at-powerConnectionDescription")}
+              </div>
+            </div>
+
+            <div id={`field-${linxupAtPhotoIssueKey("groundConnection")}`} className="space-y-3">
+              <label className={fieldLabelClass(linxupAtPhotoIssueKey("groundConnection"))}>
+                Ground connection and picture
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-at-photo-groundConnection"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupAtPhotoUpload("groundConnection", e)}
+              />
+              <label
+                htmlFor="linxup-at-photo-groundConnection"
+                className={photoPickClass(linxupAtPhotoIssueKey("groundConnection"), true, linxupAtPc.groundConnection >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupAtPc.groundConnection} names={linxupAtPhotoFileNames.groundConnection} />
+              <PhotoThumbnailGrid
+                files={linxupAtPhotoFiles.groundConnection}
+                remotePhotos={remoteThumbsForLinxupAtField("groundConnection")}
+                onRemoveLocal={(file) => removeLinxupAtLocalPhoto("groundConnection", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupAtUploadFieldFor("groundConnection"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupAtPc.groundConnection >= 1} />
+              <PhotoFieldError message={linxupAtPhotoErrors.groundConnection} />
+              {requiredHint(linxupAtPhotoIssueKey("groundConnection"))}
+              <div id="field-linxup-at-groundConnectionDescription">
+                <label className={fieldLabelClass("linxup-at-groundConnectionDescription")}>
+                  Ground connection note
+                  <RequiredMark />
+                </label>
+                <textarea
+                  className={`${fieldInputClass("linxup-at-groundConnectionDescription")} min-h-[80px] resize-y py-3`}
+                  value={linxupGroundConnectionDescription}
+                  placeholder="exp: Chassis ground stud near battery box"
+                  onChange={(e) => {
+                    setLinxupGroundConnectionDescription(e.target.value);
+                    clearFieldHighlight("linxup-at-groundConnectionDescription");
+                  }}
+                />
+                {requiredHint("linxup-at-groundConnectionDescription")}
+              </div>
+            </div>
+
+            <div id={`field-${linxupAtPhotoIssueKey("ignitionConnection")}`} className="space-y-3">
+              <label className={fieldLabelClass(linxupAtPhotoIssueKey("ignitionConnection"))}>
+                Ignition connection and picture
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-at-photo-ignitionConnection"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupAtPhotoUpload("ignitionConnection", e)}
+              />
+              <label
+                htmlFor="linxup-at-photo-ignitionConnection"
+                className={photoPickClass(linxupAtPhotoIssueKey("ignitionConnection"), true, linxupAtPc.ignitionConnection >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupAtPc.ignitionConnection} names={linxupAtPhotoFileNames.ignitionConnection} />
+              <PhotoThumbnailGrid
+                files={linxupAtPhotoFiles.ignitionConnection}
+                remotePhotos={remoteThumbsForLinxupAtField("ignitionConnection")}
+                onRemoveLocal={(file) => removeLinxupAtLocalPhoto("ignitionConnection", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupAtUploadFieldFor("ignitionConnection"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupAtPc.ignitionConnection >= 1} />
+              <PhotoFieldError message={linxupAtPhotoErrors.ignitionConnection} />
+              {requiredHint(linxupAtPhotoIssueKey("ignitionConnection"))}
+              <div id="field-linxup-at-ignitionConnectionDescription">
+                <label className={fieldLabelClass("linxup-at-ignitionConnectionDescription")}>
+                  Ignition connection note
+                  <RequiredMark />
+                </label>
+                <textarea
+                  className={`${fieldInputClass("linxup-at-ignitionConnectionDescription")} min-h-[80px] resize-y py-3`}
+                  value={linxupIgnitionConnectionDescription}
+                  placeholder="exp: Ignition-switched circuit at fuse panel"
+                  onChange={(e) => {
+                    setLinxupIgnitionConnectionDescription(e.target.value);
+                    clearFieldHighlight("linxup-at-ignitionConnectionDescription");
+                  }}
+                />
+                {requiredHint("linxup-at-ignitionConnectionDescription")}
+              </div>
+            </div>
+
+            <div id={`field-${linxupAtPhotoIssueKey("finalInstall")}`}>
+              <label className={fieldLabelClass(linxupAtPhotoIssueKey("finalInstall"))}>
+                Picture of final install
+                <RequiredMark />
+              </label>
+              <input
+                id="linxup-at-photo-finalInstall"
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/jpg"
+                onChange={(e) => void applyLinxupAtPhotoUpload("finalInstall", e)}
+              />
+              <label
+                htmlFor="linxup-at-photo-finalInstall"
+                className={photoPickClass(linxupAtPhotoIssueKey("finalInstall"), true, linxupAtPc.finalInstall >= 1)}
+              >
+                {PHOTO_UPLOAD_LABEL_SINGLE}
+              </label>
+              <PhotoUploadFeedback count={linxupAtPc.finalInstall} names={linxupAtPhotoFileNames.finalInstall} />
+              <PhotoThumbnailGrid
+                files={linxupAtPhotoFiles.finalInstall}
+                remotePhotos={remoteThumbsForLinxupAtField("finalInstall")}
+                onRemoveLocal={(file) => removeLinxupAtLocalPhoto("finalInstall", file)}
+                onRemoveRemote={(remote) => void removeUploadedPhotoFromField(linxupAtUploadFieldFor("finalInstall"), remote)}
+              />
+              <PhotoUploadedBadge show={linxupAtPc.finalInstall >= 1} />
+              <PhotoFieldError message={linxupAtPhotoErrors.finalInstall} />
+              {requiredHint(linxupAtPhotoIssueKey("finalInstall"))}
+            </div>
           </section>
         )}
 
@@ -5516,10 +7677,11 @@ export function NewSubmissionForm() {
           </VAC4Section>
         )}
 
-        {/* Dynamic Sections */}
+        {/* Dynamic Sections — only products with dedicated form UI (CP4 / PPD). */}
         {hasAnsweredAdditionalHardwareQuestion &&
+          !isLinxUpProfile &&
           selectedSections
-            .filter((section) => section !== "VAC4")
+            .filter((section) => section === "CP4" || section === "PPD")
             .map((section) =>
               section === "CP4" ? (
                 <section key={section} className={cardClassName}>
@@ -6964,38 +9126,7 @@ export function NewSubmissionForm() {
                     </div>
                   </div>
                 </section>
-              ) : (
-                <section key={section} className={cardClassName}>
-                  <FormSectionHeader title={`${section} Section`} tone="green" />
-
-                  <div className="space-y-5">
-                    <div>
-                      <label className={labelClassName}>Drive Type</label>
-                      <select className={selectClassName}>
-                        <option>Drive Type</option>
-                        <option>Electric</option>
-                        <option>Internal Combustion</option>
-                        <option>Other</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className={labelClassName}>Notes / Details</label>
-                      <input className={inputClassName} placeholder="exp: Customer requested wire loom" />
-                    </div>
-
-                    <div>
-                      <label className={labelClassName}>Attachments</label>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        className="min-h-[52px] w-full rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-base file:mr-4 file:rounded-xl file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
-                      />
-                    </div>
-                  </div>
-                </section>
-              )
+              ) : null
             )}
 
         <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
@@ -7043,8 +9174,18 @@ export function NewSubmissionForm() {
           <div>
             <SummaryRow label="Customer" value={coreJob.customer} />
             <SummaryRow label="Location" value={coreJob.location} />
-            <SummaryRow label="Work order #" value={formatWorkOrder(coreJob.workOrder)} />
-            <SummaryRow label="Service appointment #" value={formatServiceAppointment(coreJob.serviceAppointment)} />
+            {isLinxUpProfile ? (
+              <>
+                <SummaryRow label="Primary contact" value={coreJob.primaryContact ?? ""} />
+                <SummaryRow label="Contact number" value={coreJob.contactNumber ?? ""} />
+                <SummaryRow label="Contact email" value={coreJob.contactEmail ?? ""} />
+              </>
+            ) : (
+              <>
+                <SummaryRow label="Work order #" value={formatWorkOrder(coreJob.workOrder)} />
+                <SummaryRow label="Service appointment #" value={formatServiceAppointment(coreJob.serviceAppointment)} />
+              </>
+            )}
             <SummaryRow label="Installer name" value={coreJob.installerName} />
           </div>
         </section>
@@ -7052,30 +9193,46 @@ export function NewSubmissionForm() {
         <section className={cardClassName}>
           <FormSectionHeader title="Vehicle Information" tone="purple" />
           <div>
+            {isLinxUpProfile && <SummaryRow label="Year" value={linxupYear} />}
             <SummaryRow label="Make" value={coreJob.equipmentMake} />
             <SummaryRow label="Model" value={coreJob.equipmentModel} />
-            <SummaryRow label="Serial #" value={coreJob.equipmentSerial} />
-            <SummaryRow label="Unit #" value={coreJob.unitNumber} />
             <SummaryRow
-              label="Vehicle type"
-              value={
-                vac4VehicleType === "Other"
-                  ? `${vac4VehicleType}${vac4OtherVehicleType.trim() ? ` (${vac4OtherVehicleType})` : ""}`
-                  : vac4VehicleType
-              }
+              label={isLinxUpProfile ? "Serial/VIN" : "Serial #"}
+              value={coreJob.equipmentSerial}
             />
-            <SummaryRow label="Drive type" value={vac4DriveType} />
-            {vac4DriveType === "Electric" && (
-              <SummaryRow
-                label="Voltage"
-                value={
-                  vac4VehicleVoltage === "Other"
-                    ? vac4VehicleVoltageOther.trim()
-                      ? `Other (${vac4VehicleVoltageOther})`
-                      : "Other"
-                    : vac4VehicleVoltage
-                }
-              />
+            <SummaryRow
+              label={isLinxUpProfile ? "Asset Number" : "Unit #"}
+              value={coreJob.unitNumber}
+            />
+            {isLinxUpProfile ? (
+              <>
+                <SummaryRow label="Vehicle type" value={linxupVehicleType} />
+                <SummaryRow label="Hours / miles" value={linxupHoursMiles} />
+              </>
+            ) : (
+              <>
+                <SummaryRow
+                  label="Vehicle type"
+                  value={
+                    vac4VehicleType === "Other"
+                      ? `${vac4VehicleType}${vac4OtherVehicleType.trim() ? ` (${vac4OtherVehicleType})` : ""}`
+                      : vac4VehicleType
+                  }
+                />
+                <SummaryRow label="Drive type" value={vac4DriveType} />
+                {vac4DriveType === "Electric" && (
+                  <SummaryRow
+                    label="Voltage"
+                    value={
+                      vac4VehicleVoltage === "Other"
+                        ? vac4VehicleVoltageOther.trim()
+                          ? `Other (${vac4VehicleVoltageOther})`
+                          : "Other"
+                        : vac4VehicleVoltage
+                    }
+                  />
+                )}
+              </>
             )}
           </div>
         </section>
@@ -7099,16 +9256,185 @@ export function NewSubmissionForm() {
         </section>
 
         <section className={cardClassName}>
-          <FormSectionHeader title="Hardware Selection" tone="green" />
+          <FormSectionHeader
+            title={isLinxUpProfile ? "Product Selection" : "Hardware Selection"}
+            tone="green"
+          />
           <div>
-            <SummaryRow label="Primary hardware / install type" value={primary} />
-            <SummaryRow label="Additional hardware being installed?" value={hasAdditional} />
-            <SummaryRow label="Additional hardware types" value={additional.join(", ")} />
-            <SummaryRow label="Hardware units on this card" value={selectedSections.length ? selectedSections.join(", ") : "—"} />
+            <SummaryRow
+              label={isLinxUpProfile ? "Product / install type" : "Primary hardware / install type"}
+              value={selectedPrimaryForm?.label || effectivePrimary}
+            />
+            <SummaryRow
+              label={isLinxUpProfile ? "Additional device being installed?" : "Additional hardware being installed?"}
+              value={hasAdditional}
+            />
+            <SummaryRow
+              label={isLinxUpProfile ? "Additional devices" : "Additional hardware types"}
+              value={
+                additional.length
+                  ? additional.map((type) => getFormDefinitionBySectionKey(type)?.label || type).join(", ")
+                  : "—"
+              }
+            />
+            {!isLinxUpProfile && (
+              <SummaryRow label="Hardware units on this card" value={selectedSections.length ? selectedSections.join(", ") : "—"} />
+            )}
+            {isLinxUpProfile && (
+              <SummaryRow
+                label="Devices on this card"
+                value={
+                  selectedSections.length
+                    ? selectedSections.map((type) => getFormDefinitionBySectionKey(type)?.label || type).join(", ")
+                    : "—"
+                }
+              />
+            )}
+            {isLinxUpProfile && selectedPrimaryForm && (
+              <SummaryRow label="Submission type" value={selectedPrimaryForm.submissionType} />
+            )}
           </div>
         </section>
 
-        {selectedSections
+        {isLinxUpVehicleTracker && (
+          <section className={cardClassName}>
+            <FormSectionHeader title="Vehicle Tracker" tone="green" />
+            <div>
+              <SummaryRow
+                label="Vehicle tracker tag photo"
+                value={reviewPhotoSummary(linxupVtPc.vehicleTrackerTag, linxupVtPhotoFileNames.vehicleTrackerTag)}
+              />
+              <SummaryRow label="Connected via OBD Port" value={linxupVtObdPortConnected || "—"} />
+              {linxupVtObdPortConnected === "Yes" && (
+                <>
+                  <SummaryRow
+                    label="Green activity light photo"
+                    value={reviewPhotoSummary(linxupVtPc.greenActivityLight, linxupVtPhotoFileNames.greenActivityLight)}
+                  />
+                  <SummaryRow
+                    label="Installation photo"
+                    value={reviewPhotoSummary(linxupVtPc.installation, linxupVtPhotoFileNames.installation)}
+                  />
+                  <SummaryRow label="Installation notes" value={linxupVtInstallationNotes} />
+                </>
+              )}
+              {linxupVtObdPortConnected === "No" && (
+                <>
+                  <SummaryRow
+                    label="Power connection photo"
+                    value={reviewPhotoSummary(linxupVtPc.powerConnection, linxupVtPhotoFileNames.powerConnection)}
+                  />
+                  <SummaryRow label="Power connection note" value={linxupVtPowerConnectionDescription} />
+                  <SummaryRow
+                    label="Ground connection photo"
+                    value={reviewPhotoSummary(linxupVtPc.groundConnection, linxupVtPhotoFileNames.groundConnection)}
+                  />
+                  <SummaryRow label="Ground connection note" value={linxupVtGroundConnectionDescription} />
+                  <SummaryRow
+                    label="Ignition connection photo"
+                    value={reviewPhotoSummary(linxupVtPc.ignitionConnection, linxupVtPhotoFileNames.ignitionConnection)}
+                  />
+                  <SummaryRow label="Ignition connection note" value={linxupVtIgnitionConnectionDescription} />
+                  <SummaryRow
+                    label="Green activity light photo"
+                    value={reviewPhotoSummary(linxupVtPc.greenActivityLight, linxupVtPhotoFileNames.greenActivityLight)}
+                  />
+                  <SummaryRow
+                    label="Final installation photo"
+                    value={reviewPhotoSummary(linxupVtPc.finalInstall, linxupVtPhotoFileNames.finalInstall)}
+                  />
+                  <SummaryRow label="Installation notes" value={linxupVtInstallationNotes} />
+                </>
+              )}
+            </div>
+          </section>
+        )}
+
+        {isLinxUpLinxCam && (
+          <section className={cardClassName}>
+            <FormSectionHeader title="LinxCam" tone="green" />
+            <div>
+              <SummaryRow
+                label="LinxCam tag photo"
+                value={reviewPhotoSummary(linxupLcPc.linxCamTag, linxupLcPhotoFileNames.linxCamTag)}
+              />
+              <SummaryRow label="Connected via OBD Port" value={linxupLcObdPortConnected || "—"} />
+              {linxupLcObdPortConnected === "Yes" && (
+                <>
+                  <SummaryRow
+                    label="Green activity light photo"
+                    value={reviewPhotoSummary(linxupLcPc.greenActivityLight, linxupLcPhotoFileNames.greenActivityLight)}
+                  />
+                  <SummaryRow
+                    label="Installation photo"
+                    value={reviewPhotoSummary(linxupLcPc.installation, linxupLcPhotoFileNames.installation)}
+                  />
+                </>
+              )}
+              {linxupLcObdPortConnected === "No" && (
+                <>
+                  <SummaryRow
+                    label="Power connection photo"
+                    value={reviewPhotoSummary(linxupLcPc.powerConnection, linxupLcPhotoFileNames.powerConnection)}
+                  />
+                  <SummaryRow label="Power connection note" value={linxupLcPowerConnectionDescription} />
+                  <SummaryRow
+                    label="Ground connection photo"
+                    value={reviewPhotoSummary(linxupLcPc.groundConnection, linxupLcPhotoFileNames.groundConnection)}
+                  />
+                  <SummaryRow label="Ground connection note" value={linxupLcGroundConnectionDescription} />
+                  <SummaryRow
+                    label="Ignition connection photo"
+                    value={reviewPhotoSummary(linxupLcPc.ignitionConnection, linxupLcPhotoFileNames.ignitionConnection)}
+                  />
+                  <SummaryRow label="Ignition connection note" value={linxupLcIgnitionConnectionDescription} />
+                  <SummaryRow
+                    label="Green activity light photo"
+                    value={reviewPhotoSummary(linxupLcPc.greenActivityLight, linxupLcPhotoFileNames.greenActivityLight)}
+                  />
+                  <SummaryRow
+                    label="Final installation photo"
+                    value={reviewPhotoSummary(linxupLcPc.finalInstall, linxupLcPhotoFileNames.finalInstall)}
+                  />
+                  <SummaryRow label="Installation notes" value={linxupLcInstallationNotes} />
+                </>
+              )}
+            </div>
+          </section>
+        )}
+
+        {isLinxUpAssetTracker && (
+          <section className={cardClassName}>
+            <FormSectionHeader title="Asset Tracker" tone="green" />
+            <div>
+              <SummaryRow
+                label="Asset tracker tag photo"
+                value={reviewPhotoSummary(linxupAtPc.assetTrackerTag, linxupAtPhotoFileNames.assetTrackerTag)}
+              />
+              <SummaryRow
+                label="Power connection photo"
+                value={reviewPhotoSummary(linxupAtPc.powerConnection, linxupAtPhotoFileNames.powerConnection)}
+              />
+              <SummaryRow label="Power connection note" value={linxupPowerConnectionDescription} />
+              <SummaryRow
+                label="Ground connection photo"
+                value={reviewPhotoSummary(linxupAtPc.groundConnection, linxupAtPhotoFileNames.groundConnection)}
+              />
+              <SummaryRow label="Ground connection note" value={linxupGroundConnectionDescription} />
+              <SummaryRow
+                label="Ignition connection photo"
+                value={reviewPhotoSummary(linxupAtPc.ignitionConnection, linxupAtPhotoFileNames.ignitionConnection)}
+              />
+              <SummaryRow label="Ignition connection note" value={linxupIgnitionConnectionDescription} />
+              <SummaryRow
+                label="Final install photo"
+                value={reviewPhotoSummary(linxupAtPc.finalInstall, linxupAtPhotoFileNames.finalInstall)}
+              />
+            </div>
+          </section>
+        )}
+
+        {!isLinxUpProfile && selectedSections
           .filter((s) => s !== "VAC4")
           .map((section) =>
             section === "CP4" ? (
@@ -7285,7 +9611,7 @@ export function NewSubmissionForm() {
             )
           )}
 
-        {selectedSections.includes("VAC4") && (
+        {!isLinxUpProfile && selectedSections.includes("VAC4") && (
           <section className={cardClassName}>
             <FormSectionHeader title="VAC4 hardware" tone="purple" />
             <div>

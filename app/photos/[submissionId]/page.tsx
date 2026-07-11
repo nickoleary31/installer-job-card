@@ -7,7 +7,7 @@ import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 
 type PhotoItem = {
-  group: "vehicle" | "vac4" | "ppd" | "cp4";
+  group: "vehicle" | "vac4" | "ppd" | "cp4" | "linxup";
   fieldName: string;
   label: string;
   filename: string;
@@ -67,6 +67,25 @@ const PHOTO_FIELD_LABELS: Record<string, string> = {
   cp4_powerConverter: "CP4 power converter",
   cp4_alarmIn1: "CP4 alarm IN 1",
   cp4_alarmIn2: "CP4 alarm IN 2",
+  linxup_at_assetTrackerTag: "Asset Tracker tag",
+  linxup_at_powerConnection: "Asset Tracker power connection",
+  linxup_at_groundConnection: "Asset Tracker ground connection",
+  linxup_at_ignitionConnection: "Asset Tracker ignition connection",
+  linxup_at_finalInstall: "Asset Tracker final install",
+  linxup_vt_vehicleTrackerTag: "Vehicle Tracker tag",
+  linxup_vt_greenActivityLight: "Vehicle Tracker green activity light",
+  linxup_vt_installation: "Vehicle Tracker installation",
+  linxup_vt_finalInstall: "Vehicle Tracker final installation",
+  linxup_vt_powerConnection: "Vehicle Tracker power connection",
+  linxup_vt_groundConnection: "Vehicle Tracker ground connection",
+  linxup_vt_ignitionConnection: "Vehicle Tracker ignition connection",
+  linxup_lc_linxCamTag: "LinxCam tag",
+  linxup_lc_greenActivityLight: "LinxCam green activity light",
+  linxup_lc_installation: "LinxCam installation",
+  linxup_lc_finalInstall: "LinxCam final installation",
+  linxup_lc_powerConnection: "LinxCam power connection",
+  linxup_lc_groundConnection: "LinxCam ground connection",
+  linxup_lc_ignitionConnection: "LinxCam ignition connection",
 };
 
 const PHOTO_GROUP_TITLES: Record<PhotoItem["group"], string> = {
@@ -74,6 +93,7 @@ const PHOTO_GROUP_TITLES: Record<PhotoItem["group"], string> = {
   vac4: "VAC4 Photos",
   ppd: "PPD Photos",
   cp4: "CP4 Photos",
+  linxup: "LinxUp Install Photos",
 };
 
 function extractPhotoUploadsFromPayload(payload: unknown): PayloadPhotoUpload[] {
@@ -98,7 +118,7 @@ async function loadPhotosFromStorage(submissionId: string): Promise<PhotoItem[]>
   const nextPhotos: PhotoItem[] = [];
   for (const groupEntry of groupEntries) {
     const groupName = groupEntry.name;
-    if (groupName !== "vehicle" && groupName !== "vac4" && groupName !== "ppd" && groupName !== "cp4") continue;
+    if (groupName !== "vehicle" && groupName !== "vac4" && groupName !== "ppd" && groupName !== "cp4" && groupName !== "linxup") continue;
     const { data: fieldEntries, error: fieldListError } = await supabase.storage
       .from("job-card-photos")
       .list(`${basePath}/${groupName}`, { limit: 200 });
@@ -172,7 +192,7 @@ export default function PhotoGalleryPage() {
           const fieldName = u.fieldName?.trim();
           const publicUrl = u.publicUrl?.trim();
           if (!fieldName || !publicUrl) continue;
-          if (g !== "vehicle" && g !== "vac4" && g !== "ppd" && g !== "cp4") continue;
+          if (g !== "vehicle" && g !== "vac4" && g !== "ppd" && g !== "cp4" && g !== "linxup") continue;
           fromPayload.push({
             group: g,
             fieldName,
@@ -217,7 +237,7 @@ export default function PhotoGalleryPage() {
       }
       groups.set(photo.group, section);
     }
-    return (["vehicle", "vac4", "ppd", "cp4"] as const).map((groupKey) => {
+    return (["vehicle", "vac4", "ppd", "cp4", "linxup"] as const).map((groupKey) => {
       const section = groups.get(groupKey) || new Map<string, { label: string; items: PhotoItem[] }>();
       return {
         group: groupKey,

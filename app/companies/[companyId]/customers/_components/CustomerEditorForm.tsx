@@ -72,6 +72,19 @@ export default function CustomerEditorForm({
         />
       </div>
       ) : null}
+      {isVisible("contact_email") ? (
+      <div>
+        <label className="mb-1 block text-sm font-semibold text-gray-800">Contact email</label>
+        <input
+          type="email"
+          value={form.contact_email}
+          onChange={(e) => onChange("contact_email", e.target.value)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+          autoComplete="email"
+          disabled={!isEditable("contact_email")}
+        />
+      </div>
+      ) : null}
       {isVisible("license_key_1") ? (
       <div>
         <label className="mb-1 block text-sm font-semibold text-gray-800">License key 1</label>

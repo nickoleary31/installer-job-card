@@ -1,4 +1,7 @@
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
+import { isLinxUpSectionKey, type JobCardLinxupPayload } from "@/lib/linxup";
+
+export type { JobCardLinxupPayload };
 
 export type VacPhotoFileNames = {
   vacMounting: string[];
@@ -27,6 +30,10 @@ export type CoreJobFields = {
   equipmentModel: string;
   equipmentSerial: string;
   installerName: string;
+  /** LinxUp / site contact fields (optional on legacy Powerfleet/Matrix cards). */
+  primaryContact?: string;
+  contactNumber?: string;
+  contactEmail?: string;
 };
 
 /** Metadata for uploaded PPD JSON config (Supabase Storage + site repository). */
@@ -118,9 +125,14 @@ export type JobCardSubmissionPayload = {
     additional: string[];
   };
   selectedSections: string[];
+  /** Registry form id when known (preferred over inferring from primary). */
+  formId?: string;
+  /** Registry submission type (legacy: VAC4/CP4/PPD; LinxUp: linxup_*). */
+  submissionType?: string;
   photoUploads: UploadedPhotoMetadata[];
   ppd?: JobCardPpdPayload;
   cp4?: JobCardCp4Payload;
+  linxup?: JobCardLinxupPayload;
   vac4: {
     vehicleType: string;
     otherVehicleType: string;
@@ -154,7 +166,7 @@ export type JobCardSubmissionPayload = {
 
 export type UploadedPhotoMetadata = {
   fieldName: string;
-  group: "vac4" | "vehicle" | "ppd" | "cp4";
+  group: "vac4" | "vehicle" | "ppd" | "cp4" | "linxup";
   label: string;
   filename: string;
   storagePath: string;
@@ -244,13 +256,22 @@ function countPhotoValue(value: unknown): number {
   return 0;
 }
 
-export function formatEmailSubject(customer: string, unitNumber: string) {
+export function formatEmailSubject(
+  customer: string,
+  unitNumber: string,
+  productLabel?: string | null,
+) {
   const c = customer.trim() || "Unknown";
   const u = formatUpper(unitNumber) || "—";
+  const product = (productLabel || "").trim();
+  if (product) return `Installer Job Card - ${product} - ${c} - ${u}`;
   return `Installer Job Card - ${c} - ${u}`;
 }
 
-function formatPhotoGroupSummaryLines(uploads: UploadedPhotoMetadata[], group: "ppd" | "cp4"): string[] {
+function formatPhotoGroupSummaryLines(
+  uploads: UploadedPhotoMetadata[],
+  group: "ppd" | "cp4" | "linxup",
+): string[] {
   const rows = uploads.filter((u) => u.group === group);
   if (rows.length === 0) return ["None uploaded"];
   const byField = new Map<string, UploadedPhotoMetadata[]>();
@@ -352,9 +373,15 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const h = p.hardwareSelection;
   const v = p.vac4;
   const sectionSet = new Set(p.selectedSections ?? []);
-  const includeVac4 = sectionSet.has("VAC4");
-  const includePpd = sectionSet.has("PPD");
-  const includeCp4 = sectionSet.has("CP4");
+  const includeLinxUp =
+    !!p.linxup ||
+    isLinxUpSectionKey(h.primary) ||
+    (p.formId ? p.formId.startsWith("linxup_") : false) ||
+    (p.submissionType ? p.submissionType.startsWith("linxup_") : false) ||
+    [...sectionSet].some((s) => isLinxUpSectionKey(s));
+  const includeVac4 = !includeLinxUp && sectionSet.has("VAC4");
+  const includePpd = !includeLinxUp && sectionSet.has("PPD");
+  const includeCp4 = !includeLinxUp && sectionSet.has("CP4");
 
   const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
   const displayValue = (value: string | undefined | null) => (value && value.trim() ? value.trim() : "Not Installed");
@@ -365,6 +392,115 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   const appUrl = resolvePublicAppUrl();
   const photoGalleryUrl = `${appUrl}/photos/${encodeURIComponent(p.submissionId)}`;
   const divider = "--------------------------------";
+
+  if (includeLinxUp) {
+    const lx = p.linxup;
+    const productLabel = lx?.productLabel || textOrDash(p.submissionType || p.formId || h.primary);
+    const lines: string[] = [];
+    lines.push(`INSTALLER JOB CARD — LINXUP — ${productLabel}`);
+    lines.push("");
+    lines.push(`Submission ID: ${textOrDash(p.submissionId)}`);
+    lines.push(`Product: ${productLabel}`);
+    lines.push(`Submission type: ${textOrDash(lx?.submissionType || p.submissionType || p.formId)}`);
+    lines.push(`Submitted: ${p.submissionTimestamp}`);
+    lines.push("");
+    lines.push(divider);
+    lines.push("");
+    lines.push("CORE JOB INFO");
+    lines.push(`Customer: ${textOrDash(lx?.customer || c.customer)}`);
+    lines.push(`Location: ${textOrDash(lx?.location || c.location)}`);
+    lines.push(`Primary Contact: ${textOrDash(lx?.primaryContact || c.primaryContact)}`);
+    lines.push(`Contact Number: ${textOrDash(lx?.contactNumber || c.contactNumber)}`);
+    lines.push(`Contact Email: ${textOrDash(lx?.contactEmail || c.contactEmail)}`);
+    lines.push(`Installer: ${textOrDash(c.installerName)}`);
+    lines.push("");
+    lines.push(divider);
+    lines.push("");
+    lines.push("VEHICLE INFORMATION");
+    lines.push(`Year: ${textOrDash(lx?.year)}`);
+    lines.push(`Make: ${textOrDash(lx?.make || c.equipmentMake)}`);
+    lines.push(`Model: ${displayUppercase(lx?.model || c.equipmentModel)}`);
+    lines.push(`Serial/VIN: ${displayUppercase(lx?.serialVin || c.equipmentSerial)}`);
+    lines.push(`Asset Number: ${displayUppercase(lx?.assetNumber || c.unitNumber)}`);
+    lines.push(`Vehicle Type: ${textOrDash(lx?.vehicleType)}`);
+    lines.push(`Hours/Miles: ${textOrDash(lx?.hoursMiles)}`);
+    const sections = Array.isArray(p.selectedSections) ? p.selectedSections : [];
+    const hasAssetTracker =
+      sections.includes("linxup_asset_tracker") ||
+      (lx?.formId || p.formId) === "linxup_asset_tracker" ||
+      !!(lx?.powerConnectionDescription || lx?.groundConnectionDescription || lx?.ignitionConnectionDescription);
+    const vt = lx?.vehicleTracker;
+    const hasVehicleTracker =
+      sections.includes("linxup_vehicle_tracker") ||
+      (lx?.formId || p.formId) === "linxup_vehicle_tracker" ||
+      !!vt;
+    const lc = lx?.linxCam;
+    const hasLinxCam =
+      sections.includes("linxup_linxcam") ||
+      (lx?.formId || p.formId) === "linxup_linxcam" ||
+      !!lc;
+    if (hasVehicleTracker && vt) {
+      lines.push("");
+      lines.push(divider);
+      lines.push("");
+      lines.push("VEHICLE TRACKER");
+      lines.push(`Connected via OBD Port: ${textOrDash(vt.obdPortConnected)}`);
+      if (vt.obdPortConnected === "No") {
+        lines.push(`Power connection: ${textOrDash(vt.powerConnectionDescription)}`);
+        lines.push(`Ground connection: ${textOrDash(vt.groundConnectionDescription)}`);
+        lines.push(`Ignition connection: ${textOrDash(vt.ignitionConnectionDescription)}`);
+      }
+      lines.push(`Installation notes: ${textOrDash(vt.installationNotes)}`);
+    }
+    if (hasLinxCam && lc) {
+      lines.push("");
+      lines.push(divider);
+      lines.push("");
+      lines.push("LINXCAM");
+      lines.push(`Connected via OBD Port: ${textOrDash(lc.obdPortConnected)}`);
+      if (lc.obdPortConnected === "No") {
+        lines.push(`Power connection: ${textOrDash(lc.powerConnectionDescription)}`);
+        lines.push(`Ground connection: ${textOrDash(lc.groundConnectionDescription)}`);
+        lines.push(`Ignition connection: ${textOrDash(lc.ignitionConnectionDescription)}`);
+        lines.push(`Installation notes: ${textOrDash(lc.installationNotes)}`);
+      }
+    }
+    if (hasAssetTracker) {
+      lines.push("");
+      lines.push(divider);
+      lines.push("");
+      lines.push("ASSET TRACKER");
+      lines.push(`Power connection: ${textOrDash(lx?.powerConnectionDescription)}`);
+      lines.push(`Ground connection: ${textOrDash(lx?.groundConnectionDescription)}`);
+      lines.push(`Ignition connection: ${textOrDash(lx?.ignitionConnectionDescription)}`);
+    }
+    lines.push("");
+    lines.push(divider);
+    lines.push("");
+    lines.push("PHOTO GALLERY");
+    lines.push(photoGalleryUrl);
+    lines.push("");
+    lines.push(divider);
+    lines.push("");
+    lines.push("VEHICLE PICTURES");
+    const vehiclePhotos = (p.photoUploads || []).filter((u) => u.group === "vehicle");
+    if (vehiclePhotos.length === 0) {
+      lines.push("None uploaded");
+    } else {
+      for (const photo of vehiclePhotos) {
+        lines.push(`${photo.label || photo.fieldName}: ${photo.filename}`);
+      }
+    }
+    const linxupInstallPhotos = (p.photoUploads || []).filter((u) => u.group === "linxup");
+    if (linxupInstallPhotos.length > 0) {
+      lines.push("");
+      lines.push(divider);
+      lines.push("");
+      lines.push("LINXUP INSTALL PICTURES");
+      lines.push(...formatPhotoGroupSummaryLines(p.photoUploads || [], "linxup"));
+    }
+    return lines.join("\n");
+  }
 
   let orderedDescriptions: Record<Vac4DescriptionKey, string> | null = null;
   let photoLinesByKey: Record<Vac4OrderedPhotoKey, string> | null = null;

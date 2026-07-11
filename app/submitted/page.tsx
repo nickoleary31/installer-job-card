@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
+import { getFormDefinitionById, getFormDefinitionBySectionKey, isLinxUpSectionKey } from "@/lib/form-registry";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -19,6 +20,8 @@ type SubmissionRow = {
 };
 
 type SubmissionPayloadLite = {
+  formId?: string;
+  submissionType?: string;
   coreJobInfo?: {
     customer?: string;
     location?: string;
@@ -29,12 +32,50 @@ type SubmissionPayloadLite = {
     equipmentMake?: string;
     equipmentModel?: string;
     equipmentSerial?: string;
+    primaryContact?: string;
+    contactNumber?: string;
+    contactEmail?: string;
   };
   hardwareSelection?: {
     primary?: string;
     hasAdditional?: string;
     additional?: string[];
   };
+  linxup?: {
+    formId?: string;
+    submissionType?: string;
+    productLabel?: string;
+    customer?: string;
+    location?: string;
+    primaryContact?: string;
+    contactNumber?: string;
+    contactEmail?: string;
+    year?: string;
+    make?: string;
+    model?: string;
+    serialVin?: string;
+    assetNumber?: string;
+    vehicleType?: string;
+    hoursMiles?: string;
+    powerConnectionDescription?: string;
+    groundConnectionDescription?: string;
+    ignitionConnectionDescription?: string;
+    vehicleTracker?: {
+      obdPortConnected?: string;
+      installationNotes?: string;
+      powerConnectionDescription?: string;
+      groundConnectionDescription?: string;
+      ignitionConnectionDescription?: string;
+    };
+    linxCam?: {
+      obdPortConnected?: string;
+      installationNotes?: string;
+      powerConnectionDescription?: string;
+      groundConnectionDescription?: string;
+      ignitionConnectionDescription?: string;
+    };
+  };
+  selectedSections?: string[];
   vac4?: {
     vehicleType?: string;
     driveType?: string;
@@ -61,10 +102,24 @@ type SubmissionPayloadLite = {
     photoCounts?: Record<string, number>;
   };
   photoUploads?: Array<{
-    group?: "vac4" | "vehicle";
+    group?: "vac4" | "vehicle" | "ppd" | "cp4" | "linxup";
     fieldName?: string;
   }>;
 };
+
+function isLinxUpPayload(payload: SubmissionPayloadLite): boolean {
+  if (payload.linxup) return true;
+  if (payload.formId?.startsWith("linxup_") || payload.submissionType?.startsWith("linxup_")) return true;
+  return isLinxUpSectionKey(payload.hardwareSelection?.primary);
+}
+
+function resolveProductLabel(payload: SubmissionPayloadLite): string {
+  if (payload.linxup?.productLabel?.trim()) return payload.linxup.productLabel.trim();
+  const def =
+    getFormDefinitionById(payload.formId || payload.submissionType) ||
+    getFormDefinitionBySectionKey(payload.hardwareSelection?.primary);
+  return def?.label || payload.hardwareSelection?.primary?.trim() || "—";
+}
 
 type SubmissionListItem = {
   submissionId: string;
@@ -81,14 +136,19 @@ type ResendState = "idle" | "sending" | "success" | "error";
 
 function mapRow(row: SubmissionRow): SubmissionListItem {
   const payload = (row.payload as SubmissionPayloadLite | null) || {};
-  const primary = payload?.hardwareSelection?.primary?.trim() || "—";
+  const primary = isLinxUpPayload(payload)
+    ? resolveProductLabel(payload)
+    : payload?.hardwareSelection?.primary?.trim() || "—";
   const additionalHardware = Array.isArray(payload?.hardwareSelection?.additional)
-    ? payload.hardwareSelection.additional.map((item) => item.trim()).filter(Boolean)
+    ? payload.hardwareSelection.additional
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((key) => getFormDefinitionBySectionKey(key)?.label || key)
     : [];
   return {
     submissionId: row.submission_id,
     customer: row.customer?.trim() || "—",
-    location: payload?.coreJobInfo?.location?.trim() || "—",
+    location: payload?.coreJobInfo?.location?.trim() || payload?.linxup?.location?.trim() || "—",
     unitNumber: row.unit_number?.trim() || "—",
     primaryHardware: primary,
     additionalHardware,
@@ -214,7 +274,11 @@ export default function SubmittedPage() {
     });
   };
 
-  const photoCountFromUploads = (payload: SubmissionPayloadLite, group: "vac4" | "vehicle", fieldName: string) => {
+  const photoCountFromUploads = (
+    payload: SubmissionPayloadLite,
+    group: "vac4" | "vehicle" | "ppd" | "cp4" | "linxup",
+    fieldName: string,
+  ) => {
     return (payload.photoUploads || []).filter((p) => p.group === group && p.fieldName === fieldName).length;
   };
 
@@ -367,6 +431,137 @@ export default function SubmittedPage() {
 
             {expandedSubmissionIds.has(row.submissionId) ? (
               <div className="mt-4 space-y-4 rounded-xl border border-gray-200 bg-gray-50/70 p-4">
+                {isLinxUpPayload(row.payload) ? (
+                  <>
+                    <section>
+                      <h3 className="text-sm font-bold text-gray-900">Core Job Info</h3>
+                      <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                        <p><span className="font-semibold text-gray-600">Customer:</span> {renderDetailValue(row.payload.linxup?.customer || row.payload.coreJobInfo?.customer)}</p>
+                        <p><span className="font-semibold text-gray-600">Location:</span> {renderDetailValue(row.payload.linxup?.location || row.payload.coreJobInfo?.location)}</p>
+                        <p><span className="font-semibold text-gray-600">Primary Contact:</span> {renderDetailValue(row.payload.linxup?.primaryContact || row.payload.coreJobInfo?.primaryContact)}</p>
+                        <p><span className="font-semibold text-gray-600">Contact Number:</span> {renderDetailValue(row.payload.linxup?.contactNumber || row.payload.coreJobInfo?.contactNumber)}</p>
+                        <p><span className="font-semibold text-gray-600">Contact Email:</span> {renderDetailValue(row.payload.linxup?.contactEmail || row.payload.coreJobInfo?.contactEmail)}</p>
+                        <p><span className="font-semibold text-gray-600">Installer:</span> {renderDetailValue(row.payload.coreJobInfo?.installerName)}</p>
+                      </div>
+                    </section>
+                    <section>
+                      <h3 className="text-sm font-bold text-gray-900">Vehicle Information</h3>
+                      <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                        <p><span className="font-semibold text-gray-600">Year:</span> {renderDetailValue(row.payload.linxup?.year)}</p>
+                        <p><span className="font-semibold text-gray-600">Make:</span> {renderDetailValue(row.payload.linxup?.make || row.payload.coreJobInfo?.equipmentMake)}</p>
+                        <p><span className="font-semibold text-gray-600">Model:</span> {renderDetailText(displayUppercase(row.payload.linxup?.model || row.payload.coreJobInfo?.equipmentModel))}</p>
+                        <p><span className="font-semibold text-gray-600">Serial/VIN:</span> {renderDetailText(displayUppercase(row.payload.linxup?.serialVin || row.payload.coreJobInfo?.equipmentSerial))}</p>
+                        <p><span className="font-semibold text-gray-600">Asset Number:</span> {renderDetailText(displayUppercase(row.payload.linxup?.assetNumber || row.payload.coreJobInfo?.unitNumber))}</p>
+                        <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {renderDetailValue(row.payload.linxup?.vehicleType)}</p>
+                        <p><span className="font-semibold text-gray-600">Hours/Miles:</span> {renderDetailValue(row.payload.linxup?.hoursMiles)}</p>
+                      </div>
+                    </section>
+                    <section>
+                      <h3 className="text-sm font-bold text-gray-900">Product</h3>
+                      <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                        <p><span className="font-semibold text-gray-600">Product:</span> {renderDetailText(resolveProductLabel(row.payload))}</p>
+                        <p><span className="font-semibold text-gray-600">Submission type:</span> {renderDetailValue(row.payload.linxup?.submissionType || row.payload.submissionType || row.payload.formId)}</p>
+                      </div>
+                    </section>
+                    {(row.payload.selectedSections?.includes("linxup_vehicle_tracker") ||
+                      row.payload.formId === "linxup_vehicle_tracker" ||
+                      row.payload.submissionType === "linxup_vehicle_tracker" ||
+                      row.payload.linxup?.formId === "linxup_vehicle_tracker" ||
+                      !!row.payload.linxup?.vehicleTracker) && (
+                      <section>
+                        <h3 className="text-sm font-bold text-gray-900">Vehicle Tracker</h3>
+                        <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                          <p><span className="font-semibold text-gray-600">Tag photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_vehicleTrackerTag")}</p>
+                          <p><span className="font-semibold text-gray-600">OBD Port:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.obdPortConnected)}</p>
+                          {row.payload.linxup?.vehicleTracker?.obdPortConnected === "Yes" ? (
+                            <>
+                              <p><span className="font-semibold text-gray-600">Green activity light:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_greenActivityLight")}</p>
+                              <p><span className="font-semibold text-gray-600">Installation photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_installation")}</p>
+                              <p><span className="font-semibold text-gray-600">Installation notes:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.installationNotes)}</p>
+                            </>
+                          ) : null}
+                          {row.payload.linxup?.vehicleTracker?.obdPortConnected === "No" ? (
+                            <>
+                              <p><span className="font-semibold text-gray-600">Power photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_powerConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Power note:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.powerConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Ground photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_groundConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Ground note:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.groundConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Ignition photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_ignitionConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Ignition note:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.ignitionConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Green activity light:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_greenActivityLight")}</p>
+                              <p><span className="font-semibold text-gray-600">Final install photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_vt_finalInstall")}</p>
+                              <p><span className="font-semibold text-gray-600">Installation notes:</span> {renderDetailValue(row.payload.linxup?.vehicleTracker?.installationNotes)}</p>
+                            </>
+                          ) : null}
+                        </div>
+                      </section>
+                    )}
+                    {(row.payload.selectedSections?.includes("linxup_linxcam") ||
+                      row.payload.formId === "linxup_linxcam" ||
+                      row.payload.submissionType === "linxup_linxcam" ||
+                      row.payload.linxup?.formId === "linxup_linxcam" ||
+                      !!row.payload.linxup?.linxCam) && (
+                      <section>
+                        <h3 className="text-sm font-bold text-gray-900">LinxCam</h3>
+                        <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                          <p><span className="font-semibold text-gray-600">Tag photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_linxCamTag")}</p>
+                          <p><span className="font-semibold text-gray-600">OBD Port:</span> {renderDetailValue(row.payload.linxup?.linxCam?.obdPortConnected)}</p>
+                          {row.payload.linxup?.linxCam?.obdPortConnected === "Yes" ? (
+                            <>
+                              <p><span className="font-semibold text-gray-600">Green activity light:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_greenActivityLight")}</p>
+                              <p><span className="font-semibold text-gray-600">Installation photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_installation")}</p>
+                            </>
+                          ) : null}
+                          {row.payload.linxup?.linxCam?.obdPortConnected === "No" ? (
+                            <>
+                              <p><span className="font-semibold text-gray-600">Power photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_powerConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Power note:</span> {renderDetailValue(row.payload.linxup?.linxCam?.powerConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Ground photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_groundConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Ground note:</span> {renderDetailValue(row.payload.linxup?.linxCam?.groundConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Ignition photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_ignitionConnection")}</p>
+                              <p><span className="font-semibold text-gray-600">Ignition note:</span> {renderDetailValue(row.payload.linxup?.linxCam?.ignitionConnectionDescription)}</p>
+                              <p><span className="font-semibold text-gray-600">Green activity light:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_greenActivityLight")}</p>
+                              <p><span className="font-semibold text-gray-600">Final install photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_lc_finalInstall")}</p>
+                              <p><span className="font-semibold text-gray-600">Installation notes:</span> {renderDetailValue(row.payload.linxup?.linxCam?.installationNotes)}</p>
+                            </>
+                          ) : null}
+                        </div>
+                      </section>
+                    )}
+                    {(row.payload.selectedSections?.includes("linxup_asset_tracker") ||
+                      row.payload.formId === "linxup_asset_tracker" ||
+                      row.payload.submissionType === "linxup_asset_tracker" ||
+                      row.payload.linxup?.formId === "linxup_asset_tracker" ||
+                      !!(
+                        row.payload.linxup?.powerConnectionDescription ||
+                        row.payload.linxup?.groundConnectionDescription ||
+                        row.payload.linxup?.ignitionConnectionDescription
+                      )) && (
+                      <section>
+                        <h3 className="text-sm font-bold text-gray-900">Asset Tracker</h3>
+                        <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                          <p><span className="font-semibold text-gray-600">Tag photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_at_assetTrackerTag")}</p>
+                          <p><span className="font-semibold text-gray-600">Power photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_at_powerConnection")}</p>
+                          <p><span className="font-semibold text-gray-600">Power note:</span> {renderDetailValue(row.payload.linxup?.powerConnectionDescription)}</p>
+                          <p><span className="font-semibold text-gray-600">Ground photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_at_groundConnection")}</p>
+                          <p><span className="font-semibold text-gray-600">Ground note:</span> {renderDetailValue(row.payload.linxup?.groundConnectionDescription)}</p>
+                          <p><span className="font-semibold text-gray-600">Ignition photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_at_ignitionConnection")}</p>
+                          <p><span className="font-semibold text-gray-600">Ignition note:</span> {renderDetailValue(row.payload.linxup?.ignitionConnectionDescription)}</p>
+                          <p><span className="font-semibold text-gray-600">Final install photo:</span> {photoCountFromUploads(row.payload, "linxup", "linxup_at_finalInstall")}</p>
+                        </div>
+                      </section>
+                    )}
+                    <section>
+                      <h3 className="text-sm font-bold text-gray-900">Vehicle Pictures</h3>
+                      <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                        <p><span className="font-semibold text-gray-600">Vehicle Front:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleFront")}</p>
+                        <p><span className="font-semibold text-gray-600">Vehicle Side:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleSide")}</p>
+                        <p><span className="font-semibold text-gray-600">Vehicle Rear:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleRear")}</p>
+                      </div>
+                    </section>
+                  </>
+                ) : (
+                  <>
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">Core Job Info</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
@@ -456,6 +651,8 @@ export default function SubmittedPage() {
                     <p><span className="font-semibold text-gray-600">External Indicator:</span> {row.payload.vac4?.photoCounts?.externalIndicator ?? 0}</p>
                   </div>
                 </section>
+                  </>
+                )}
               </div>
             ) : null}
           </section>

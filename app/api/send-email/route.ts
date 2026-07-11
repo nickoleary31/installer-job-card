@@ -244,7 +244,11 @@ export async function POST(req: Request) {
     ),
   );
 
-  const subject = formatEmailSubject(payload.coreJobInfo.customer, payload.coreJobInfo.unitNumber);
+  const subject = formatEmailSubject(
+    payload.coreJobInfo.customer,
+    payload.linxup?.assetNumber || payload.coreJobInfo.unitNumber,
+    payload.linxup?.productLabel || payload.submissionType || payload.formId,
+  );
   const text = formatEmailBodyFromPayload(payload);
   const html = formatEmailHtmlFromPayload(payload);
 

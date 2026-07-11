@@ -51,6 +51,7 @@ type NewCustomerForm = {
   full_address: string;
   site_contact_name: string;
   contact_number: string;
+  contact_email: string;
   license_key_1: string;
   license_key_2: string;
   server_port_type: "" | "TLS" | "Proprietary";
@@ -66,6 +67,7 @@ const emptyNewCustomerForm = (): NewCustomerForm => ({
   full_address: "",
   site_contact_name: "",
   contact_number: "",
+  contact_email: "",
   license_key_1: "",
   license_key_2: "",
   server_port_type: "",
@@ -516,6 +518,7 @@ export default function CompanyProjectsPage() {
         full_address: newCustomerForm.full_address.trim() || null,
         site_contact_name: newCustomerForm.site_contact_name.trim() || null,
         contact_number: newCustomerForm.contact_number.trim() || null,
+        contact_email: newCustomerForm.contact_email.trim() || null,
         license_key_1: newCustomerForm.license_key_1.trim() || null,
         license_key_2: newCustomerForm.license_key_2.trim() || null,
         server_port_type: newCustomerForm.server_port_type || null,
@@ -998,6 +1001,16 @@ export default function CompanyProjectsPage() {
                       onChange={(e) => updateNewCustomerField("contact_number", formatPhoneNumber(e.target.value))}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       inputMode="numeric"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-800">Contact email</label>
+                    <input
+                      type="email"
+                      value={newCustomerForm.contact_email}
+                      onChange={(e) => updateNewCustomerField("contact_email", e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                      autoComplete="email"
                     />
                   </div>
                   <div>

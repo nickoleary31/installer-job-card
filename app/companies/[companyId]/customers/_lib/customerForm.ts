@@ -3,6 +3,7 @@ export type CustomerFormState = {
   full_address: string;
   site_contact_name: string;
   contact_number: string;
+  contact_email: string;
   license_key_1: string;
   license_key_2: string;
   server_port_type: "" | "TLS" | "Proprietary";
@@ -18,6 +19,7 @@ export type CustomerRecord = {
   full_address: string | null;
   site_contact_name: string | null;
   contact_number: string | null;
+  contact_email: string | null;
   license_key_1: string | null;
   license_key_2: string | null;
   server_port_type: "TLS" | "Proprietary" | null;
@@ -33,6 +35,7 @@ export const emptyCustomerForm = (): CustomerFormState => ({
   full_address: "",
   site_contact_name: "",
   contact_number: "",
+  contact_email: "",
   license_key_1: "",
   license_key_2: "",
   server_port_type: "",
@@ -48,6 +51,7 @@ export const toFormState = (row: CustomerRecord): CustomerFormState => ({
   full_address: row.full_address || "",
   site_contact_name: row.site_contact_name || "",
   contact_number: row.contact_number || "",
+  contact_email: row.contact_email || "",
   license_key_1: row.license_key_1 || "",
   license_key_2: row.license_key_2 || "",
   server_port_type: row.server_port_type || "",
@@ -63,6 +67,7 @@ export const toCustomerUpdatePayload = (form: CustomerFormState) => ({
   full_address: form.full_address.trim() || null,
   site_contact_name: form.site_contact_name.trim() || null,
   contact_number: form.contact_number.trim() || null,
+  contact_email: form.contact_email.trim() || null,
   license_key_1: form.license_key_1.trim() || null,
   license_key_2: form.license_key_2.trim() || null,
   server_port_type: form.server_port_type || null,

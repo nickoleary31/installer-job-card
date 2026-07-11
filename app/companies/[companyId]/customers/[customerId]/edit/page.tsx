@@ -84,14 +84,34 @@ export default function CustomerEditPage() {
           return;
         }
 
-        const { data, error } = await supabase
-          .from("customers")
-          .select(
-            "customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes",
-          )
-          .eq("id", customerId)
-          .eq("company_id", companyId)
-          .maybeSingle<CustomerRecord>();
+        const selectWithEmail =
+          "customer_name, full_address, site_contact_name, contact_number, contact_email, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes";
+        const selectWithoutEmail =
+          "customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes";
+        let data: CustomerRecord | null = null;
+        let error: { message?: string } | null = null;
+        {
+          const first = await supabase
+            .from("customers")
+            .select(selectWithEmail)
+            .eq("id", customerId)
+            .eq("company_id", companyId)
+            .maybeSingle<CustomerRecord>();
+          data = first.data;
+          error = first.error;
+          if (error) {
+            const retry = await supabase
+              .from("customers")
+              .select(selectWithoutEmail)
+              .eq("id", customerId)
+              .eq("company_id", companyId)
+              .maybeSingle<CustomerRecord>();
+            if (!retry.error && retry.data) {
+              data = { ...retry.data, contact_email: null };
+              error = null;
+            }
+          }
+        }
         if (cancelled) return;
         if (error) throw error;
         if (!data) {

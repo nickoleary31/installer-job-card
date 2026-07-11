@@ -48,6 +48,20 @@ type CompanyUserView = {
   profileIsActive: boolean;
 };
 
+type UserSearchResult = {
+  userId: string;
+  email: string;
+  displayName: string;
+  profileIsActive: boolean;
+  companyMemberships: Array<{
+    companyId: string;
+    companyName: string;
+    role: string;
+    isActive: boolean;
+  }>;
+  targetCompanyMembership: { role: string; isActive: boolean } | null;
+};
+
 function formatUserLabel(profile: UserProfileRow | null, fallbackUserId: string) {
   const displayName = profile?.display_name?.trim() || "";
   const email = profile?.email?.trim() || "";
@@ -77,6 +91,12 @@ export default function ProjectAssignmentsPage() {
   const [assignEmailInput, setAssignEmailInput] = useState("");
   const [inviteDisplayNameInput, setInviteDisplayNameInput] = useState("");
   const [assignRoleInput, setAssignRoleInput] = useState<"admin" | "technician">("technician");
+  const [existingUserRoleInput, setExistingUserRoleInput] = useState<"admin" | "technician">("technician");
+  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [userSearchResults, setUserSearchResults] = useState<UserSearchResult[]>([]);
+  const [userSearchLoading, setUserSearchLoading] = useState(false);
+  const [userSearchError, setUserSearchError] = useState<string | null>(null);
+  const [selectedExistingUserId, setSelectedExistingUserId] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [recentlyChangedKey, setRecentlyChangedKey] = useState<string | null>(null);
 
@@ -422,7 +442,7 @@ export default function ProjectAssignmentsPage() {
     const email = assignEmailInput.trim().toLowerCase();
     const displayName = inviteDisplayNameInput.trim();
     if (!email) {
-      setSaveError("Enter a user email to assign.");
+      setSaveError("Enter a user email to invite.");
       setSaveNotice(null);
       return;
     }
@@ -442,7 +462,7 @@ export default function ProjectAssignmentsPage() {
       } = await supabase.auth.getSession();
       const accessToken = session?.access_token?.trim() || "";
       if (!accessToken) {
-        setSaveError("You must be signed in to invite or create users.");
+        setSaveError("You must be signed in to invite users.");
         setSaveNotice(null);
         return;
       }
@@ -471,7 +491,133 @@ export default function ProjectAssignmentsPage() {
       setSaveNotice(json.message || "User invite processed.");
       setLastUpdatedAt(new Date().toLocaleTimeString());
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "Failed to invite or create user");
+      setSaveError(e instanceof Error ? e.message : "Failed to invite user");
+      setSaveNotice(null);
+    } finally {
+      setMembershipSavingKey(key, false);
+    }
+  };
+
+  const getAccessToken = async () => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.access_token?.trim() || "";
+  };
+
+  const runUserSearch = async (rawQuery: string) => {
+    const query = rawQuery.trim();
+    if (query.length < 2 || !canManageCompanyUsers) return;
+
+    setUserSearchLoading(true);
+    setUserSearchError(null);
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        setUserSearchError("You must be signed in to search users.");
+        setUserSearchResults([]);
+        return;
+      }
+      const res = await fetch("/api/company-users/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ companyId, query }),
+      });
+      const json = (await res.json()) as { error?: string; results?: UserSearchResult[] };
+      if (!res.ok) {
+        throw new Error(json.error || `Search failed (${res.status})`);
+      }
+      setUserSearchResults(json.results || []);
+      setSelectedExistingUserId(null);
+    } catch (e) {
+      setUserSearchResults([]);
+      setUserSearchError(e instanceof Error ? e.message : "Failed to search users");
+    } finally {
+      setUserSearchLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canManageCompanyUsers) return;
+    const query = userSearchQuery.trim();
+    if (query.length < 2) return;
+    const timer = window.setTimeout(() => {
+      void runUserSearch(query);
+    }, 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce on query/company only
+  }, [userSearchQuery, companyId, canManageCompanyUsers]);
+
+  const handleUserSearchQueryChange = (value: string) => {
+    setUserSearchQuery(value);
+    if (value.trim().length < 2) {
+      setUserSearchResults([]);
+      setUserSearchError(null);
+      setSelectedExistingUserId(null);
+      setUserSearchLoading(false);
+    }
+  };
+  const handleAddExistingUser = async () => {
+    if (!selectedExistingUserId) {
+      setSaveError("Select an existing user from the search results.");
+      setSaveNotice(null);
+      return;
+    }
+    if (!context.userId || !canManageCompanyUsers) {
+      setSaveError("Only global admins or active company admins can manage company users.");
+      setSaveNotice(null);
+      return;
+    }
+
+    const key = `add-existing::${selectedExistingUserId}`;
+    setMembershipSavingKey(key, true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        setSaveError("You must be signed in to add users.");
+        setSaveNotice(null);
+        return;
+      }
+      const res = await fetch("/api/company-users/add-existing", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          companyId,
+          userId: selectedExistingUserId,
+          role: existingUserRoleInput,
+        }),
+      });
+      const json = (await res.json()) as {
+        error?: string;
+        message?: string;
+        alreadyActive?: boolean;
+        displayName?: string;
+      };
+      if (!res.ok) {
+        throw new Error(json.error || `Request failed (${res.status})`);
+      }
+
+      await loadPageData();
+      setSaveNotice(json.message || "Existing user added to company.");
+      setLastUpdatedAt(new Date().toLocaleTimeString());
+      if (!json.alreadyActive) {
+        setUserSearchQuery("");
+        setUserSearchResults([]);
+        setSelectedExistingUserId(null);
+        setExistingUserRoleInput("technician");
+      } else {
+        void runUserSearch(userSearchQuery);
+      }
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to add existing user");
       setSaveNotice(null);
     } finally {
       setMembershipSavingKey(key, false);
@@ -589,39 +735,146 @@ export default function ProjectAssignmentsPage() {
         {!loading && !loadError && canReadPage && canManageCompanyUsers ? (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
             <h2 className="text-lg font-bold tracking-tight text-gray-900">Company Users</h2>
-            <p className="mt-1 text-sm text-gray-600">Manage company memberships, roles, and active status.</p>
+            <p className="mt-1 text-sm text-gray-600">
+              Add an existing technician from another company, or invite a brand-new user by email.
+            </p>
 
-            <div className="mt-4 grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:grid-cols-[1fr_1fr_180px_auto]">
-              <input
-                type="email"
-                value={assignEmailInput}
-                onChange={(e) => setAssignEmailInput(e.target.value)}
-                placeholder="user email"
-                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-              />
-              <input
-                type="text"
-                value={inviteDisplayNameInput}
-                onChange={(e) => setInviteDisplayNameInput(e.target.value)}
-                placeholder="display name (optional)"
-                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-              />
-              <select
-                value={assignRoleInput}
-                onChange={(e) => setAssignRoleInput(e.target.value as "admin" | "technician")}
-                className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-              >
-                <option value="technician">technician</option>
-                <option value="admin">admin</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => void handleInviteOrCreateUser()}
-                disabled={membershipSavingKeys.has(`invite-user::${assignEmailInput.trim().toLowerCase()}`)}
-                className="min-h-[44px] rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-              >
-                Invite / Create User
-              </button>
+            <div className="mt-5 space-y-6">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <h3 className="text-sm font-bold text-gray-900">1. Add Existing User</h3>
+                <p className="mt-1 text-xs text-gray-600">
+                  Search all app users by name, email, or user ID. Does not create a new Auth account.
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_180px]">
+                  <input
+                    type="search"
+                    value={userSearchQuery}
+                    onChange={(e) => handleUserSearchQueryChange(e.target.value)}
+                    placeholder="Search name, email, or UUID"
+                    className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  />
+                  <select
+                    value={existingUserRoleInput}
+                    onChange={(e) => setExistingUserRoleInput(e.target.value as "admin" | "technician")}
+                    className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  >
+                    <option value="technician">technician</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </div>
+                {userSearchLoading ? <p className="mt-2 text-xs text-gray-600">Searching…</p> : null}
+                {userSearchError ? <p className="mt-2 text-xs font-medium text-red-700">{userSearchError}</p> : null}
+                {!userSearchLoading && userSearchQuery.trim().length >= 2 && userSearchResults.length === 0 && !userSearchError ? (
+                  <p className="mt-2 text-xs text-gray-600">No matching users found.</p>
+                ) : null}
+                {userSearchResults.length > 0 ? (
+                  <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto">
+                    {userSearchResults.map((result) => {
+                      const selected = selectedExistingUserId === result.userId;
+                      const membershipSummary =
+                        result.companyMemberships.length > 0
+                          ? result.companyMemberships
+                              .map(
+                                (m) =>
+                                  `${m.companyName} (${m.role}${m.isActive ? "" : ", inactive"})`,
+                              )
+                              .join(" · ")
+                          : "No company memberships";
+                      const alreadyActiveHere = !!result.targetCompanyMembership?.isActive;
+                      return (
+                        <li key={result.userId}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedExistingUserId(result.userId)}
+                            className={`w-full rounded-lg border px-3 py-2 text-left transition ${
+                              selected
+                                ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
+                                : "border-gray-200 bg-white hover:border-gray-300"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <div className="font-semibold text-gray-900">{result.displayName}</div>
+                                <div className="text-xs text-gray-600">{result.email || "No email"}</div>
+                                <div className="mt-1 text-xs text-gray-500">{membershipSummary}</div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                <span
+                                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                    result.profileIsActive
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-gray-200 text-gray-700"
+                                  }`}
+                                >
+                                  {result.profileIsActive ? "profile active" : "profile inactive"}
+                                </span>
+                                {alreadyActiveHere ? (
+                                  <span className="text-[11px] font-semibold text-amber-700">Already on this company</span>
+                                ) : result.targetCompanyMembership ? (
+                                  <span className="text-[11px] font-semibold text-blue-700">Inactive on this company</span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void handleAddExistingUser()}
+                  disabled={
+                    !selectedExistingUserId ||
+                    membershipSavingKeys.has(`add-existing::${selectedExistingUserId || ""}`)
+                  }
+                  className="mt-3 min-h-[44px] rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {selectedExistingUserId && membershipSavingKeys.has(`add-existing::${selectedExistingUserId}`)
+                    ? "Adding…"
+                    : "Add Existing User to Company"}
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <h3 className="text-sm font-bold text-gray-900">2. Invite New User</h3>
+                <p className="mt-1 text-xs text-gray-600">
+                  Creates a new Auth invite for an email that is not already in the app. Requires{" "}
+                  <code className="rounded bg-white px-1">SUPABASE_SERVICE_ROLE_KEY</code> on the server.
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_180px_auto]">
+                  <input
+                    type="email"
+                    value={assignEmailInput}
+                    onChange={(e) => setAssignEmailInput(e.target.value)}
+                    placeholder="new user email"
+                    className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  />
+                  <input
+                    type="text"
+                    value={inviteDisplayNameInput}
+                    onChange={(e) => setInviteDisplayNameInput(e.target.value)}
+                    placeholder="display name (optional)"
+                    className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  />
+                  <select
+                    value={assignRoleInput}
+                    onChange={(e) => setAssignRoleInput(e.target.value as "admin" | "technician")}
+                    className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  >
+                    <option value="technician">technician</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleInviteOrCreateUser()}
+                    disabled={membershipSavingKeys.has(`invite-user::${assignEmailInput.trim().toLowerCase()}`)}
+                    className="min-h-[44px] rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    Invite New User
+                  </button>
+                </div>
+              </div>
             </div>
 
             {companyUsers.length === 0 ? (
