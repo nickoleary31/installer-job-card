@@ -24,6 +24,10 @@ type MembershipJoinRow = {
   companies: { id: string; name: string | null } | { id: string; name: string | null }[] | null;
 };
 
+function normalizeEmail(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase();
+}
+
 export async function GET(req: Request) {
   const env = getSupabaseServerEnv();
   const auth = await authorizeGlobalAdmin({
@@ -77,6 +81,8 @@ export async function GET(req: Request) {
     membershipsByUser.set(row.user_id, list);
   }
 
+  /** Auth metadata keyed by Auth UID (same as user_profiles.id). Never overwrite with profile email. */
+  const authEmailById = new Map<string, string>();
   const lastSignInById = new Map<string, string | null>();
   const authCreatedById = new Map<string, string | null>();
   try {
@@ -87,6 +93,7 @@ export async function GET(req: Request) {
       if (error) throw error;
       const users = data?.users || [];
       for (const u of users) {
+        authEmailById.set(u.id, (u.email || "").trim());
         lastSignInById.set(u.id, u.last_sign_in_at ?? null);
         authCreatedById.set(u.id, u.created_at ?? null);
       }
@@ -98,16 +105,30 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
-  const users = profiles.map((profile) => ({
-    userId: profile.id,
-    email: profile.email?.trim() || "",
-    displayName: profile.display_name?.trim() || profile.email?.trim() || `User ${profile.id.slice(0, 8)}`,
-    globalRole: profile.global_role,
-    isActive: profile.is_active,
-    createdAt: profile.created_at || authCreatedById.get(profile.id) || null,
-    lastSignInAt: lastSignInById.get(profile.id) || null,
-    companyMemberships: membershipsByUser.get(profile.id) || [],
-  }));
+  const users = profiles.map((profile) => {
+    const authEmail = authEmailById.get(profile.id) || "";
+    const profileEmail = profile.email?.trim() || "";
+    const authNorm = normalizeEmail(authEmail);
+    const profileNorm = normalizeEmail(profileEmail);
+    const emailMismatch = Boolean(authNorm || profileNorm) && authNorm !== profileNorm;
+
+    return {
+      userId: profile.id,
+      authEmail,
+      profileEmail,
+      emailMismatch,
+      displayName:
+        profile.display_name?.trim() ||
+        authEmail ||
+        profileEmail ||
+        `User ${profile.id.slice(0, 8)}`,
+      globalRole: profile.global_role,
+      isActive: profile.is_active,
+      createdAt: profile.created_at || authCreatedById.get(profile.id) || null,
+      lastSignInAt: lastSignInById.get(profile.id) || null,
+      companyMemberships: membershipsByUser.get(profile.id) || [],
+    };
+  });
 
   return NextResponse.json({ users });
 }

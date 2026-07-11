@@ -18,7 +18,11 @@ type MembershipView = {
 
 type AdminUserView = {
   userId: string;
-  email: string;
+  /** Authoritative Auth login email from auth.users */
+  authEmail: string;
+  /** Display/contact email from user_profiles (may differ) */
+  profileEmail: string;
+  emailMismatch: boolean;
   displayName: string;
   globalRole: "admin" | "technician";
   isActive: boolean;
@@ -119,7 +123,8 @@ export default function AdminUsersPage() {
     return users.filter((u) => {
       const hay = [
         u.displayName,
-        u.email,
+        u.authEmail,
+        u.profileEmail,
         u.userId,
         u.globalRole,
         ...u.companyMemberships.map((m) => `${m.companyName} ${m.role}`),
@@ -260,6 +265,24 @@ export default function AdminUsersPage() {
     });
   };
 
+  const handleSyncProfileEmail = async (userId: string) => {
+    await runAction(`sync-email::${userId}`, async () => {
+      const accessToken = await getAccessToken();
+      if (!accessToken) throw new Error("You must be signed in.");
+      const res = await fetch("/api/admin/users/sync-profile-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ userId }),
+      });
+      const json = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+      return json.message || "Profile email synced to Auth login email.";
+    });
+  };
+
   if (authLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
@@ -374,7 +397,7 @@ export default function AdminUsersPage() {
                 <option value="">Select user</option>
                 {users.map((u) => (
                   <option key={u.userId} value={u.userId}>
-                    {u.displayName} ({u.email || u.userId.slice(0, 8)})
+                    {u.displayName} ({u.authEmail || u.profileEmail || u.userId.slice(0, 8)})
                   </option>
                 ))}
               </select>
@@ -416,7 +439,7 @@ export default function AdminUsersPage() {
               type="search"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter by name, email, UUID, company…"
+              placeholder="Filter by name, login/profile email, UUID, company…"
               className="min-h-[40px] min-w-[240px] flex-1 rounded-lg border border-gray-300 px-3 text-sm sm:max-w-md"
             />
           </div>
@@ -433,11 +456,25 @@ export default function AdminUsersPage() {
               const editingEmail = changeEmailUserId === user.userId;
               const editingName = editNameUserId === user.userId;
               return (
-                <article key={user.userId} className="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+                <article key={user.userId} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <h3 className="text-base font-bold text-gray-950">{user.displayName}</h3>
-                      <p className="text-sm text-gray-700">{user.email || "No email"}</p>
+                      <dl className="mt-2 space-y-1 text-sm">
+                        <div className="flex flex-wrap gap-x-2">
+                          <dt className="font-semibold text-gray-800">Login Email</dt>
+                          <dd className="font-medium text-gray-900">{user.authEmail || "—"}</dd>
+                        </div>
+                        <div className="flex flex-wrap gap-x-2">
+                          <dt className="font-semibold text-gray-800">Profile Email</dt>
+                          <dd className="font-medium text-gray-900">{user.profileEmail || "—"}</dd>
+                        </div>
+                      </dl>
+                      {user.emailMismatch ? (
+                        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-900">
+                          Email mismatch — Login Email (Auth) and Profile Email differ. Login uses Auth.
+                        </p>
+                      ) : null}
                       <p className="mt-1 font-mono text-xs text-gray-500">{user.userId}</p>
                       <div className="mt-2 flex flex-wrap gap-2 text-xs">
                         <span className="rounded-full bg-slate-200 px-2 py-0.5 font-semibold text-slate-800">
@@ -461,7 +498,7 @@ export default function AdminUsersPage() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                        className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-600"
                         onClick={() => {
                           setExpandedUserId(expanded ? null : user.userId);
                         }}
@@ -470,18 +507,30 @@ export default function AdminUsersPage() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-50"
+                        className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
                         onClick={() => {
                           setChangeEmailUserId(user.userId);
-                          setChangeEmailValue(user.email);
+                          setChangeEmailValue(user.authEmail);
                           setEditNameUserId(null);
                         }}
                       >
                         Change Login Email
                       </button>
+                      {user.emailMismatch ? (
+                        <button
+                          type="button"
+                          disabled={busyKey === `sync-email::${user.userId}` || !user.authEmail}
+                          onClick={() => void handleSyncProfileEmail(user.userId)}
+                          className="rounded-md bg-amber-500 px-3 py-1.5 text-xs font-semibold text-gray-950 hover:bg-amber-400 disabled:opacity-60"
+                        >
+                          {busyKey === `sync-email::${user.userId}`
+                            ? "Syncing…"
+                            : "Sync Profile Email to Login Email"}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
-                        className="rounded-md border border-violet-300 bg-white px-3 py-1.5 text-xs font-semibold text-violet-800 hover:bg-violet-50"
+                        className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700"
                         onClick={() => {
                           setEditNameUserId(user.userId);
                           setEditNameValue(user.displayName);
@@ -494,15 +543,20 @@ export default function AdminUsersPage() {
                   </div>
 
                   {editingEmail ? (
-                    <div className="mt-3 space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
-                      <input
-                        type="email"
-                        value={changeEmailValue}
-                        onChange={(e) => setChangeEmailValue(e.target.value)}
-                        className="min-h-[40px] w-full rounded-md border border-blue-300 bg-white px-3 text-sm"
-                      />
-                      <p className="text-[11px] text-blue-900/80">
-                        Updates Auth + profile email. UUID and global role stay the same.
+                    <div className="mt-3 space-y-2 rounded-lg border border-blue-300 bg-blue-50 p-3">
+                      <label className="block text-xs font-semibold text-gray-900">
+                        New Login Email (Auth)
+                        <input
+                          type="email"
+                          value={changeEmailValue}
+                          onChange={(e) => setChangeEmailValue(e.target.value)}
+                          className="mt-1 min-h-[40px] w-full rounded-md border border-blue-300 bg-white px-3 text-sm font-normal text-gray-900"
+                        />
+                      </label>
+                      <p className="text-[11px] text-gray-700">
+                        Defaults to current Auth login email. Saves via Admin API (
+                        <code className="rounded bg-white/70 px-1 text-gray-900">updateUserById</code>
+                        ), then updates profile email. UUID and global role stay the same.
                         {changeEmailUserId === context.userId
                           ? " After saving, sign out and sign back in with the new email."
                           : " The user must sign out and log in with the new email."}
@@ -512,7 +566,7 @@ export default function AdminUsersPage() {
                           type="button"
                           disabled={busyKey === `email::${user.userId}`}
                           onClick={() => void handleChangeEmail()}
-                          className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                          className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
                         >
                           Save Login Email
                         </button>
@@ -522,7 +576,7 @@ export default function AdminUsersPage() {
                             setChangeEmailUserId(null);
                             setChangeEmailValue("");
                           }}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold"
+                          className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-600"
                         >
                           Cancel
                         </button>
@@ -531,19 +585,19 @@ export default function AdminUsersPage() {
                   ) : null}
 
                   {editingName ? (
-                    <div className="mt-3 space-y-2 rounded-lg border border-violet-200 bg-violet-50 p-3">
+                    <div className="mt-3 space-y-2 rounded-lg border border-violet-300 bg-violet-50 p-3">
                       <input
                         type="text"
                         value={editNameValue}
                         onChange={(e) => setEditNameValue(e.target.value)}
-                        className="min-h-[40px] w-full rounded-md border border-violet-300 bg-white px-3 text-sm"
+                        className="min-h-[40px] w-full rounded-md border border-violet-300 bg-white px-3 text-sm text-gray-900"
                       />
                       <div className="flex gap-2">
                         <button
                           type="button"
                           disabled={busyKey === `name::${user.userId}`}
                           onClick={() => void handleSaveDisplayName()}
-                          className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                          className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
                         >
                           Save Display Name
                         </button>
@@ -553,7 +607,7 @@ export default function AdminUsersPage() {
                             setEditNameUserId(null);
                             setEditNameValue("");
                           }}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold"
+                          className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-600"
                         >
                           Cancel
                         </button>
@@ -585,7 +639,7 @@ export default function AdminUsersPage() {
                               <div className="flex flex-wrap gap-2">
                                 <Link
                                   href={`/companies/${encodeURIComponent(m.companyId)}/assignments`}
-                                  className="rounded-md border border-blue-300 bg-white px-2.5 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-50"
+                                  className="rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700"
                                 >
                                   Open assignments
                                 </Link>
@@ -593,7 +647,7 @@ export default function AdminUsersPage() {
                                   type="button"
                                   disabled={busyKey === `membership::${user.userId}::${m.companyId}`}
                                   onClick={() => void handleSetMembershipActive(user.userId, m.companyId, !m.isActive)}
-                                  className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-60"
+                                  className="rounded-md bg-slate-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-60"
                                 >
                                   {m.isActive ? "Deactivate membership" : "Reactivate membership"}
                                 </button>

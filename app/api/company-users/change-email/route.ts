@@ -63,8 +63,46 @@ export async function POST(req: Request) {
   const preservedGlobalRole = profile.global_role;
   const preservedIsActive = profile.is_active;
 
-  const currentEmail = (profile.email || "").trim().toLowerCase();
-  if (currentEmail && currentEmail === newEmail) {
+  const { data: authUser, error: getUserError } = await serviceClient.auth.admin.getUserById(userId);
+  if (getUserError || !authUser?.user) {
+    return NextResponse.json(
+      { error: getUserError?.message || "Auth user not found for this profile." },
+      { status: 404 },
+    );
+  }
+
+  const currentAuthEmail = (authUser.user.email || "").trim().toLowerCase();
+  if (currentAuthEmail && currentAuthEmail === newEmail) {
+    // Auth already has this login email — still ensure profile matches.
+    const profileAlreadyMatches = (profile.email || "").trim().toLowerCase() === newEmail;
+    if (!profileAlreadyMatches) {
+      const { error: syncProfileError } = await serviceClient
+        .from("user_profiles")
+        .update({
+          email: newEmail,
+          global_role: preservedGlobalRole,
+          is_active: preservedIsActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", userId);
+      if (syncProfileError) {
+        return NextResponse.json(
+          {
+            error: `Auth login email already matched, but profile email failed to update: ${syncProfileError.message}`,
+          },
+          { status: 500 },
+        );
+      }
+      return NextResponse.json({
+        ok: true,
+        userId,
+        email: newEmail,
+        selfUpdate: isSelfUpdate,
+        message: isSelfUpdate
+          ? "Your Auth login email was already set; profile email was updated to match."
+          : "Auth login email was already set; profile email was updated to match.",
+      });
+    }
     return NextResponse.json({
       ok: true,
       userId,
@@ -105,14 +143,6 @@ export async function POST(req: Request) {
     return NextResponse.json(
       { error: "That email is already used by another Auth user." },
       { status: 409 },
-    );
-  }
-
-  const { data: authUser, error: getUserError } = await serviceClient.auth.admin.getUserById(userId);
-  if (getUserError || !authUser?.user) {
-    return NextResponse.json(
-      { error: getUserError?.message || "Auth user not found for this profile." },
-      { status: 404 },
     );
   }
 
