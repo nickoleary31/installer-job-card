@@ -302,9 +302,14 @@ export default function CompanyProjectsPage() {
   }, [companyId, isOffline, offlineSnapshot, userContext.companyRolesById]);
 
   const isGlobalAdmin = useMemo(() => {
-    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.globalRole === "admin";
-    return userContext.globalRole === "admin";
-  }, [isOffline, offlineSnapshot, userContext.globalRole]);
+    if (isOffline && offlineSnapshot) {
+      return (
+        offlineSnapshot.profile.globalRole === "admin" &&
+        offlineSnapshot.profile.profileIsActive !== false
+      );
+    }
+    return userContext.globalRole === "admin" && userContext.profileIsActive;
+  }, [isOffline, offlineSnapshot, userContext.globalRole, userContext.profileIsActive]);
 
   const isActiveCompanyAdmin = companyRole === "admin";
   const canManageCompanyData = isGlobalAdmin || isActiveCompanyAdmin;
@@ -667,6 +672,7 @@ export default function CompanyProjectsPage() {
         globalRole: userContext.globalRole,
         displayName: userContext.displayName,
         email: userContext.email,
+        profileIsActive: userContext.profileIsActive,
         companyIds: [...userContext.companyIds],
         companyRolesById: { ...userContext.companyRolesById },
       },

@@ -92,9 +92,14 @@ export default function CompaniesPage() {
   const [offlineCacheMiss, setOfflineCacheMiss] = useState(false);
 
   const isGlobalAdmin = useMemo(() => {
-    if (isOffline && offlineSnapshot) return offlineSnapshot.profile.globalRole === "admin";
-    return context.globalRole === "admin";
-  }, [context.globalRole, isOffline, offlineSnapshot]);
+    if (isOffline && offlineSnapshot) {
+      return (
+        offlineSnapshot.profile.globalRole === "admin" &&
+        offlineSnapshot.profile.profileIsActive !== false
+      );
+    }
+    return context.globalRole === "admin" && context.profileIsActive;
+  }, [context.globalRole, context.profileIsActive, isOffline, offlineSnapshot]);
 
   const companyRolesForDisplay = useMemo(() => {
     if (isOffline && offlineSnapshot) return offlineSnapshot.profile.companyRolesById;
@@ -212,7 +217,12 @@ export default function CompaniesPage() {
   const visibleCompanies = useMemo(() => {
     if (isOffline && offlineSnapshot) {
       const list = companies;
-      if (offlineSnapshot.profile.globalRole === "admin") return list;
+      if (
+        offlineSnapshot.profile.globalRole === "admin" &&
+        offlineSnapshot.profile.profileIsActive !== false
+      ) {
+        return list;
+      }
       const ids = offlineSnapshot.profile.companyIds;
       if (ids.length === 0) return [];
       const allowed = new Set(ids);
@@ -350,6 +360,7 @@ export default function CompaniesPage() {
         globalRole: context.globalRole,
         displayName: context.displayName,
         email: context.email,
+        profileIsActive: context.profileIsActive,
         companyIds: [...context.companyIds],
         companyRolesById: { ...context.companyRolesById },
       },
@@ -375,6 +386,14 @@ export default function CompaniesPage() {
           <img src="/icon.svg" alt="Installer Sheetz" className="h-10 w-10 sm:h-12 sm:w-12" />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Installer Sheetz</h1>
           <p className="mt-1 text-sm text-gray-600">Digital Job Cards for Field Technicians</p>
+          {isGlobalAdmin ? (
+            <Link
+              href="/admin/users"
+              className="mt-3 inline-flex text-sm font-semibold text-violet-700 hover:underline"
+            >
+              Global Users
+            </Link>
+          ) : null}
         </header>
 
         {loading ? <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">Loading companies...</section> : null}

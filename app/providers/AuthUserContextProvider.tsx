@@ -14,6 +14,7 @@ const emptyContext: AuthUserContext = {
   displayName: null,
   email: null,
   globalRole: null,
+  profileIsActive: false,
   companyIds: [],
   companyRolesById: {},
 };

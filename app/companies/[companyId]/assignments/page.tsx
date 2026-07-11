@@ -97,11 +97,13 @@ export default function ProjectAssignmentsPage() {
   const [userSearchLoading, setUserSearchLoading] = useState(false);
   const [userSearchError, setUserSearchError] = useState<string | null>(null);
   const [selectedExistingUserId, setSelectedExistingUserId] = useState<string | null>(null);
+  const [changeEmailUserId, setChangeEmailUserId] = useState<string | null>(null);
+  const [changeEmailValue, setChangeEmailValue] = useState("");
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [recentlyChangedKey, setRecentlyChangedKey] = useState<string | null>(null);
 
   const companyRole = context.companyRolesById[companyId];
-  const isGlobalAdmin = context.globalRole === "admin";
+  const isGlobalAdmin = context.globalRole === "admin" && context.profileIsActive;
   const isAdminForCompany = companyRole === "admin" || isGlobalAdmin;
   const canReadPage = !!context.userId && (isAdminForCompany || companyRole === "technician");
 
@@ -624,6 +626,79 @@ export default function ProjectAssignmentsPage() {
     }
   };
 
+  const openChangeEmail = (userId: string, currentEmail: string) => {
+    setChangeEmailUserId(userId);
+    setChangeEmailValue(currentEmail === "No email" ? "" : currentEmail);
+    setSaveError(null);
+    setSaveNotice(null);
+  };
+
+  const cancelChangeEmail = () => {
+    setChangeEmailUserId(null);
+    setChangeEmailValue("");
+  };
+
+  const handleChangeLoginEmail = async () => {
+    if (!isGlobalAdmin) {
+      setSaveError("Only global admins can change login emails.");
+      setSaveNotice(null);
+      return;
+    }
+    if (!changeEmailUserId) {
+      setSaveError("Select a user to update.");
+      setSaveNotice(null);
+      return;
+    }
+    const newEmail = changeEmailValue.trim().toLowerCase();
+    if (!newEmail || !newEmail.includes("@")) {
+      setSaveError("Enter a valid new login email.");
+      setSaveNotice(null);
+      return;
+    }
+
+    const key = `change-email::${changeEmailUserId}`;
+    setMembershipSavingKey(key, true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        setSaveError("You must be signed in to change login emails.");
+        setSaveNotice(null);
+        return;
+      }
+      const res = await fetch("/api/company-users/change-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          userId: changeEmailUserId,
+          newEmail,
+        }),
+      });
+      const json = (await res.json()) as { error?: string; message?: string; selfUpdate?: boolean };
+      if (!res.ok) {
+        throw new Error(json.error || `Request failed (${res.status})`);
+      }
+      await loadPageData();
+      setSaveNotice(
+        json.message ||
+          (json.selfUpdate
+            ? "Your login email was updated. Sign out and sign back in using the new email before continuing."
+            : "Login email updated. The user must sign out and log back in with the new email."),
+      );
+      setLastUpdatedAt(new Date().toLocaleTimeString());
+      cancelChangeEmail();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to change login email");
+      setSaveNotice(null);
+    } finally {
+      setMembershipSavingKey(key, false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-5xl space-y-4 px-4 sm:px-5">
@@ -894,8 +969,11 @@ export default function ProjectAssignmentsPage() {
                     {companyUsers.map((user) => {
                       const roleSavingKey = `user-role::${user.userId}`;
                       const activeSavingKey = `user-active::${user.userId}`;
+                      const changeEmailKey = `change-email::${user.userId}`;
                       const isSavingRole = membershipSavingKeys.has(roleSavingKey);
                       const isSavingActive = membershipSavingKeys.has(activeSavingKey);
+                      const isSavingEmail = membershipSavingKeys.has(changeEmailKey);
+                      const isEditingEmail = changeEmailUserId === user.userId;
                       return (
                         <tr key={user.userId}>
                           <td className="border border-gray-200 px-3 py-2 align-top">
@@ -904,11 +982,50 @@ export default function ProjectAssignmentsPage() {
                             {!user.profileIsActive ? (
                               <div className="mt-1 text-xs font-medium text-amber-700">Profile inactive</div>
                             ) : null}
+                            {isEditingEmail ? (
+                              <div className="mt-3 space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                <label className="block text-xs font-semibold text-blue-900">
+                                  New login email
+                                </label>
+                                <input
+                                  type="email"
+                                  value={changeEmailValue}
+                                  onChange={(e) => setChangeEmailValue(e.target.value)}
+                                  placeholder="new@email.com"
+                                  className="min-h-[40px] w-full rounded-md border border-blue-300 bg-white px-2 py-1 text-sm text-gray-900"
+                                  disabled={isSavingEmail}
+                                />
+                                <p className="text-[11px] leading-snug text-blue-900/80">
+                                  Keeps the same user ID and global role.
+                                  {changeEmailUserId === context.userId
+                                    ? " After saving, sign out and sign back in with the new email."
+                                    : " The user must sign out and log back in with the new email."}
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={isSavingEmail}
+                                    onClick={() => void handleChangeLoginEmail()}
+                                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                                  >
+                                    {isSavingEmail ? "Saving…" : "Save Login Email"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isSavingEmail}
+                                    onClick={cancelChangeEmail}
+                                    className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-60"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
                           </td>
                           <td className="border border-gray-200 px-3 py-2 align-top">
                             <select
                               value={user.role}
-                              disabled={isSavingRole || isSavingActive}
+                              disabled={isSavingRole || isSavingActive || isSavingEmail}
                               onChange={(e) => void handleMembershipRoleChange(user.userId, e.target.value as "admin" | "technician")}
                               className="min-h-[40px] rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900"
                             >
@@ -926,18 +1043,30 @@ export default function ProjectAssignmentsPage() {
                             </span>
                           </td>
                           <td className="border border-gray-200 px-3 py-2 align-top">
-                            <button
-                              type="button"
-                              disabled={isSavingRole || isSavingActive}
-                              onClick={() => void handleMembershipActiveToggle(user.userId, !user.isMembershipActive)}
-                              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-60"
-                            >
-                              {isSavingActive
-                                ? "Saving..."
-                                : user.isMembershipActive
-                                  ? "Deactivate"
-                                  : "Reactivate"}
-                            </button>
+                            <div className="flex flex-col gap-2">
+                              <button
+                                type="button"
+                                disabled={isSavingRole || isSavingActive || isSavingEmail}
+                                onClick={() => void handleMembershipActiveToggle(user.userId, !user.isMembershipActive)}
+                                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-60"
+                              >
+                                {isSavingActive
+                                  ? "Saving..."
+                                  : user.isMembershipActive
+                                    ? "Deactivate"
+                                    : "Reactivate"}
+                              </button>
+                              {isGlobalAdmin ? (
+                                <button
+                                  type="button"
+                                  disabled={isSavingRole || isSavingActive || isSavingEmail || isEditingEmail}
+                                  onClick={() => openChangeEmail(user.userId, user.email)}
+                                  className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-60"
+                                >
+                                  Change Login Email
+                                </button>
+                              ) : null}
+                            </div>
                           </td>
                         </tr>
                       );

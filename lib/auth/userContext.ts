@@ -7,6 +7,7 @@ type UserProfileRow = {
   global_role: "admin" | "technician" | null;
   display_name: string | null;
   email: string | null;
+  is_active: boolean | null;
 };
 
 type CompanyMembershipRow = {
@@ -19,6 +20,8 @@ export type AuthUserContext = {
   displayName: string | null;
   email: string | null;
   globalRole: "admin" | "technician" | null;
+  /** Profile active flag; false means the account is deactivated. */
+  profileIsActive: boolean;
   companyIds: string[];
   companyRolesById: Record<string, "admin" | "technician">;
 };
@@ -28,6 +31,7 @@ const emptyContext = (): AuthUserContext => ({
   displayName: null,
   email: null,
   globalRole: null,
+  profileIsActive: false,
   companyIds: [],
   companyRolesById: {},
 });
@@ -66,7 +70,7 @@ export async function loadCurrentAuthUserContext(): Promise<AuthUserContext> {
 
   try {
     const [{ data: profileData, error: profileError }, { data: membershipData, error: membershipError }] = await Promise.all([
-      supabase.from("user_profiles").select("global_role, display_name, email").eq("id", user.id).maybeSingle<UserProfileRow>(),
+      supabase.from("user_profiles").select("global_role, display_name, email, is_active").eq("id", user.id).maybeSingle<UserProfileRow>(),
       supabase.from("company_memberships").select("company_id, role").eq("user_id", user.id).eq("is_active", true),
     ]);
 
@@ -84,6 +88,7 @@ export async function loadCurrentAuthUserContext(): Promise<AuthUserContext> {
       displayName: profileData?.display_name?.trim() || null,
       email: profileData?.email?.trim() || user.email?.trim() || null,
       globalRole: profileData?.global_role || null,
+      profileIsActive: profileData?.is_active !== false,
       companyIds,
       companyRolesById,
     };
@@ -97,6 +102,7 @@ export async function loadCurrentAuthUserContext(): Promise<AuthUserContext> {
             displayName: snap.profile.displayName?.trim() || null,
             email: snap.profile.email?.trim() || user.email?.trim() || null,
             globalRole: snap.profile.globalRole,
+            profileIsActive: snap.profile.profileIsActive !== false,
             companyIds: [...snap.profile.companyIds],
             companyRolesById: { ...snap.profile.companyRolesById },
           };
@@ -112,6 +118,7 @@ export async function loadCurrentAuthUserContext(): Promise<AuthUserContext> {
         displayName: null,
         email: user.email?.trim() || null,
         globalRole: null,
+        profileIsActive: false,
         companyIds: [],
         companyRolesById: {},
       };
