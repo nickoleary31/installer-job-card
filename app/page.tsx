@@ -25,9 +25,20 @@ import {
   type VacPhotoFileNames,
   VAC4_ORDERED_DESCRIPTION_FIELDS,
   VAC4_ORDERED_PHOTO_FIELDS,
-  formatEmailBodyFromPayload,
-  formatEmailSubject,
 } from "@/lib/job-card-submission";
+import { buildEmailViewModel, type EmailViewModel } from "@/lib/email-view-model";
+import { EmailPreviewBody } from "@/components/EmailPreviewBody";
+import { EmailSendConfirmModal } from "@/components/EmailSendConfirmModal";
+import type { EmailSendMode } from "@/lib/email-recipients";
+import {
+  applyMergedPhotoUploadsToPayload,
+  draftSaveStageLabel,
+  extractPhotoUploadsFromPayload,
+  logDraftPhotoSaveDiagnostic,
+  mergeDurablePhotoUploads,
+  type DraftPhotoSaveStage,
+  verifyMergedStoragePathsPresent,
+} from "@/lib/draft-photo-persistence";
 import { supabase } from "@/lib/supabase/client";
 import {
   LINXUP_ASSET_TRACKER_FORM_ID,
@@ -1356,11 +1367,31 @@ function PhotoThumbnailGrid({
   );
 }
 
-function PhotoUploadedBadge({ show }: { show: boolean }) {
-  if (!show) return null;
+function PhotoUploadedBadge({
+  show,
+  status,
+}: {
+  show: boolean;
+  status?: "uploading" | "saved" | "failed" | null;
+}) {
+  if (status === "uploading") {
+    return (
+      <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-950 ring-1 ring-amber-300">
+        Uploading
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-800 ring-1 ring-red-300">
+        Failed
+      </span>
+    );
+  }
+  if (!show && status !== "saved") return null;
   return (
     <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
-      <span aria-hidden>✓</span> Uploaded
+      <span aria-hidden>✓</span> Saved
     </span>
   );
 }
@@ -1423,11 +1454,10 @@ export function NewSubmissionForm() {
   const [submissionCompletedAt, setSubmissionCompletedAt] = useState<number | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<"Draft" | "Submitted">("Draft");
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
-  const [emailSubmissionPreview, setEmailSubmissionPreview] = useState<{
-    externalRecipientEmails: string[];
-    subject: string;
-    body: string;
-  } | null>(null);
+  const [emailSubmissionPreview, setEmailSubmissionPreview] = useState<{ model: EmailViewModel } | null>(null);
+  const [emailSendModalOpen, setEmailSendModalOpen] = useState(false);
+  const [lastEmailMode, setLastEmailMode] = useState<EmailSendMode | null>(null);
+  const [submitPersistStatus, setSubmitPersistStatus] = useState<"idle" | "saving" | "error">("idle");
   const [projectExternalRecipientEmails, setProjectExternalRecipientEmails] = useState<string[]>([]);
   const [pendingEmailPayload, setPendingEmailPayload] = useState<JobCardSubmissionPayload | null>(null);
   const [emailSendStatus, setEmailSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
@@ -1609,6 +1639,14 @@ export function NewSubmissionForm() {
   const [reviewHighlights, setReviewHighlights] = useState<Set<string>>(() => new Set());
   const [reviewBlockMessage, setReviewBlockMessage] = useState<string | null>(null);
   const [draftNoticeMessage, setDraftNoticeMessage] = useState<string | null>(null);
+  const [draftSaveStage, setDraftSaveStage] = useState<DraftPhotoSaveStage>("idle");
+  const [photoFieldPersistStatus, setPhotoFieldPersistStatus] = useState<
+    Partial<Record<string, "uploading" | "saved" | "failed">>
+  >({});
+  const photoFieldPersistStatusRef = useRef<Partial<Record<string, "uploading" | "saved" | "failed">>>({});
+  const pendingPhotoUploadsRef = useRef(0);
+  const pendingPhotoUploadWaitersRef = useRef<Array<() => void>>([]);
+  const lastSaveSucceededRef = useRef(false);
   const [localDeviceSaveError, setLocalDeviceSaveError] = useState<string | null>(null);
   const [offlineProjectDetailsWarning, setOfflineProjectDetailsWarning] = useState<string | null>(null);
   const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
@@ -2653,48 +2691,86 @@ export function NewSubmissionForm() {
     else console.error("Supabase upload failed:", payload);
   };
 
+  const notifyPendingPhotoUploadsChanged = () => {
+    if (pendingPhotoUploadsRef.current > 0) return;
+    const waiters = pendingPhotoUploadWaitersRef.current;
+    pendingPhotoUploadWaitersRef.current = [];
+    for (const resolve of waiters) resolve();
+  };
+
+  const waitForPendingPhotoUploads = async () => {
+    if (pendingPhotoUploadsRef.current <= 0) return;
+    await new Promise<void>((resolve) => {
+      pendingPhotoUploadWaitersRef.current.push(resolve);
+    });
+  };
+
+  const beginPhotoUploadTracking = (fieldName: UploadFieldName) => {
+    pendingPhotoUploadsRef.current += 1;
+    setPhotoFieldPersistStatus((prev) => {
+      const next = { ...prev, [fieldName]: "uploading" as const };
+      photoFieldPersistStatusRef.current = next;
+      return next;
+    });
+  };
+
+  const endPhotoUploadTracking = (fieldName: UploadFieldName, ok: boolean) => {
+    pendingPhotoUploadsRef.current = Math.max(0, pendingPhotoUploadsRef.current - 1);
+    setPhotoFieldPersistStatus((prev) => {
+      const next = { ...prev, [fieldName]: ok ? ("saved" as const) : ("failed" as const) };
+      photoFieldPersistStatusRef.current = next;
+      return next;
+    });
+    notifyPendingPhotoUploadsChanged();
+  };
+
   const uploadPhotosToStorage = async (group: PhotoStorageGroup, fieldName: UploadFieldName, files: File[]) => {
+    beginPhotoUploadTracking(fieldName);
     const uploadedUrls: string[] = [];
     const uploadedPhotos: UploadedPhotoMetadata[] = [];
     const failures: UploadFailureLog[] = [];
     let ok = true;
-    for (const file of files) {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      // eslint-disable-next-line react-hooks/purity -- unique storage object names (not render)
-      const stampedName = `${Date.now()}-${safeName}`;
-      const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
-      const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
-        upsert: true,
-        contentType: file.type || undefined,
-      });
-      if (uploadError) {
-        failures.push({
-          error: uploadError,
-          storagePath: objectPath,
-          filename: file.name,
-          submissionId,
-          group,
-          fieldName,
+    try {
+      for (const file of files) {
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        // eslint-disable-next-line react-hooks/purity -- unique storage object names (not render)
+        const stampedName = `${Date.now()}-${safeName}`;
+        const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
+        const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
+          upsert: true,
+          contentType: file.type || undefined,
         });
-        ok = false;
-        continue;
+        if (uploadError) {
+          failures.push({
+            error: uploadError,
+            storagePath: objectPath,
+            filename: file.name,
+            submissionId,
+            group,
+            fieldName,
+          });
+          ok = false;
+          continue;
+        }
+        const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(objectPath);
+        const publicUrl = data?.publicUrl || "";
+        if (publicUrl) {
+          uploadedUrls.push(publicUrl);
+          uploadedPhotos.push({
+            fieldName,
+            group,
+            label: PHOTO_FIELD_LABELS[fieldName],
+            filename: file.name,
+            storagePath: objectPath,
+            publicUrl,
+            uploadedAt: new Date().toISOString(),
+          });
+        }
       }
-      const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(objectPath);
-      const publicUrl = data?.publicUrl || "";
-      if (publicUrl) {
-        uploadedUrls.push(publicUrl);
-        uploadedPhotos.push({
-          fieldName,
-          group,
-          label: PHOTO_FIELD_LABELS[fieldName],
-          filename: file.name,
-          storagePath: objectPath,
-          publicUrl,
-          uploadedAt: new Date().toISOString(),
-        });
-      }
+      return { ok, uploadedUrls, uploadedPhotos, failures };
+    } finally {
+      endPhotoUploadTracking(fieldName, uploadedPhotos.length > 0);
     }
-    return { ok, uploadedUrls, uploadedPhotos, failures };
   };
 
   const isVacPhotoField = (key: UploadFieldName): key is keyof VacPhotoFileNames => VAC_PHOTO_KEYS.includes(key as keyof VacPhotoFileNames);
@@ -3734,33 +3810,71 @@ export function NewSubmissionForm() {
     };
   };
 
-  const handleFinalSubmit = async () => {
-    if (isOffline) {
-      setDraftNoticeMessage("Offline mode — submit is disabled until connection returns.");
-      return;
+  const cleanupLocalDraftsAfterSubmit = async (submittedPayload: JobCardSubmissionPayload) => {
+    try {
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
+      window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
+      const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      clearMatchingAutosave(sc, sp);
+      const drafts = readMigratedDraftsFromStorage();
+      const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
+      window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+      if (offlineDraftIdRef.current) {
+        const offlineId = offlineDraftIdRef.current;
+        await deleteOfflineJobCardDraft(offlineId);
+        console.log("[offline-draft] deleted after submit", offlineId);
+        offlineDraftIdRef.current = null;
+      }
+      try {
+        window.localStorage.removeItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
+      } catch {
+        // ignore
+      }
+      clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "submit");
+    } catch {
+      // ignore localStorage cleanup errors
     }
-    const payload = await buildSubmissionPayload();
-    console.log("[Job card submission]", payload);
-    setSubmitSuccessMessage(null);
-    setPendingEmailPayload(payload);
-    setEmailSendStatus("idle");
-    setEmailSendErrorMessage(null);
-    setPostSubmitSyncWarning(null);
-    const externalFromPayload = dedupeEmailStrings(payload.projectRecipientEmails || []);
-    const externalRecipientEmails =
-      externalFromPayload.length > 0 ? externalFromPayload : projectExternalRecipientEmails;
-    setEmailSubmissionPreview({
-      externalRecipientEmails,
-      subject: formatEmailSubject(
-        payload.coreJobInfo.customer,
-        payload.linxup?.assetNumber || payload.coreJobInfo.unitNumber,
-        payload.linxup?.productLabel || selectedPrimaryForm?.label,
-      ),
-      body: formatEmailBodyFromPayload(payload),
-    });
-    setReviewHighlights(new Set());
-    setReviewBlockMessage(null);
-    setStep("form");
+    void submittedPayload;
+  };
+
+  const persistSubmittedJobCard = async (submittedPayload: JobCardSubmissionPayload) => {
+    const contextIds = await resolveSelectedOrDefaultContextIds();
+    const createdAt = new Date().toISOString();
+    const { data: existingRow, error: existingError } = await supabase
+      .from("job_card_submissions")
+      .select("submission_id")
+      .eq("submission_id", submittedPayload.submissionId)
+      .maybeSingle<{ submission_id: string }>();
+    if (existingError) throw existingError;
+    if (existingRow?.submission_id) {
+      const { error: updateError } = await supabase
+        .from("job_card_submissions")
+        .update({
+          payload: submittedPayload,
+          customer: submittedPayload.coreJobInfo.customer.trim() || "—",
+          unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
+        })
+        .eq("submission_id", submittedPayload.submissionId);
+      if (updateError) throw updateError;
+    } else {
+      const { error: insertError } = await supabase.from("job_card_submissions").insert({
+        submission_id: submittedPayload.submissionId,
+        company_id: contextIds.companyId,
+        project_id: contextIds.projectId,
+        customer: submittedPayload.coreJobInfo.customer.trim() || "—",
+        unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
+        payload: submittedPayload,
+        created_at: createdAt,
+      });
+      if (insertError) throw insertError;
+    }
+    const { error: deleteDraftError } = await supabase
+      .from("job_card_drafts")
+      .delete()
+      .eq("submission_id", submittedPayload.submissionId);
+    if (deleteDraftError) throw deleteDraftError;
+    await cleanupLocalDraftsAfterSubmit(submittedPayload);
   };
 
   const insertCustomerSiteFileRowOnce = async (params: {
@@ -3798,167 +3912,187 @@ export function NewSubmissionForm() {
     });
   };
 
-  const handleConfirmSendEmail = async () => {
+  const ensurePpdJsonOnPayload = async (
+    payloadForSend: JobCardSubmissionPayload,
+  ): Promise<JobCardSubmissionPayload> => {
+    if (!(payloadForSend.selectedSections.includes("PPD") && payloadForSend.ppd)) {
+      return payloadForSend;
+    }
+    if (isOffline) {
+      throw new Error("JSON upload requires online connection.");
+    }
+    if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
+      throw new Error("Select a PPD JSON configuration file (.json).");
+    }
+    const ctx = await resolveSelectedOrDefaultContextIds();
+    const { data: projRow, error: projErr } = await supabase
+      .from("projects")
+      .select("customer_id")
+      .eq("id", ctx.projectId)
+      .maybeSingle<{ customer_id: string | null }>();
+    const customerId = !projErr && projRow ? projRow.customer_id?.trim() || null : null;
+    const nj = normalizeUppercaseCoreJob(coreJob);
+    const make = nj.equipmentMake.trim();
+    const model = nj.equipmentModel.trim();
+    const unitNum = nj.unitNumber.trim();
+    let jsonConfigFile: JobCardPpdJsonConfigFile;
+    if (ppdJsonLocalFile) {
+      const { storagePath, publicUrl, uploadedAt } = await uploadPpdJsonFileToStorage(ppdJsonLocalFile, {
+        companyId: ctx.companyId,
+        projectId: ctx.projectId,
+        customerId,
+        unitNumber: unitNum || "unit",
+        make,
+        model,
+        notes: "",
+      });
+      jsonConfigFile = {
+        fileName: ppdJsonLocalFile.name,
+        storagePath,
+        publicUrl,
+        customerId,
+        projectId: ctx.projectId,
+        companyId: ctx.companyId,
+        make,
+        model,
+        unitNumber: unitNum,
+        notes: "",
+        uploadedAt,
+      };
+      setPpdJsonUploadedConfig(jsonConfigFile);
+      setPpdJsonFileName(ppdJsonLocalFile.name);
+      setPpdJsonLocalFile(null);
+    } else {
+      jsonConfigFile = {
+        ...ppdJsonUploadedConfig!,
+        fileName: ppdJsonUploadedConfig!.fileName || ppdJsonFileName.trim() || "config.json",
+        make,
+        model,
+        unitNumber: unitNum,
+        notes: "",
+      };
+    }
+
+    await insertCustomerSiteFileRowOnce({
+      companyId: ctx.companyId,
+      customerId,
+      projectId: ctx.projectId,
+      submissionId: payloadForSend.submissionId,
+      fileName: jsonConfigFile.fileName,
+      storagePath: jsonConfigFile.storagePath,
+      make,
+      model,
+      unitNum,
+    });
+
+    return {
+      ...payloadForSend,
+      ppd: {
+        ...payloadForSend.ppd!,
+        jsonConfigFile,
+        jsonFileName: jsonConfigFile.fileName,
+        jsonConfigForm: ppdJsonConfigFormEffective,
+      },
+    };
+  };
+
+  const handleFinalSubmit = async () => {
+    if (isOffline) {
+      setDraftNoticeMessage("Offline mode — submit is disabled until connection returns.");
+      return;
+    }
+    setSubmitSuccessMessage(null);
+    setEmailSendStatus("idle");
+    setEmailSendErrorMessage(null);
+    setPostSubmitSyncWarning(null);
+    setSubmitPersistStatus("saving");
+    try {
+      let payload = await buildSubmissionPayload();
+      payload = await ensurePpdJsonOnPayload(payload);
+      console.log("[Job card submission]", payload);
+      setPendingEmailPayload(payload);
+      await persistSubmittedJobCard(payload);
+      setSubmissionStatus("Submitted");
+      // eslint-disable-next-line react-hooks/purity -- submission completion timestamp (event handler)
+      setSubmissionCompletedAt(Date.now());
+      setSubmitPersistStatus("idle");
+      setSubmitSuccessMessage(
+        "Job card submitted. Photos are saved. You can send the email now or later from Submitted Job Cards.",
+      );
+      setEmailSubmissionPreview({
+        model: buildEmailViewModel(payload),
+      });
+      setReviewHighlights(new Set());
+      setReviewBlockMessage(null);
+      setStep("form");
+    } catch (e) {
+      setSubmitPersistStatus("error");
+      setPostSubmitSyncWarning(
+        e instanceof Error ? e.message : "Could not save the submitted job card. Email was not required.",
+      );
+    }
+  };
+
+  const handleConfirmSendEmail = async (sendMode: EmailSendMode) => {
     if (!pendingEmailPayload) return;
     setEmailSendStatus("sending");
     setEmailSendErrorMessage(null);
     setPostSubmitSyncWarning(null);
     try {
-      let payloadForSend = pendingEmailPayload;
-
-      if (payloadForSend.selectedSections.includes("PPD") && payloadForSend.ppd) {
-        if (isOffline) {
-          setEmailSendStatus("error");
-          setEmailSendErrorMessage("JSON upload requires online connection.");
-          return;
-        }
-        if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
-          setEmailSendStatus("error");
-          setEmailSendErrorMessage("Select a PPD JSON configuration file (.json).");
-          return;
-        }
-        const ctx = await resolveSelectedOrDefaultContextIds();
-        const { data: projRow, error: projErr } = await supabase
-          .from("projects")
-          .select("customer_id")
-          .eq("id", ctx.projectId)
-          .maybeSingle<{ customer_id: string | null }>();
-        const customerId = !projErr && projRow ? projRow.customer_id?.trim() || null : null;
-        const nj = normalizeUppercaseCoreJob(coreJob);
-        const make = nj.equipmentMake.trim();
-        const model = nj.equipmentModel.trim();
-        const unitNum = nj.unitNumber.trim();
-        let jsonConfigFile: JobCardPpdJsonConfigFile;
-        if (ppdJsonLocalFile) {
-          const { storagePath, publicUrl, uploadedAt } = await uploadPpdJsonFileToStorage(ppdJsonLocalFile, {
-            companyId: ctx.companyId,
-            projectId: ctx.projectId,
-            customerId,
-            unitNumber: unitNum || "unit",
-            make,
-            model,
-            notes: "",
-          });
-          jsonConfigFile = {
-            fileName: ppdJsonLocalFile.name,
-            storagePath,
-            publicUrl,
-            customerId,
-            projectId: ctx.projectId,
-            companyId: ctx.companyId,
-            make,
-            model,
-            unitNumber: unitNum,
-            notes: "",
-            uploadedAt,
-          };
-          setPpdJsonUploadedConfig(jsonConfigFile);
-          setPpdJsonFileName(ppdJsonLocalFile.name);
-          setPpdJsonLocalFile(null);
-        } else {
-          jsonConfigFile = {
-            ...ppdJsonUploadedConfig!,
-            fileName: ppdJsonUploadedConfig!.fileName || ppdJsonFileName.trim() || "config.json",
-            make,
-            model,
-            unitNumber: unitNum,
-            notes: "",
-          };
-        }
-
-        await insertCustomerSiteFileRowOnce({
-          companyId: ctx.companyId,
-          customerId,
-          projectId: ctx.projectId,
-          submissionId: payloadForSend.submissionId,
-          fileName: jsonConfigFile.fileName,
-          storagePath: jsonConfigFile.storagePath,
-          make,
-          model,
-          unitNum,
-        });
-
-        payloadForSend = {
-          ...payloadForSend,
-          ppd: {
-            ...payloadForSend.ppd!,
-            jsonConfigFile,
-            jsonFileName: jsonConfigFile.fileName,
-            jsonConfigForm: ppdJsonConfigFormEffective,
-          },
-        };
-      }
-
+      const payloadForSend = pendingEmailPayload;
       const res = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: payloadForSend }),
+        body: JSON.stringify({
+          payload: payloadForSend,
+          sendMode,
+          sentByUserId: authUserContext.userId || null,
+        }),
       });
-      let data: { error?: string } = {};
+      let data: {
+        error?: string;
+        sendMode?: EmailSendMode;
+        photoAttachments?: {
+          attachedCount?: number;
+          skippedCount?: number;
+          warnings?: string[];
+          failures?: Array<{ label: string; filename: string; reason: string }>;
+          failureMessages?: string[];
+          blocked?: boolean;
+        };
+      } = {};
       try {
-        data = (await res.json()) as { error?: string };
+        data = (await res.json()) as typeof data;
       } catch {
         /* ignore non-JSON */
       }
       if (!res.ok) {
         setEmailSendStatus("error");
+        const failureLines =
+          data.photoAttachments?.failureMessages?.length
+            ? data.photoAttachments.failureMessages
+            : (data.photoAttachments?.failures || []).map(
+                (f) => `${f.label} (${f.filename}): ${f.reason}`,
+              );
+        const base =
+          typeof data.error === "string" ? data.error : `Request failed (${res.status})`;
         setEmailSendErrorMessage(
-          typeof data.error === "string" ? data.error : `Request failed (${res.status})`,
+          failureLines.length > 0 ? `${base}\n${failureLines.join("\n")}` : base,
         );
         return;
       }
       setEmailSendStatus("success");
-      setSubmissionStatus("Submitted");
-      // eslint-disable-next-line react-hooks/purity -- submission completion timestamp (event handler)
-      setSubmissionCompletedAt(Date.now());
-      setSubmitSuccessMessage("Job card submitted successfully.");
-      const submittedPayload = payloadForSend;
-      try {
-        const contextIds = await resolveSelectedOrDefaultContextIds();
-        const createdAt = new Date().toISOString();
-        const { error: insertError } = await supabase.from("job_card_submissions").insert({
-          submission_id: submittedPayload.submissionId,
-          company_id: contextIds.companyId,
-          project_id: contextIds.projectId,
-          customer: submittedPayload.coreJobInfo.customer.trim() || "—",
-          unit_number: submittedPayload.coreJobInfo.unitNumber.trim() || "—",
-          payload: submittedPayload,
-          created_at: createdAt,
-        });
-        if (insertError) throw insertError;
-        const { error: deleteDraftError } = await supabase
-          .from("job_card_drafts")
-          .delete()
-          .eq("submission_id", submittedPayload.submissionId);
-        if (deleteDraftError) throw deleteDraftError;
-      } catch (e) {
-        logSupabasePostSubmitError(e);
-        setPostSubmitSyncWarning("Email sent, but saving the submitted job card failed. Please contact admin.");
-      }
-      try {
-        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_ID_KEY);
-        window.localStorage.removeItem(JOB_CARD_RESUME_DRAFT_PAYLOAD_KEY);
-        const sc = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-        const sp = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-        clearMatchingAutosave(sc, sp);
-        const drafts = readMigratedDraftsFromStorage();
-        const next = drafts.filter((d) => (d.submissionId || d.id) !== submissionId);
-        window.localStorage.setItem(JOB_CARD_DRAFTS_STORAGE_KEY, JSON.stringify(next));
-        if (offlineDraftIdRef.current) {
-          const offlineId = offlineDraftIdRef.current;
-          await deleteOfflineJobCardDraft(offlineId);
-          console.log("[offline-draft] deleted after submit", offlineId);
-          offlineDraftIdRef.current = null;
-        }
-        try {
-          window.localStorage.removeItem(INSTALLER_OFFLINE_DRAFT_ID_KEY);
-        } catch {
-          // ignore
-        }
-        clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "submit");
-      } catch {
-        // ignore localStorage cleanup errors
-      }
+      setEmailSendModalOpen(false);
+      setLastEmailMode(data.sendMode || sendMode);
+      const attached = data.photoAttachments?.attachedCount;
+      setSubmitSuccessMessage(
+        typeof attached === "number"
+          ? `Email sent (${sendMode === "internal_only" ? "internal only" : "client + internal"}) with ${attached} inline photo${attached === 1 ? "" : "s"}.`
+          : `Email sent (${sendMode === "internal_only" ? "internal only" : "client + internal"}).`,
+      );
+      setEmailSubmissionPreview((prev) =>
+        prev ? { model: buildEmailViewModel(payloadForSend) } : { model: buildEmailViewModel(payloadForSend) },
+      );
     } catch (e) {
       setEmailSendStatus("error");
       setEmailSendErrorMessage(e instanceof Error ? e.message : "Network error");
@@ -4213,6 +4347,14 @@ export function NewSubmissionForm() {
     }
     photoMetadataByFieldRef.current = restoredMetadataByField;
     setPhotoMetadataByField(restoredMetadataByField);
+    const restoredStatus: Partial<Record<string, "uploading" | "saved" | "failed">> = {};
+    for (const photo of restoredUploads) {
+      if (photo.storagePath?.trim() && photo.fieldName) {
+        restoredStatus[photo.fieldName] = "saved";
+      }
+    }
+    photoFieldPersistStatusRef.current = restoredStatus;
+    setPhotoFieldPersistStatus(restoredStatus);
 
     const nextVacPhotoUrls = emptyVacPhotoUrls();
     for (const k of VAC_PHOTO_KEYS) {
@@ -4825,8 +4967,7 @@ export function NewSubmissionForm() {
       if (autosavePersistSuppressedRef.current) return;
       if (autosaveRestorePayloadRef.current) return;
       const sub = submissionStatusAutosaveRef.current;
-      const email = emailSendStatusAutosaveRef.current;
-      if (sub === "Submitted" && email === "success") return;
+      if (sub === "Submitted") return;
       void (async () => {
         try {
           if (autosavePersistSuppressedRef.current) return;
@@ -4875,26 +5016,134 @@ export function NewSubmissionForm() {
     return () => window.clearInterval(id);
   }, []);
 
-  const handleSaveDraft = async () => {
-    if (isOffline) {
-      setDraftNoticeMessage("Offline mode: cloud draft save disabled. Use 'Save to this device'.");
-      return;
-    }
-    const photoSnapshot = getPhotoPersistenceSnapshot();
-    const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
-    const draftData = buildCurrentDraftData(photoSnapshot);
-    const updatedAt = new Date().toISOString();
-    let nextDraft: StoredJobCardDraft = {
-      submissionId,
-      customer: normalizedCoreJob.customer.trim() || "—",
-      unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
-      savedAt: updatedAt,
-      data: draftData,
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const hasLocalFiles =
+        Object.values(vehiclePictureFiles).some((arr) => arr.length > 0) ||
+        Object.values(vacPhotoFiles).some((arr) => arr.length > 0) ||
+        Object.values(ppdPhotoFiles).some((arr) => arr.length > 0) ||
+        Object.values(cp4PhotoFiles).some((arr) => arr.length > 0) ||
+        Object.values(linxupAtPhotoFiles).some((arr) => arr.length > 0) ||
+        Object.values(linxupVtPhotoFiles).some((arr) => arr.length > 0) ||
+        Object.values(linxupLcPhotoFiles).some((arr) => arr.length > 0);
+      const hasUploading = pendingPhotoUploadsRef.current > 0;
+      const hasFailed = Object.values(photoFieldPersistStatusRef.current).some((s) => s === "failed");
+      if (!hasLocalFiles && !hasUploading && !hasFailed) return;
+      event.preventDefault();
+      event.returnValue = "";
     };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [
+    vehiclePictureFiles,
+    vacPhotoFiles,
+    ppdPhotoFiles,
+    cp4PhotoFiles,
+    linxupAtPhotoFiles,
+    linxupVtPhotoFiles,
+    linxupLcPhotoFiles,
+  ]);
+
+  const handleSaveDraft = async (): Promise<boolean> => {
+    lastSaveSucceededRef.current = false;
+    if (isOffline) {
+      setDraftSaveStage("failed");
+      setDraftNoticeMessage("Offline mode: cloud draft save disabled. Use 'Save to this device'.");
+      return false;
+    }
+
+    const formIdForLog =
+      (selectedPrimaryForm?.id || "").trim() ||
+      getFormDefinitionBySectionKey(effectivePrimary)?.id ||
+      "";
 
     try {
+      if (pendingPhotoUploadsRef.current > 0) {
+        setDraftSaveStage("uploading_photos");
+        setDraftNoticeMessage("Uploading photos…");
+        await waitForPendingPhotoUploads();
+      }
+
+      const failedCount = Object.values(photoFieldPersistStatusRef.current).filter((s) => s === "failed").length;
+      if (failedCount > 0 || pendingPhotoUploadsRef.current > 0) {
+        setDraftSaveStage("failed");
+        setDraftNoticeMessage(
+          `Draft save blocked: ${failedCount || pendingPhotoUploadsRef.current} photo upload(s) failed or still pending. Fix failed photos and try again.`,
+        );
+        logDraftPhotoSaveDiagnostic({
+          stage: "blocked_failed_uploads",
+          draftId: submissionId,
+          formId: formIdForLog,
+          userId: authUserContext.userId,
+          existingRefCount: 0,
+          incomingRefCount: 0,
+          mergedRefCount: 0,
+          uploadFailureCount: failedCount,
+          errorCategory: "upload_failed",
+        });
+        return false;
+      }
+
+      setDraftSaveStage("saving_form");
+      setDraftNoticeMessage("Saving form data…");
+
       const contextIds = await resolveSelectedOrDefaultContextIds();
-      let draftDataForSave = draftData;
+
+      // Load existing cloud draft BEFORE building thin in-memory snapshot authority.
+      const { data: existingRow, error: existingErr } = await supabase
+        .from("job_card_drafts")
+        .select("payload")
+        .eq("submission_id", submissionId)
+        .maybeSingle<{ payload: StoredJobCardDraft["data"] | null }>();
+      if (existingErr) {
+        throw new Error(existingErr.message || "Failed to load existing draft for photo merge.");
+      }
+      const cloudUploads = extractPhotoUploadsFromPayload(existingRow?.payload || null);
+
+      const photoSnapshot = getPhotoPersistenceSnapshot();
+      const memoryUploads = photoSnapshot.photoUploads || [];
+      const mergeResult = mergeDurablePhotoUploads({
+        cloudUploads,
+        memoryUploads,
+        newlyUploaded: [],
+      });
+
+      if (mergeResult.thinPayloadProtected) {
+        logDraftPhotoSaveDiagnostic({
+          stage: "thin_payload_protected",
+          draftId: submissionId,
+          projectId: contextIds.projectId,
+          formId: formIdForLog,
+          userId: authUserContext.userId,
+          existingRefCount: mergeResult.existingRefCount,
+          incomingRefCount: mergeResult.incomingRefCount,
+          mergedRefCount: mergeResult.mergedRefCount,
+          thinPayloadProtected: true,
+        });
+      }
+
+      // Sync merged durable refs into in-memory metadata so later autosave/resume keep them.
+      const restoredMetadataByField = emptyPhotoMetadataByField();
+      for (const photo of mergeResult.merged) {
+        const key = photo.fieldName as UploadFieldName;
+        if (key in restoredMetadataByField) {
+          restoredMetadataByField[key].push(photo);
+        }
+      }
+      for (const k of Object.keys(restoredMetadataByField) as UploadFieldName[]) {
+        restoredMetadataByField[k] = dedupeUploadedPhotoMeta(restoredMetadataByField[k]);
+      }
+      photoMetadataByFieldRef.current = restoredMetadataByField;
+      setPhotoMetadataByField(restoredMetadataByField);
+      const syncedSnapshot = getPhotoPersistenceSnapshot();
+
+      const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
+      let draftDataForSave = applyMergedPhotoUploadsToPayload(
+        buildCurrentDraftData(syncedSnapshot) as Record<string, unknown>,
+        mergeResult.merged,
+      ) as StoredJobCardDraft["data"];
+
       if (selectedSections.includes("PPD") && draftDataForSave.ppd) {
         const { data: projRow, error: projErr } = await supabase
           .from("projects")
@@ -4960,13 +5209,22 @@ export function NewSubmissionForm() {
           };
         }
       }
-      nextDraft = {
+
+      // Re-assert merged photos after PPD mutations.
+      draftDataForSave = applyMergedPhotoUploadsToPayload(
+        draftDataForSave as Record<string, unknown>,
+        mergeResult.merged,
+      ) as StoredJobCardDraft["data"];
+
+      const updatedAt = new Date().toISOString();
+      const nextDraft: StoredJobCardDraft = {
         submissionId,
         customer: normalizedCoreJob.customer.trim() || "—",
         unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
         savedAt: updatedAt,
         data: draftDataForSave,
       };
+
       const { error } = await supabase.from("job_card_drafts").upsert(
         {
           submission_id: submissionId,
@@ -4980,6 +5238,40 @@ export function NewSubmissionForm() {
         { onConflict: "submission_id" },
       );
       if (error) throw error;
+
+      setDraftSaveStage("verifying");
+      setDraftNoticeMessage("Verifying saved draft…");
+
+      const { data: verifiedRow, error: verifyErr } = await supabase
+        .from("job_card_drafts")
+        .select("payload")
+        .eq("submission_id", submissionId)
+        .maybeSingle<{ payload: StoredJobCardDraft["data"] | null }>();
+      if (verifyErr) {
+        throw new Error(verifyErr.message || "Failed to verify saved draft.");
+      }
+      const expectedPaths = mergeResult.merged.map((m) => m.storagePath);
+      const verification = verifyMergedStoragePathsPresent(verifiedRow?.payload, expectedPaths);
+      if (!verification.ok) {
+        logDraftPhotoSaveDiagnostic({
+          stage: "verification_mismatch",
+          draftId: submissionId,
+          projectId: contextIds.projectId,
+          formId: formIdForLog,
+          userId: authUserContext.userId,
+          existingRefCount: mergeResult.existingRefCount,
+          incomingRefCount: mergeResult.incomingRefCount,
+          mergedRefCount: mergeResult.mergedRefCount,
+          thinPayloadProtected: mergeResult.thinPayloadProtected,
+          errorCategory: "verification_mismatch",
+        });
+        setDraftSaveStage("failed");
+        setDraftNoticeMessage(
+          `Draft save verification failed: ${verification.missing.length} photo reference(s) missing after write. Try Save Draft again.`,
+        );
+        return false;
+      }
+
       try {
         saveDraftLocally(nextDraft);
       } catch {
@@ -5003,16 +5295,57 @@ export function NewSubmissionForm() {
       clearMatchingAutosave(contextIds.companyId.trim(), contextIds.projectId.trim());
       clearRestoredAutosaveAfterPersist(autosaveRestoredClearTargetRef, "cloud-draft", { log: false });
       console.log("[autosave] cleared after cloud save");
-      setDraftNoticeMessage("Draft saved to cloud.");
+
+      logDraftPhotoSaveDiagnostic({
+        stage: "saved",
+        draftId: submissionId,
+        projectId: contextIds.projectId,
+        formId: formIdForLog,
+        userId: authUserContext.userId,
+        existingRefCount: mergeResult.existingRefCount,
+        incomingRefCount: mergeResult.incomingRefCount,
+        mergedRefCount: mergeResult.mergedRefCount,
+        thinPayloadProtected: mergeResult.thinPayloadProtected,
+      });
+
+      lastSaveSucceededRef.current = true;
+      setDraftSaveStage("saved");
+      setDraftNoticeMessage(
+        mergeResult.thinPayloadProtected
+          ? `Draft saved. Preserved ${mergeResult.existingRefCount} cloud photo(s); merged total ${mergeResult.mergedRefCount}.`
+          : "Draft saved to cloud.",
+      );
+      return true;
     } catch (error) {
       const details = describeSupabaseError(error);
       console.error("Supabase draft save failed:", error);
+      logDraftPhotoSaveDiagnostic({
+        stage: "failed",
+        draftId: submissionId,
+        formId: formIdForLog,
+        userId: authUserContext.userId,
+        existingRefCount: 0,
+        incomingRefCount: 0,
+        mergedRefCount: 0,
+        errorCategory: "draft_write_or_network",
+      });
+      setDraftSaveStage("failed");
       try {
-        saveDraftLocally(nextDraft);
+        const photoSnapshot = getPhotoPersistenceSnapshot();
+        const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
+        const fallbackDraft: StoredJobCardDraft = {
+          submissionId,
+          customer: normalizedCoreJob.customer.trim() || "—",
+          unitNumber: normalizedCoreJob.unitNumber.trim() || "—",
+          savedAt: new Date().toISOString(),
+          data: buildCurrentDraftData(photoSnapshot),
+        };
+        saveDraftLocally(fallbackDraft);
         setDraftNoticeMessage(details ? `Draft saved locally. Cloud save failed: ${details}` : "Draft saved locally.");
       } catch {
         setDraftNoticeMessage(details ? `Unable to save draft. ${details}` : "Unable to save draft locally.");
       }
+      return false;
     }
   };
 
@@ -5117,7 +5450,8 @@ export function NewSubmissionForm() {
 
   const handleSaveDraftAndExit = async () => {
     if (hasCoreOrVehicleInfo) {
-      await handleSaveDraft();
+      const ok = await handleSaveDraft();
+      if (!ok) return;
     }
     handleExitToHome();
   };
@@ -5172,7 +5506,8 @@ export function NewSubmissionForm() {
     else if (required && complete) extra = " border-emerald-500 border-dashed";
     return `${photoPickClassName}${extra}`;
   };
-  const isJobCardSubmitted = submissionStatus === "Submitted" && emailSendStatus === "success";
+  const isJobCardSubmitted = submissionStatus === "Submitted";
+  const isEmailSent = emailSendStatus === "success";
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -5216,8 +5551,27 @@ export function NewSubmissionForm() {
           </div>
         </header>
 
+        {draftSaveStage !== "idle" && draftSaveStage !== "saved" ? (
+          <div
+            className={`rounded-xl border px-4 py-3 text-sm font-semibold ${
+              draftSaveStage === "failed"
+                ? "border-red-200 bg-red-50 text-red-900"
+                : "border-amber-200 bg-amber-50 text-amber-950"
+            }`}
+            role="status"
+          >
+            {draftSaveStageLabel(draftSaveStage) || "Working…"}
+          </div>
+        ) : null}
         {draftNoticeMessage && (
-          <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-900" role="status">
+          <div
+            className={`rounded-xl border px-4 py-3 text-sm font-semibold ${
+              draftSaveStage === "failed"
+                ? "border-red-200 bg-red-50 text-red-900"
+                : "border-blue-200 bg-blue-50 text-blue-900"
+            }`}
+            role="status"
+          >
             {draftNoticeMessage}
           </div>
         )}
@@ -5275,47 +5629,31 @@ export function NewSubmissionForm() {
               Email preview
             </h2>
             <p className="mb-4 text-sm text-gray-600">
-              Review the message below. Confirm & Send Email posts this job card to the server; delivery requires SMTP
-              environment variables on the server.
+              Review the formatted email below. Sending is optional — the job card is already submitted. Use Review &amp;
+              Send Email to confirm recipients and send mode before delivery.
             </p>
             <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-900 shadow-inner">
               <div>
-                <p className="font-semibold text-gray-600 dark:text-gray-300">External email recipients:</p>
-                {emailSubmissionPreview.externalRecipientEmails.length === 0 ? (
-                  <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">No external recipients assigned</p>
-                ) : (
-                  <ul className="mt-2 space-y-1">
-                    {emailSubmissionPreview.externalRecipientEmails.map((recipient) => (
-                      <li key={recipient.toLowerCase()} className="break-all font-mono text-sm text-gray-900 dark:text-gray-100">
-                        {recipient}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div>
                 <span className="font-semibold text-gray-600">Subject:</span>{" "}
-                <span className="break-words font-medium">{emailSubmissionPreview.subject}</span>
+                <span className="break-words font-medium">{emailSubmissionPreview.model.subject}</span>
               </div>
               <div>
                 <p className="mb-2 font-semibold text-gray-600">Body</p>
-                <pre className="max-h-[min(70vh,28rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white p-4 font-sans text-sm leading-relaxed text-gray-800">
-                  {emailSubmissionPreview.body}
-                </pre>
+                <EmailPreviewBody model={emailSubmissionPreview.model} />
               </div>
             </div>
             <div className="mt-4 flex flex-col gap-3">
-              {!isJobCardSubmitted && (
+              {!isEmailSent && (
                 <button
                   type="button"
                   className={btnPrimaryClassName}
-                  disabled={emailSendStatus === "sending" || !pendingEmailPayload}
-                  onClick={handleConfirmSendEmail}
+                  disabled={emailSendStatus === "sending" || !pendingEmailPayload || !isJobCardSubmitted}
+                  onClick={() => setEmailSendModalOpen(true)}
                 >
-                  {emailSendStatus === "sending" ? "Sending…" : "Confirm & Send Email"}
+                  Review &amp; Send Email
                 </button>
               )}
-              {emailSendStatus === "success" && (
+              {isEmailSent && (
                 <p className="text-sm font-semibold text-emerald-800" role="status">
                   Email sent successfully.
                 </p>
@@ -5333,7 +5671,14 @@ export function NewSubmissionForm() {
               {isJobCardSubmitted && (
                 <>
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-                    <p className="font-semibold">Submission status: Submitted</p>
+                    <p className="font-semibold">
+                      Submission status: Submitted
+                      {isEmailSent
+                        ? lastEmailMode === "internal_only"
+                          ? " — emailed internally only"
+                          : " — emailed to client + internal"
+                        : ", not emailed"}
+                    </p>
                     <p className="mt-1">
                       Submitted at:{" "}
                       {submissionCompletedAt ? new Date(submissionCompletedAt).toLocaleString() : "Just now"}
@@ -5817,7 +6162,10 @@ export function NewSubmissionForm() {
                 onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleFront", remote)}
                 onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleFront", file)}
               />
-              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleFront >= 1} />
+              <PhotoUploadedBadge
+                show={vehiclePictureCounts.vehicleFront >= 1}
+                status={photoFieldPersistStatus.vehicleFront || null}
+              />
               <PhotoFieldError message={vehiclePictureErrors.vehicleFront} />
               {requiredHint("photo-vehicleFront")}
             </div>
@@ -5848,7 +6196,10 @@ export function NewSubmissionForm() {
                 onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleSide", remote)}
                 onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleSide", file)}
               />
-              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleSide >= 1} />
+              <PhotoUploadedBadge
+                show={vehiclePictureCounts.vehicleSide >= 1}
+                status={photoFieldPersistStatus.vehicleSide || null}
+              />
               <PhotoFieldError message={vehiclePictureErrors.vehicleSide} />
               {requiredHint("photo-vehicleSide")}
             </div>
@@ -5876,7 +6227,10 @@ export function NewSubmissionForm() {
                 onRemoveRemote={(remote) => void removeUploadedPhotoFromField("vehicleRear", remote)}
                 onRemoveLocal={(file) => removeLocalPhotoFromField("vehicleRear", file)}
               />
-              <PhotoUploadedBadge show={vehiclePictureCounts.vehicleRear >= 1} />
+              <PhotoUploadedBadge
+                show={vehiclePictureCounts.vehicleRear >= 1}
+                status={photoFieldPersistStatus.vehicleRear || null}
+              />
               <PhotoFieldError message={vehiclePictureErrors.vehicleRear} />
             </div>
           </div>
@@ -9681,9 +10035,18 @@ export function NewSubmissionForm() {
           <button type="button" className={btnSecondaryClassName} onClick={handleBackToForm}>
             Back to Edit
           </button>
-          <button type="button" className={btnPrimaryClassName} onClick={handleFinalSubmit} disabled={isOffline}>
+          <button
+            type="button"
+            className={btnPrimaryClassName}
+            onClick={handleFinalSubmit}
+            disabled={isOffline || submitPersistStatus === "saving"}
+          >
             <IconSend className="h-5 w-5" />
-            {isOffline ? "Offline — Submit Disabled" : "Confirm & Submit"}
+            {isOffline
+              ? "Offline — Submit Disabled"
+              : submitPersistStatus === "saving"
+                ? "Submitting…"
+                : "Confirm & Submit"}
           </button>
         </div>
         </>
@@ -9749,11 +10112,15 @@ export function NewSubmissionForm() {
                   type="button"
                   className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
                   onClick={handleFinalSubmit}
-                  disabled={isOffline}
+                  disabled={isOffline || submitPersistStatus === "saving"}
                 >
                   <IconSend className="h-5 w-5 shrink-0" />
                   <span className="line-clamp-2 text-left leading-tight">
-                    {isOffline ? "Offline — Submit Disabled" : "Confirm & Submit"}
+                    {isOffline
+                      ? "Offline — Submit Disabled"
+                      : submitPersistStatus === "saving"
+                        ? "Submitting…"
+                        : "Confirm & Submit"}
                   </span>
                 </button>
               </>
@@ -9761,6 +10128,20 @@ export function NewSubmissionForm() {
           </div>
         </div>
       )}
+
+      {emailSubmissionPreview && pendingEmailPayload ? (
+        <EmailSendConfirmModal
+          open={emailSendModalOpen}
+          title="Confirm & Send Email"
+          confirmLabel="Send Email"
+          model={emailSubmissionPreview.model}
+          payload={pendingEmailPayload}
+          sending={emailSendStatus === "sending"}
+          errorMessage={emailSendStatus === "error" ? emailSendErrorMessage : null}
+          onClose={() => setEmailSendModalOpen(false)}
+          onConfirm={(mode) => void handleConfirmSendEmail(mode)}
+        />
+      ) : null}
 
       {exitWithoutSavingOpen ? (
         <div

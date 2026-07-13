@@ -8,7 +8,7 @@ import {
   getFormDefinitionBySectionKey,
   isLinxUpFormId,
   isLinxUpSectionKey,
-} from "@/lib/form-registry";
+} from "./form-registry";
 
 export const LINXUP_COMPANY_NAME = "LinxUp";
 

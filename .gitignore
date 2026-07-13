@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local draft photo recovery dry-run artifacts (may contain signed URLs)
+recovery-dry-run-output/

@@ -1,17 +1,21 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
+import { buildCidPhotoAttachments } from "@/lib/email-cid-attachments";
+import { buildEmailPhotoSections } from "@/lib/email-photo-sections";
+import { buildOutboundEmailBodies } from "@/lib/email-view-model";
+import {
+  resolveJobCardEmailRecipients,
+  type EmailSendMode,
+} from "@/lib/email-recipients";
+import { persistEmailHistory } from "@/lib/email-submission-history";
 import {
   type JobCardCp4Payload,
   type JobCardPpdPayload,
   type JobCardSubmissionPayload,
-  DEFAULT_JOB_CARD_EMAIL_TO,
-  formatEmailBodyFromPayload,
-  formatEmailHtmlFromPayload,
-  formatEmailSubject,
 } from "@/lib/job-card-submission";
+import type { JobCardLinxupPayload } from "@/lib/linxup";
 
 const DEFAULT_RESEND_FROM = "onboarding@resend.dev";
-const ALWAYS_EMAIL_TO = "installs@tkpautomotive.com";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -114,6 +118,61 @@ function normalizeCp4Payload(raw: unknown): JobCardCp4Payload | undefined {
   };
 }
 
+function normalizeLinxupPayload(raw: unknown): JobCardLinxupPayload | undefined {
+  if (!isRecord(raw)) return undefined;
+  const formId = stringOrEmpty(raw.formId);
+  const submissionType = stringOrEmpty(raw.submissionType) || formId;
+  const productLabel = stringOrEmpty(raw.productLabel) || submissionType || formId;
+  if (!formId && !productLabel) return undefined;
+  const vtRaw = isRecord(raw.vehicleTracker) ? raw.vehicleTracker : null;
+  const lcRaw = isRecord(raw.linxCam) ? raw.linxCam : null;
+  const base: JobCardLinxupPayload = {
+    formId,
+    submissionType,
+    productLabel,
+    customer: stringOrEmpty(raw.customer),
+    location: stringOrEmpty(raw.location),
+    primaryContact: stringOrEmpty(raw.primaryContact),
+    contactNumber: stringOrEmpty(raw.contactNumber),
+    contactEmail: stringOrEmpty(raw.contactEmail),
+    year: stringOrEmpty(raw.year),
+    make: stringOrEmpty(raw.make),
+    model: stringOrEmpty(raw.model),
+    serialVin: stringOrEmpty(raw.serialVin),
+    assetNumber: stringOrEmpty(raw.assetNumber),
+    vehicleType: stringOrEmpty(raw.vehicleType),
+    hoursMiles: stringOrEmpty(raw.hoursMiles),
+  };
+  if (typeof raw.powerConnectionDescription === "string") {
+    base.powerConnectionDescription = raw.powerConnectionDescription;
+  }
+  if (typeof raw.groundConnectionDescription === "string") {
+    base.groundConnectionDescription = raw.groundConnectionDescription;
+  }
+  if (typeof raw.ignitionConnectionDescription === "string") {
+    base.ignitionConnectionDescription = raw.ignitionConnectionDescription;
+  }
+  if (vtRaw) {
+    base.vehicleTracker = {
+      obdPortConnected: stringOrEmpty(vtRaw.obdPortConnected),
+      installationNotes: stringOrEmpty(vtRaw.installationNotes),
+      powerConnectionDescription: stringOrEmpty(vtRaw.powerConnectionDescription),
+      groundConnectionDescription: stringOrEmpty(vtRaw.groundConnectionDescription),
+      ignitionConnectionDescription: stringOrEmpty(vtRaw.ignitionConnectionDescription),
+    };
+  }
+  if (lcRaw) {
+    base.linxCam = {
+      obdPortConnected: stringOrEmpty(lcRaw.obdPortConnected),
+      installationNotes: stringOrEmpty(lcRaw.installationNotes),
+      powerConnectionDescription: stringOrEmpty(lcRaw.powerConnectionDescription),
+      groundConnectionDescription: stringOrEmpty(lcRaw.groundConnectionDescription),
+      ignitionConnectionDescription: stringOrEmpty(lcRaw.ignitionConnectionDescription),
+    };
+  }
+  return base;
+}
+
 function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null {
   if (!isRecord(p)) return null;
   const core = isRecord(p.coreJobInfo) ? p.coreJobInfo : {};
@@ -125,10 +184,9 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   const selectedSections = Array.isArray(p.selectedSections) ? p.selectedSections.filter((x) => typeof x === "string") : [];
   const additional = Array.isArray(hw.additional) ? hw.additional.filter((x) => typeof x === "string") : [];
   const photoUploads = Array.isArray(p.photoUploads) ? p.photoUploads.filter((x) => isRecord(x)) : [];
-  const ppd =
-    p.ppd !== undefined ? normalizePpdPayload(p.ppd) : undefined;
-  const cp4 =
-    p.cp4 !== undefined ? normalizeCp4Payload(p.cp4) : undefined;
+  const ppd = p.ppd !== undefined ? normalizePpdPayload(p.ppd) : undefined;
+  const cp4 = p.cp4 !== undefined ? normalizeCp4Payload(p.cp4) : undefined;
+  const linxup = p.linxup !== undefined ? normalizeLinxupPayload(p.linxup) : undefined;
   const projectRecipientEmails = Array.isArray(p.projectRecipientEmails)
     ? p.projectRecipientEmails.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean)
     : [];
@@ -140,6 +198,8 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
     projectId: stringOrEmpty(p.projectId),
     projectName: stringOrEmpty(p.projectName),
     projectRecipientEmails,
+    formId: stringOrEmpty(p.formId) || undefined,
+    submissionType: stringOrEmpty(p.submissionType) || undefined,
     coreJobInfo: {
       customer: stringOrEmpty(core.customer),
       location: stringOrEmpty(core.location),
@@ -150,6 +210,9 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
       equipmentModel: stringOrEmpty(core.equipmentModel),
       equipmentSerial: stringOrEmpty(core.equipmentSerial),
       installerName: stringOrEmpty(core.installerName),
+      primaryContact: stringOrEmpty(core.primaryContact) || undefined,
+      contactNumber: stringOrEmpty(core.contactNumber) || undefined,
+      contactEmail: stringOrEmpty(core.contactEmail) || undefined,
     },
     hardwareSelection: {
       primary: stringOrEmpty(hw.primary),
@@ -160,6 +223,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
     photoUploads: photoUploads as JobCardSubmissionPayload["photoUploads"],
     ...(ppd ? { ppd } : {}),
     ...(cp4 ? { cp4 } : {}),
+    ...(linxup ? { linxup } : {}),
     vac4: {
       vehicleType: stringOrEmpty(vac.vehicleType),
       otherVehicleType: stringOrEmpty(vac.otherVehicleType),
@@ -192,24 +256,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   };
 }
 
-function readExternalRecipientsFromPayload(payload: unknown): string[] {
-  if (!isRecord(payload)) return [];
-  const candidates: unknown[] = [];
-  if (Array.isArray(payload.projectRecipientEmails)) candidates.push(...payload.projectRecipientEmails);
-  if (Array.isArray(payload.externalRecipientEmails)) candidates.push(...payload.externalRecipientEmails);
-  if (isRecord(payload.project) && Array.isArray(payload.project.externalRecipientEmails)) {
-    candidates.push(...payload.project.externalRecipientEmails);
-  }
-  return candidates
-    .filter((v): v is string => typeof v === "string")
-    .map((v) => v.trim())
-    .filter(Boolean);
-}
-
 export async function POST(req: Request) {
-  console.log("RESEND key loaded:", Boolean(process.env.RESEND_API_KEY));
-  console.log("JOB_CARD_EMAIL_TO:", process.env.JOB_CARD_EMAIL_TO);
-
   let body: unknown;
   try {
     body = await req.json();
@@ -226,52 +273,172 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid submission payload" }, { status: 400 });
   }
 
+  const sendMode: EmailSendMode = body.sendMode === "internal_only" ? "internal_only" : "client_and_internal";
+  const allowPartialSend = body.allowPartialSend === true;
+  const sentByUserId = typeof body.sentByUserId === "string" ? body.sentByUserId.trim() : null;
+
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
-    return NextResponse.json(
-      { error: "Email is not configured: set RESEND_API_KEY." },
-      { status: 503 },
-    );
+    return NextResponse.json({ error: "Email is not configured: set RESEND_API_KEY." }, { status: 503 });
   }
 
   const from = process.env.JOB_CARD_EMAIL_FROM?.trim() || DEFAULT_RESEND_FROM;
-  const fallbackTo = process.env.JOB_CARD_EMAIL_TO?.trim() || DEFAULT_JOB_CARD_EMAIL_TO;
-  const to = Array.from(
-    new Set(
-      [ALWAYS_EMAIL_TO, fallbackTo, ...readExternalRecipientsFromPayload(payload)]
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean),
-    ),
+  const recipients = resolveJobCardEmailRecipients({ sendMode, payload });
+  const to = recipients.toAddresses;
+
+  const filenameContext = {
+    customer: payload.linxup?.customer || payload.coreJobInfo.customer || "Customer",
+    assetNumber: payload.linxup?.assetNumber || payload.coreJobInfo.unitNumber || "Unit",
+  };
+
+  let photoAttachments;
+  try {
+    const sections = buildEmailPhotoSections(payload);
+    photoAttachments = await buildCidPhotoAttachments(sections, {
+      filenameContext,
+      allowPartialSend,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to attach photos";
+    return NextResponse.json({ error: message }, { status: 503 });
+  }
+
+  // Complete send requires every expected photo downloaded, optimized, attached, and CID-mapped.
+  if (
+    photoAttachments.attachedCount !== photoAttachments.expectedCount ||
+    photoAttachments.failures.length > 0 ||
+    photoAttachments.cidByStoragePath.size !== photoAttachments.expectedCount
+  ) {
+    if (!allowPartialSend) {
+      photoAttachments = {
+        ...photoAttachments,
+        blocked: true,
+      };
+    }
+  }
+
+  const failureMessages = photoAttachments.failures.map(
+    (f) => `${f.label} (${f.filename}): ${f.reason}`,
   );
 
-  const subject = formatEmailSubject(
-    payload.coreJobInfo.customer,
-    payload.linxup?.assetNumber || payload.coreJobInfo.unitNumber,
-    payload.linxup?.productLabel || payload.submissionType || payload.formId,
-  );
-  const text = formatEmailBodyFromPayload(payload);
-  const html = formatEmailHtmlFromPayload(payload);
+  if (photoAttachments.blocked) {
+    return NextResponse.json(
+      {
+        error: "One or more photos failed to attach. Email was not sent.",
+        photoAttachments: {
+          expectedCount: photoAttachments.expectedCount,
+          attachedCount: photoAttachments.attachedCount,
+          skippedCount: photoAttachments.skippedCount,
+          optimized: photoAttachments.optimized,
+          attached: photoAttachments.attached,
+          warnings: photoAttachments.warnings,
+          failures: photoAttachments.failures,
+          failureMessages,
+          totalOriginalBytes: photoAttachments.totalOriginalBytes,
+          totalOptimizedBytes: photoAttachments.totalOptimizedBytes,
+          blocked: true,
+        },
+      },
+      { status: 422 },
+    );
+  }
+
+  // Only true failures may appear in the email body (partial-send path).
+  // Successful optimizations stay in server logs / API diagnostics only.
+  const outbound = buildOutboundEmailBodies(payload, {
+    cidByStoragePath: photoAttachments.cidByStoragePath,
+    attachmentFailures: failureMessages.length > 0 ? failureMessages : undefined,
+    photoSections: photoAttachments.photoSections,
+  });
+
+  if (/supabase\.co\/storage/i.test(outbound.htmlBody) || /supabase\.co\/storage/i.test(outbound.textBody)) {
+    return NextResponse.json({ error: "Email body incorrectly included Storage URLs. Send aborted." }, { status: 500 });
+  }
+
+  if (!/cid:photo-/i.test(outbound.htmlBody) && photoAttachments.attachedCount > 0) {
+    return NextResponse.json({ error: "Email HTML missing CID photo references. Send aborted." }, { status: 500 });
+  }
 
   const resend = new Resend(apiKey);
+  let resendId: string | null = null;
 
   try {
-    const { error } = await resend.emails.send({
+    const { data, error } = await resend.emails.send({
       from,
       to,
-      subject,
-      text,
-      html,
+      subject: outbound.subject,
+      text: outbound.textBody,
+      html: outbound.htmlBody,
+      attachments: photoAttachments.attachments.map((a) => ({
+        content: a.content,
+        filename: a.filename,
+        contentId: a.contentId,
+        contentType: a.contentType,
+      })),
     });
 
     if (error) {
-      console.error("Resend send-email returned error:", error);
+      try {
+        await persistEmailHistory({
+          submissionId: payload.submissionId,
+          sendMode,
+          recipients: recipients.to,
+          status: "failed",
+          error: error.message,
+          sentByUserId,
+        });
+      } catch {
+        // submission row may not exist yet
+      }
       return NextResponse.json({ error: error.message }, { status: 502 });
     }
+    resendId = data?.id ?? null;
   } catch (err: unknown) {
-    console.error("Resend send-email threw error:", err);
     const message = err instanceof Error ? err.message : "Failed to send email";
+    try {
+      await persistEmailHistory({
+        submissionId: payload.submissionId,
+        sendMode,
+        recipients: recipients.to,
+        status: "failed",
+        error: message,
+        sentByUserId,
+      });
+    } catch {
+      // ignore
+    }
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  return NextResponse.json({ ok: true });
+  try {
+    await persistEmailHistory({
+      submissionId: payload.submissionId,
+      sendMode,
+      recipients: recipients.to,
+      status: "sent",
+      resendId,
+      sentByUserId,
+    });
+  } catch (e) {
+    console.error("Email sent but history update failed:", e);
+  }
+
+  return NextResponse.json({
+    ok: true,
+    resendId,
+    sendMode,
+    recipients: recipients.to,
+    photoAttachments: {
+      expectedCount: photoAttachments.expectedCount,
+      attachedCount: photoAttachments.attachedCount,
+      skippedCount: photoAttachments.skippedCount,
+      optimized: photoAttachments.optimized,
+      attached: photoAttachments.attached,
+      warnings: photoAttachments.warnings,
+      failures: photoAttachments.failures,
+      totalOriginalBytes: photoAttachments.totalOriginalBytes,
+      totalOptimizedBytes: photoAttachments.totalOptimizedBytes,
+      attachmentFilenames: photoAttachments.attachments.map((a) => a.filename),
+    },
+  });
 }

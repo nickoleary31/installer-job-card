@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
+import { EmailSendConfirmModal } from "@/components/EmailSendConfirmModal";
+import { buildEmailViewModel } from "@/lib/email-view-model";
+import type { EmailSendMode } from "@/lib/email-recipients";
+import type { JobCardSubmissionPayload } from "@/lib/job-card-submission";
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
 import { getFormDefinitionById, getFormDefinitionBySectionKey, isLinxUpSectionKey } from "@/lib/form-registry";
 
@@ -17,6 +21,14 @@ type SubmissionRow = {
   unit_number: string | null;
   payload: unknown;
   created_at: string | null;
+  internal_emailed_at?: string | null;
+  client_emailed_at?: string | null;
+  last_emailed_at?: string | null;
+  last_email_mode?: string | null;
+  last_email_recipients?: unknown;
+  last_email_status?: string | null;
+  last_email_resend_id?: string | null;
+  last_email_error?: string | null;
 };
 
 type SubmissionPayloadLite = {
@@ -130,6 +142,16 @@ type SubmissionListItem = {
   additionalHardware: string[];
   createdAt: string;
   payload: SubmissionPayloadLite;
+  emailHistory: {
+    internalEmailedAt: string | null;
+    clientEmailedAt: string | null;
+    lastEmailedAt: string | null;
+    lastEmailMode: string | null;
+    lastEmailStatus: string | null;
+    lastEmailResendId: string | null;
+    lastEmailError: string | null;
+    lastEmailRecipients: Array<{ email: string; label?: string; source?: string }>;
+  };
 };
 
 type ResendState = "idle" | "sending" | "success" | "error";
@@ -154,7 +176,28 @@ function mapRow(row: SubmissionRow): SubmissionListItem {
     additionalHardware,
     createdAt: row.created_at || "",
     payload,
+    emailHistory: {
+      internalEmailedAt: row.internal_emailed_at || null,
+      clientEmailedAt: row.client_emailed_at || null,
+      lastEmailedAt: row.last_emailed_at || null,
+      lastEmailMode: row.last_email_mode || null,
+      lastEmailStatus: row.last_email_status || null,
+      lastEmailResendId: row.last_email_resend_id || null,
+      lastEmailError: row.last_email_error || null,
+      lastEmailRecipients: Array.isArray(row.last_email_recipients)
+        ? (row.last_email_recipients as Array<{ email: string; label?: string; source?: string }>)
+        : [],
+    },
   };
+}
+
+function emailStatusLabel(row: SubmissionListItem): string {
+  if (row.emailHistory.lastEmailStatus === "failed") return "Email failed";
+  if (row.emailHistory.clientEmailedAt) return "Emailed to client + internal";
+  if (row.emailHistory.internalEmailedAt || row.emailHistory.lastEmailMode === "internal_only") {
+    return "Emailed internally only";
+  }
+  return "Submitted, not emailed";
 }
 
 function displayValue(value: string | undefined | null) {
@@ -190,6 +233,8 @@ export default function SubmittedPage() {
   const [expandedSubmissionIds, setExpandedSubmissionIds] = useState<Set<string>>(() => new Set());
   const [resendStateBySubmissionId, setResendStateBySubmissionId] = useState<Record<string, ResendState>>({});
   const [resendMessageBySubmissionId, setResendMessageBySubmissionId] = useState<Record<string, string>>({});
+  const [resendModalRow, setResendModalRow] = useState<SubmissionListItem | null>(null);
+  const [resendModalOpen, setResendModalOpen] = useState(false);
   const goToProjectDashboard = () => {
     if (typeof window !== "undefined") {
       const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
@@ -221,19 +266,47 @@ export default function SubmittedPage() {
           ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)
           : "")?.trim() || "";
 
+        const baseSelect =
+          "submission_id, customer, unit_number, payload, created_at";
+        const emailHistorySelect =
+          `${baseSelect}, internal_emailed_at, client_emailed_at, last_emailed_at, last_email_mode, last_email_recipients, last_email_status, last_email_resend_id, last_email_error`;
+
+        // Prefer email-history columns when migration is applied; fall back if they are missing.
         let query = supabase
           .from("job_card_submissions")
-          .select("submission_id, customer, unit_number, payload, created_at")
+          .select(emailHistorySelect)
           .order("created_at", { ascending: false });
-
         if (selectedCompanyId && selectedProjectId) {
           query = query.eq("company_id", selectedCompanyId).eq("project_id", selectedProjectId);
         }
+        let data: SubmissionRow[] | null = null;
+        let error: { message?: string; code?: string } | null = null;
 
-        const { data, error } = await query;
-        if (error) throw error;
+        {
+          const first = await query;
+          data = (first.data as SubmissionRow[] | null) ?? null;
+          error = first.error;
+        }
+
+        if (error) {
+          const missingColumn =
+            /column .* does not exist/i.test(error.message || "") || error.code === "42703";
+          if (!missingColumn) throw error;
+
+          let fallback = supabase
+            .from("job_card_submissions")
+            .select(baseSelect)
+            .order("created_at", { ascending: false });
+          if (selectedCompanyId && selectedProjectId) {
+            fallback = fallback.eq("company_id", selectedCompanyId).eq("project_id", selectedProjectId);
+          }
+          const second = await fallback;
+          if (second.error) throw second.error;
+          data = (second.data as SubmissionRow[] | null) ?? null;
+        }
+
         if (cancelled || !data) return;
-        setItems((data as SubmissionRow[]).map(mapRow));
+        setItems(data.map(mapRow));
         setLoadError(false);
       } catch {
         if (!cancelled) {
@@ -286,29 +359,61 @@ export default function SubmittedPage() {
     setResendStateBySubmissionId((prev) => ({ ...prev, [submissionId]: state }));
   };
 
-  const handleResendEmail = async (row: SubmissionListItem) => {
+  const handleResendEmail = async (row: SubmissionListItem, sendMode: EmailSendMode) => {
     setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "" }));
     setResendState(row.submissionId, "sending");
     try {
       const res = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: row.payload }),
+        body: JSON.stringify({
+          payload: row.payload,
+          sendMode,
+          sentByUserId: userContext.userId || null,
+        }),
       });
-      let data: { error?: string } = {};
+      let data: {
+        error?: string;
+        resendId?: string;
+        photoAttachments?: {
+          attachedCount?: number;
+          warnings?: string[];
+          failures?: Array<{ label: string; filename: string; reason: string }>;
+          failureMessages?: string[];
+        };
+      } = {};
       try {
-        data = (await res.json()) as { error?: string };
+        data = (await res.json()) as typeof data;
       } catch {
         // ignore parse errors
       }
       if (!res.ok) {
-        const msg = typeof data.error === "string" && data.error.trim() ? data.error.trim() : `Request failed (${res.status})`;
+        const failureLines =
+          data.photoAttachments?.failureMessages?.length
+            ? data.photoAttachments.failureMessages
+            : (data.photoAttachments?.failures || []).map(
+                (f) => `${f.label} (${f.filename}): ${f.reason}`,
+              );
+        const base =
+          typeof data.error === "string" && data.error.trim()
+            ? data.error.trim()
+            : `Request failed (${res.status})`;
+        const msg = failureLines.length > 0 ? `${base}\n${failureLines.join("\n")}` : base;
         setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: msg }));
         setResendState(row.submissionId, "error");
         return;
       }
-      setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "Email resent successfully" }));
+      const attached = data.photoAttachments?.attachedCount;
+      setResendMessageBySubmissionId((prev) => ({
+        ...prev,
+        [row.submissionId]:
+          typeof attached === "number"
+            ? `Email resent (${sendMode === "internal_only" ? "internal only" : "client + internal"}, ${attached} photos)`
+            : "Email resent successfully",
+      }));
       setResendState(row.submissionId, "success");
+      setResendModalOpen(false);
+      setResendModalRow(null);
     } catch {
       setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "Failed to resend email" }));
       setResendState(row.submissionId, "error");
@@ -391,6 +496,33 @@ export default function SubmittedPage() {
                 <span className="font-semibold text-gray-600">Submitted:</span>{" "}
                 {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
               </p>
+              <p className="sm:col-span-2">
+                <span className="font-semibold text-gray-600">Email status:</span> {emailStatusLabel(row)}
+              </p>
+              {row.emailHistory.lastEmailedAt ? (
+                <p className="sm:col-span-2 text-xs text-gray-600">
+                  Last emailed: {new Date(row.emailHistory.lastEmailedAt).toLocaleString()}
+                  {row.emailHistory.lastEmailMode
+                    ? ` (${row.emailHistory.lastEmailMode === "internal_only" ? "internal only" : "client + internal"})`
+                    : ""}
+                </p>
+              ) : null}
+              {row.emailHistory.lastEmailResendId ? (
+                <p className="sm:col-span-2 break-all text-xs text-gray-500">
+                  Resend message ID: {row.emailHistory.lastEmailResendId}
+                </p>
+              ) : null}
+              {row.emailHistory.lastEmailError ? (
+                <p className="sm:col-span-2 text-xs font-semibold text-red-700">
+                  Last email error: {row.emailHistory.lastEmailError}
+                </p>
+              ) : null}
+              {row.emailHistory.lastEmailRecipients.length > 0 ? (
+                <p className="sm:col-span-2 text-xs text-gray-600">
+                  Last recipients:{" "}
+                  {row.emailHistory.lastEmailRecipients.map((r) => r.email).join(", ")}
+                </p>
+              ) : null}
               <p className="sm:col-span-2 text-xs text-gray-500">
                 <span className="font-semibold text-gray-600">Submission ID:</span> {row.submissionId}
               </p>
@@ -399,7 +531,10 @@ export default function SubmittedPage() {
               <button
                 type="button"
                 className="rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-70"
-                onClick={() => void handleResendEmail(row)}
+                onClick={() => {
+                  setResendModalRow(row);
+                  setResendModalOpen(true);
+                }}
                 disabled={resendStateBySubmissionId[row.submissionId] === "sending"}
               >
                 {resendStateBySubmissionId[row.submissionId] === "sending" ? "Resending..." : "Resend Email"}
@@ -657,6 +792,26 @@ export default function SubmittedPage() {
             ) : null}
           </section>
         ))}
+        {resendModalRow ? (
+          <EmailSendConfirmModal
+            open={resendModalOpen}
+            title="Resend Email"
+            confirmLabel="Resend Email"
+            model={buildEmailViewModel(resendModalRow.payload as JobCardSubmissionPayload)}
+            payload={resendModalRow.payload}
+            sending={resendStateBySubmissionId[resendModalRow.submissionId] === "sending"}
+            errorMessage={
+              resendStateBySubmissionId[resendModalRow.submissionId] === "error"
+                ? resendMessageBySubmissionId[resendModalRow.submissionId] || "Failed to resend"
+                : null
+            }
+            onClose={() => {
+              setResendModalOpen(false);
+              setResendModalRow(null);
+            }}
+            onConfirm={(mode) => void handleResendEmail(resendModalRow, mode)}
+          />
+        ) : null}
       </div>
     </main>
   );
