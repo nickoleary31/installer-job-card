@@ -6,6 +6,8 @@
  * Outbound email mode uses cid: references only — never Storage public URLs or gallery links.
  */
 
+import { selectedSectionsIncludeEffective } from "./form-registry.ts";
+
 export type EmailPhotoUploadLike = {
   fieldName: string;
   group: string;
@@ -91,9 +93,9 @@ function detectFormFlags(p: EmailPhotoPayloadLike) {
     isLinxUpKey(p.formId) ||
     isLinxUpKey(p.submissionType) ||
     [...sectionSet].some((s) => isLinxUpKey(s));
-  const includeVac4 = !includeLinxUp && sectionSet.has("VAC4");
-  const includePpd = !includeLinxUp && sectionSet.has("PPD");
-  const includeCp4 = !includeLinxUp && sectionSet.has("CP4");
+  const includeVac4 = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "VAC4");
+  const includePpd = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "PPD");
+  const includeCp4 = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "CP4");
   return { includeLinxUp, includeVac4, includePpd, includeCp4 };
 }
 

@@ -387,12 +387,20 @@ export default function CompaniesPage() {
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Installer Sheetz</h1>
           <p className="mt-1 text-sm text-gray-600">Digital Job Cards for Field Technicians</p>
           {isGlobalAdmin ? (
-            <Link
-              href="/admin/users"
-              className="mt-3 inline-flex text-sm font-semibold text-violet-700 hover:underline"
-            >
-              Global Users
-            </Link>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <Link
+                href="/admin/users"
+                className="inline-flex text-sm font-semibold text-violet-700 hover:underline"
+              >
+                Global Users
+              </Link>
+              <Link
+                href="/admin/forms"
+                className="inline-flex text-sm font-semibold text-violet-700 hover:underline"
+              >
+                Form Admin
+              </Link>
+            </div>
           ) : null}
         </header>
 

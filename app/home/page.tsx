@@ -81,9 +81,14 @@ export default function HomeDashboardPage() {
               Submitted
             </Link>
             {context.globalRole === "admin" && context.profileIsActive ? (
-              <Link href="/admin/users" className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-400">
-                Global Users
-              </Link>
+              <>
+                <Link href="/admin/users" className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-400">
+                  Global Users
+                </Link>
+                <Link href="/admin/forms" className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-400">
+                  Form Admin
+                </Link>
+              </>
             ) : null}
           </div>
         </section>

@@ -54,11 +54,20 @@ import {
 import {
   buildFormScopedAutosaveKey,
   getFormDefinitionBySectionKey,
-  getFormsForCompanyName,
-  isSectionKeyAllowedForCompany,
-  resolveCompanySlug,
   type FormDefinition,
 } from "@/lib/form-registry";
+import {
+  areAdditionalProductsAllowed,
+  buildProductLookupMaps,
+  getAllowedAdditionalProducts,
+  getAllowedPrimaryProducts,
+  getProductLabelWithLookup,
+  resolveEffectiveSectionKeyWithLookup,
+  selectedSectionsIncludeEffectiveWithLookup,
+  toFormDefinitionFromProduct,
+  toProductDisplayContext,
+} from "@/lib/product-config";
+import { useCompanyProducts } from "@/lib/product-config/use-company-products";
 import {
   deleteOfflineJobCardDraft,
   getOfflineJobCardDraftById,
@@ -660,7 +669,12 @@ function parseVehicleVoltageVolts(driveType: string, voltageSelect: string, volt
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function hardwareSectionTriggersPpdAlarmOut(sectionLabel: string): boolean {
+function hardwareSectionTriggersPpdAlarmOut(
+  sectionLabel: string,
+  resolveEffective: (key: string) => string,
+): boolean {
+  const effective = resolveEffective(sectionLabel);
+  if (effective === "VAC4" || effective === "Speed Transmon" || effective === "Speed SSC") return true;
   const label = sectionLabel.trim().toLowerCase();
   if (!label) return false;
   if (label.includes("vac4")) return true;
@@ -671,9 +685,15 @@ function hardwareSectionTriggersPpdAlarmOut(sectionLabel: string): boolean {
 }
 
 /** PPD "relays for speed control" — only when Speed-family hardware is checked as *additional*, not primary-only. */
-function isSpeedControlAdditionalHardwareLabel(sectionLabel: string): boolean {
+function isSpeedControlAdditionalHardwareLabel(
+  sectionLabel: string,
+  resolveEffective: (key: string) => string,
+): boolean {
   const t = sectionLabel.trim();
-  if (!t || t === "VAC4") return false;
+  if (!t) return false;
+  const effective = resolveEffective(t);
+  if (effective === "VAC4") return false;
+  if (effective === "Speed Transmon" || effective === "Speed SSC") return true;
   const lower = t.toLowerCase();
   if (lower.includes("speed")) return true;
   if (lower.includes("transmon")) return true;
@@ -1421,6 +1441,8 @@ export function NewSubmissionForm() {
     contactEmail: "",
   });
   const [selectedCompanyName, setSelectedCompanyName] = useState<string | null>(null);
+  /** Company UUID from localStorage — used for hybrid DB product resolution. */
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   /** False until selected company name is resolved from localStorage company id (or confirmed missing). */
   const [companyContextReady, setCompanyContextReady] = useState(false);
   const [linxupVehicleType, setLinxupVehicleType] = useState("");
@@ -1684,48 +1706,81 @@ export function NewSubmissionForm() {
     data: {} as StoredJobCardDraft["data"],
   }));
 
-  const allowedForms = useMemo(
-    () => getFormsForCompanyName(selectedCompanyName),
-    [selectedCompanyName],
+  const {
+    products: resolvedProducts,
+    selectableProducts,
+    loading: productsLoading,
+  } = useCompanyProducts({
+    companyId: selectedCompanyId,
+    companyName: selectedCompanyName,
+    enabled: companyContextReady,
+  });
+
+  const productLookup = useMemo(
+    () => buildProductLookupMaps(resolvedProducts),
+    [resolvedProducts],
   );
-  const companySlug = useMemo(
-    () => resolveCompanySlug(selectedCompanyName),
-    [selectedCompanyName],
+
+  const resolveEffective = useMemo(
+    () => (key: string | null | undefined) =>
+      resolveEffectiveSectionKeyWithLookup(key, productLookup),
+    [productLookup],
   );
-  /** Registry forms only when company slug is known. Never fall back to all Powerfleet forms while loading. */
-  const allowedPrimaryOptions = useMemo(() => {
+
+  const selectedIncludeEffective = useMemo(
+    () => (sections: readonly string[] | null | undefined, target: string) =>
+      selectedSectionsIncludeEffectiveWithLookup(sections, target, productLookup),
+    [productLookup],
+  );
+
+  const productLabel = useMemo(
+    () => (key: string | null | undefined) => getProductLabelWithLookup(key, productLookup),
+    [productLookup],
+  );
+
+  const hasCompanyProducts = selectableProducts.length > 0;
+  const companyOffersLinxUp = useMemo(
+    () =>
+      selectableProducts.length > 0 &&
+      selectableProducts.some((p) => p.profileId === "linxup_install"),
+    [selectableProducts],
+  );
+
+  /** Normalized primary products for the technician dropdown (DB or registry via resolver). */
+  const primaryFormOptions = useMemo((): FormDefinition[] => {
     if (!companyContextReady) return [];
-    if (companySlug) return allowedForms.map((f) => f.sectionKey);
-    return [];
-  }, [allowedForms, companySlug, companyContextReady]);
-  const primaryFormOptions = useMemo(() => {
-    if (!companyContextReady) return [];
-    if (companySlug) return allowedForms;
-    return [];
-  }, [allowedForms, companySlug, companyContextReady]);
+    return getAllowedPrimaryProducts(resolvedProducts).map(toFormDefinitionFromProduct);
+  }, [companyContextReady, resolvedProducts]);
   /**
    * Drop a primary that is not assigned to the current company (e.g. after company context changes).
    * Requires company name to be loaded — never treat an unresolved company as allowing all forms.
    */
-  const effectivePrimary =
-    primary &&
-    selectedCompanyName &&
-    isSectionKeyAllowedForCompany(selectedCompanyName, primary)
-      ? primary
-      : "";
-  const selectedPrimaryForm: FormDefinition | undefined = useMemo(
-    () => getFormDefinitionBySectionKey(effectivePrimary),
-    [effectivePrimary],
-  );
+  const effectivePrimary = useMemo(() => {
+    if (!primary || !companyContextReady) return "";
+    return selectableProducts.some((p) => p.sectionKey === primary) ? primary : "";
+  }, [primary, companyContextReady, selectableProducts]);
+  const selectedPrimaryForm: FormDefinition | undefined = useMemo(() => {
+    const product = resolvedProducts.find((p) => p.sectionKey === effectivePrimary);
+    return product ? toFormDefinitionFromProduct(product) : undefined;
+  }, [effectivePrimary, resolvedProducts]);
   /** Company only has LinxUp products — use shared profile before a product is chosen. */
-  const companyUsesLinxUpProfile = useMemo(
-    () => allowedForms.length > 0 && allowedForms.every((f) => f.profileId === "linxup_install"),
-    [allowedForms],
-  );
+  const companyUsesLinxUpProfile = useMemo(() => {
+    return (
+      selectableProducts.length > 0 &&
+      selectableProducts.every((p) => p.profileId === "linxup_install")
+    );
+  }, [selectableProducts]);
   /** True when rendering the shared LinxUp field profile. */
   const isLinxUpProfile = companyUsesLinxUpProfile || isLinxUpSectionKey(effectivePrimary);
-  const availableAdditional = allowedPrimaryOptions.filter((h) => h !== effectivePrimary);
-  const selectedSections = [effectivePrimary, ...additional].filter(Boolean);
+  const availableAdditional = useMemo(() => {
+    return getAllowedAdditionalProducts(resolvedProducts, effectivePrimary).map((p) => p.sectionKey);
+  }, [resolvedProducts, effectivePrimary]);
+  /** Drop invalid extras without a syncing effect (Blaxtair: never two devices). */
+  const selectedAdditional = useMemo(
+    () => additional.filter((item) => availableAdditional.includes(item)),
+    [additional, availableAdditional],
+  );
+  const selectedSections = [effectivePrimary, ...selectedAdditional].filter(Boolean);
   const isLinxUpAssetTracker = selectedSections.some(
     (section) => section === LINXUP_ASSET_TRACKER_FORM_ID || isLinxUpAssetTrackerFormId(section),
   );
@@ -1790,12 +1845,12 @@ export function NewSubmissionForm() {
   const cp4ShowAlarmIn2 = cp4AlarmIn2RelayInstalled === "Yes";
   const ppdShowPowerConverterMounting = ppdVehicleVolts !== null && ppdVehicleVolts > 36;
   const ppdShowAlarmOutConnections = useMemo(
-    () => selectedSections.some((s) => hardwareSectionTriggersPpdAlarmOut(s)),
-    [selectedSections],
+    () => selectedSections.some((s) => hardwareSectionTriggersPpdAlarmOut(s, resolveEffective)),
+    [selectedSections, resolveEffective],
   );
   const ppdShowRelaysSpeedControlQuestion = useMemo(
-    () => additional.some((s) => isSpeedControlAdditionalHardwareLabel(s)),
-    [additional],
+    () => additional.some((s) => isSpeedControlAdditionalHardwareLabel(s, resolveEffective)),
+    [additional, resolveEffective],
   );
   const ppdShowBlackAlarmGround = ppdShowRelaysSpeedControlQuestion && ppdRelaysUsedForSpeedControl === "Yes";
 
@@ -2278,21 +2333,22 @@ export function NewSubmissionForm() {
   const collectReviewValidationIssues = (): string[] => {
     const issues: string[] = [];
 
-    if (!companyContextReady || !selectedCompanyName || !resolveCompanySlug(selectedCompanyName)) {
+    if (!companyContextReady || !selectedCompanyName) {
+      issues.push("hw-primary");
+      return issues;
+    }
+    if (!hasCompanyProducts) {
       issues.push("hw-primary");
       return issues;
     }
 
     if (isLinxUpProfile) {
-      if (!effectivePrimary || !isSectionKeyAllowedForCompany(selectedCompanyName, effectivePrimary)) {
+      if (!effectivePrimary || !selectableProducts.some((p) => p.sectionKey === effectivePrimary)) {
         issues.push("hw-primary");
       }
       if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
-      for (const extra of additional) {
-        if (!isSectionKeyAllowedForCompany(selectedCompanyName, extra)) {
-          issues.push("hw-hasAdditional");
-          break;
-        }
+      if (!areAdditionalProductsAllowed(resolvedProducts, effectivePrimary, selectedAdditional)) {
+        issues.push("hw-hasAdditional");
       }
       if (!coreJob.customer.trim()) issues.push("core-customer");
       if (!coreJob.location.trim()) issues.push("core-location");
@@ -2311,7 +2367,6 @@ export function NewSubmissionForm() {
           issues.push("linxup-vt-obdPortConnected");
         }
         if (linxupVtObdPortConnected === "Yes") {
-          if (linxupVtPc.greenActivityLight < 1) issues.push("photo-linxup-vt-greenActivityLight");
           if (linxupVtPc.installation < 1) issues.push("photo-linxup-vt-installation");
           if (!linxupVtInstallationNotes.trim()) issues.push("linxup-vt-installationNotes");
         } else if (linxupVtObdPortConnected === "No") {
@@ -2321,7 +2376,6 @@ export function NewSubmissionForm() {
           if (linxupVtPc.groundConnection < 1) issues.push("photo-linxup-vt-groundConnection");
           if (!linxupVtIgnitionConnectionDescription.trim()) issues.push("linxup-vt-ignitionConnectionDescription");
           if (linxupVtPc.ignitionConnection < 1) issues.push("photo-linxup-vt-ignitionConnection");
-          if (linxupVtPc.greenActivityLight < 1) issues.push("photo-linxup-vt-greenActivityLight");
           if (linxupVtPc.finalInstall < 1) issues.push("photo-linxup-vt-finalInstall");
           if (!linxupVtInstallationNotes.trim()) issues.push("linxup-vt-installationNotes");
         }
@@ -2332,7 +2386,6 @@ export function NewSubmissionForm() {
           issues.push("linxup-lc-obdPortConnected");
         }
         if (linxupLcObdPortConnected === "Yes") {
-          if (linxupLcPc.greenActivityLight < 1) issues.push("photo-linxup-lc-greenActivityLight");
           if (linxupLcPc.installation < 1) issues.push("photo-linxup-lc-installation");
         } else if (linxupLcObdPortConnected === "No") {
           if (!linxupLcPowerConnectionDescription.trim()) issues.push("linxup-lc-powerConnectionDescription");
@@ -2341,7 +2394,6 @@ export function NewSubmissionForm() {
           if (linxupLcPc.groundConnection < 1) issues.push("photo-linxup-lc-groundConnection");
           if (!linxupLcIgnitionConnectionDescription.trim()) issues.push("linxup-lc-ignitionConnectionDescription");
           if (linxupLcPc.ignitionConnection < 1) issues.push("photo-linxup-lc-ignitionConnection");
-          if (linxupLcPc.greenActivityLight < 1) issues.push("photo-linxup-lc-greenActivityLight");
           if (linxupLcPc.finalInstall < 1) issues.push("photo-linxup-lc-finalInstall");
           if (!linxupLcInstallationNotes.trim()) issues.push("linxup-lc-installationNotes");
         }
@@ -2359,14 +2411,11 @@ export function NewSubmissionForm() {
       return issues;
     }
 
-    if (!effectivePrimary || !isSectionKeyAllowedForCompany(selectedCompanyName, effectivePrimary)) {
+    if (!effectivePrimary || !selectableProducts.some((p) => p.sectionKey === effectivePrimary)) {
       issues.push("hw-primary");
     }
-    for (const extra of additional) {
-      if (!isSectionKeyAllowedForCompany(selectedCompanyName, extra)) {
-        issues.push("hw-hasAdditional");
-        break;
-      }
+    if (!areAdditionalProductsAllowed(resolvedProducts, effectivePrimary, selectedAdditional)) {
+      issues.push("hw-hasAdditional");
     }
 
     if (!coreJob.customer.trim()) issues.push("core-customer");
@@ -2436,7 +2485,7 @@ export function NewSubmissionForm() {
       }
     }
 
-    if (selectedSections.includes("PPD")) {
+    if (selectedIncludeEffective(selectedSections, "PPD")) {
       if (!ppdHubSerial.trim()) issues.push("ppd-hubSerial");
       for (const loc of ppdCameraLocations) {
         if (!ppdCameraSerialsByLocation[loc]?.trim()) {
@@ -3644,19 +3693,17 @@ export function NewSubmissionForm() {
       // keep selectedCompanyName fallback
     }
 
-    if (!trustedCompanyName || !resolveCompanySlug(trustedCompanyName)) {
+    if (!trustedCompanyName || !hasCompanyProducts) {
       throw new Error("Project company is not loaded or is not assigned any forms.");
     }
-    if (!effectivePrimary || !isSectionKeyAllowedForCompany(trustedCompanyName, effectivePrimary)) {
+    if (!effectivePrimary || !selectableProducts.some((p) => p.sectionKey === effectivePrimary)) {
       throw new Error("Selected form is not assigned to this company.");
     }
-    for (const extra of additional) {
-      if (!isSectionKeyAllowedForCompany(trustedCompanyName, extra)) {
-        throw new Error("Selected additional form is not assigned to this company.");
-      }
+    if (!areAdditionalProductsAllowed(resolvedProducts, effectivePrimary, selectedAdditional)) {
+      throw new Error("Selected additional hardware is not allowed with this primary product.");
     }
 
-    const ppdPayload: JobCardPpdPayload | undefined = selectedSections.includes("PPD")
+    const ppdPayload: JobCardPpdPayload | undefined = selectedIncludeEffective(selectedSections, "PPD")
       ? {
           hubSerial: ppdHubSerial,
           cameraLocations: [...ppdCameraLocations],
@@ -3756,9 +3803,10 @@ export function NewSubmissionForm() {
       hardwareSelection: {
         primary: effectivePrimary,
         hasAdditional,
-        additional: [...additional],
+        additional: [...selectedAdditional],
       },
       selectedSections: [...selectedSections],
+      productDisplay: toProductDisplayContext(productLookup),
       ...(selectedPrimaryForm
         ? { formId: selectedPrimaryForm.id, submissionType: selectedPrimaryForm.submissionType }
         : {}),
@@ -3915,7 +3963,7 @@ export function NewSubmissionForm() {
   const ensurePpdJsonOnPayload = async (
     payloadForSend: JobCardSubmissionPayload,
   ): Promise<JobCardSubmissionPayload> => {
-    if (!(payloadForSend.selectedSections.includes("PPD") && payloadForSend.ppd)) {
+    if (!(selectedIncludeEffective(payloadForSend.selectedSections, "PPD") && payloadForSend.ppd)) {
       return payloadForSend;
     }
     if (isOffline) {
@@ -4111,6 +4159,7 @@ export function NewSubmissionForm() {
     setCoreJob((prev) => normalizeUppercaseCoreJob({ ...prev, ...draft.coreJob }));
     setPrimary(draft.hardwareSelection?.primary || "");
     setHasAdditional(draft.hardwareSelection?.hasAdditional || "");
+    // Keep stored IDs; selectedAdditional derives allowed extras once company context is ready.
     setAdditional(Array.isArray(draft.hardwareSelection?.additional) ? draft.hardwareSelection.additional : []);
     setVac4VehicleType(String(draft.vac4?.vehicleType || ""));
     setVac4OtherVehicleType(String(draft.vac4?.otherVehicleType || ""));
@@ -4565,11 +4614,13 @@ export function NewSubmissionForm() {
       const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
       if (!companyId) {
         if (!cancelled) {
+          setSelectedCompanyId(null);
           setSelectedCompanyName(null);
           setCompanyContextReady(true);
         }
         return;
       }
+      if (!cancelled) setSelectedCompanyId(companyId);
       if (!window.navigator.onLine) {
         try {
           const snap = await getBestStarterSnapshotForOffline();
@@ -4615,7 +4666,7 @@ export function NewSubmissionForm() {
     let cancelled = false;
     void (async () => {
       if (typeof window === "undefined") return;
-      if (!selectedSections.includes("PPD") || isOffline) {
+      if (!selectedIncludeEffective(selectedSections, "PPD") || isOffline) {
         if (!cancelled) setPpdProjectCustomerId(null);
         return;
       }
@@ -4643,7 +4694,7 @@ export function NewSubmissionForm() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSections, isOffline]);
+  }, [selectedSections, isOffline, selectedIncludeEffective]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4837,7 +4888,7 @@ export function NewSubmissionForm() {
 
     return {
       coreJob: normalizedCoreJob,
-      hardwareSelection: { primary: effectivePrimary, hasAdditional, additional },
+      hardwareSelection: { primary: effectivePrimary, hasAdditional, additional: selectedAdditional },
       ...(selectedPrimaryForm
         ? { formId: selectedPrimaryForm.id, submissionType: selectedPrimaryForm.submissionType }
         : {}),
@@ -5144,7 +5195,7 @@ export function NewSubmissionForm() {
         mergeResult.merged,
       ) as StoredJobCardDraft["data"];
 
-      if (selectedSections.includes("PPD") && draftDataForSave.ppd) {
+      if (selectedIncludeEffective(selectedSections, "PPD") && draftDataForSave.ppd) {
         const { data: projRow, error: projErr } = await supabase
           .from("projects")
           .select("customer_id")
@@ -5707,16 +5758,17 @@ export function NewSubmissionForm() {
 
         {!isJobCardSubmitted && !emailSubmissionPreview && (step === "form" ? (
         <>
-        {!companyContextReady ? (
+        {!companyContextReady || productsLoading ? (
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
               Loading project company before form selection…
             </p>
           </section>
-        ) : !companySlug ? (
+        ) : !hasCompanyProducts ? (
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-red-800 dark:text-red-300">
-              This company is not assigned any forms in the registry. Select a Powerfleet, Matrix, or LinxUp project.
+              This company is not assigned any forms. Select a Powerfleet, Matrix, or LinxUp
+              project — or ask an admin to configure products under Form Admin.
             </p>
           </section>
         ) : null}
@@ -5728,15 +5780,18 @@ export function NewSubmissionForm() {
             icon={IconChip}
             status={hardwareSectionStatus}
           />
-          {!isLinxUpProfile && hardwareStatusSections.map((section) => (
+          {!isLinxUpProfile && hardwareStatusSections.map((section) => {
+            const sectionLabel = productLabel(section) || section;
+            return (
             <SectionStatusCard
               key={section}
-              title={["VAC4", "CP4", "PPD"].includes(section) ? `${section} hardware` : `${section} Section`}
+              title={["VAC4", "CP4", "PPD"].includes(section) ? `${section} hardware` : `${sectionLabel} Section`}
               tone={section === "VAC4" ? "purple" : "green"}
               icon={section === "VAC4" ? IconGear : IconChip}
               status={section === "VAC4" ? vac4SectionStatus : "In Progress"}
             />
-          ))}
+            );
+          })}
         </div>
 
         {reviewBlockMessage && (
@@ -6236,18 +6291,18 @@ export function NewSubmissionForm() {
           </div>
         </section>
 
-        {/* Product / Hardware Selection (registry-driven) */}
+        {/* Product / Hardware Selection (normalized product-config) */}
         {isVehicleInfoComplete ? (
           <section className={cardClassName}>
             <FormSectionHeader
-              title={isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install") ? "Product Selection" : "Hardware Selection"}
+              title={isLinxUpProfile || companyOffersLinxUp ? "Product Selection" : "Hardware Selection"}
               tone="green"
             />
 
             <div className="space-y-5">
               <div id="field-hw-primary">
                 <label className={fieldLabelClass("hw-primary")}>
-                  {allowedForms.some((f) => f.profileId === "linxup_install")
+                  {companyOffersLinxUp
                     ? "Product / Install Type"
                     : "Primary Hardware / Install Type"}
                   <RequiredMark />
@@ -6257,12 +6312,20 @@ export function NewSubmissionForm() {
                   value={effectivePrimary}
                   onChange={(e) => {
                     const next = e.target.value;
-                    if (next && selectedCompanyName && !isSectionKeyAllowedForCompany(selectedCompanyName, next)) {
-                      setDraftNoticeMessage("That form is not assigned to this company.");
-                      return;
+                    if (next) {
+                      const allowed = selectableProducts.some((p) => p.sectionKey === next);
+                      if (!allowed) {
+                        setDraftNoticeMessage("That form is not assigned to this company.");
+                        return;
+                      }
                     }
                     setPrimary(next);
-                    setAdditional((prev) => prev.filter((item) => item !== next));
+                    setAdditional((prev) => {
+                      const allowedKeys = getAllowedAdditionalProducts(resolvedProducts, next).map(
+                        (p) => p.sectionKey,
+                      );
+                      return prev.filter((item) => item !== next && allowedKeys.includes(item));
+                    });
                     clearFieldHighlight("hw-primary");
                   }}
                 >
@@ -6280,7 +6343,7 @@ export function NewSubmissionForm() {
 
               <div id="field-hw-hasAdditional">
                 <label className={fieldLabelClass("hw-hasAdditional")}>
-                  {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+                  {isLinxUpProfile || companyOffersLinxUp
                     ? "Is any additional device being installed?"
                     : "Is any additional hardware being installed?"}
                   <RequiredMark />
@@ -6298,7 +6361,7 @@ export function NewSubmissionForm() {
                   }}
                 >
                   <option value="" className="text-gray-400">
-                    {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+                    {isLinxUpProfile || companyOffersLinxUp
                       ? "Any additional device?"
                       : "Any additional hardware?"}
                   </option>
@@ -6318,7 +6381,7 @@ export function NewSubmissionForm() {
                         checked={additional.includes(type)}
                         onChange={() => toggleAdditional(type)}
                       />
-                      <span>{getFormDefinitionBySectionKey(type)?.label || type}</span>
+                      <span>{productLabel(type) || type}</span>
                     </label>
                   ))}
                 </div>
@@ -6329,7 +6392,7 @@ export function NewSubmissionForm() {
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
               Complete all required Vehicle Information fields before selecting{" "}
-              {allowedForms.some((f) => f.profileId === "linxup_install") ? "a product" : "hardware"}.
+              {companyOffersLinxUp ? "a product" : "hardware"}.
             </p>
           </section>
         )}
@@ -6337,7 +6400,7 @@ export function NewSubmissionForm() {
         {effectivePrimary && !hasAnsweredAdditionalHardwareQuestion && (
           <section className={cardClassName}>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-              {isLinxUpProfile || allowedForms.some((f) => f.profileId === "linxup_install")
+              {isLinxUpProfile || companyOffersLinxUp
                 ? 'Please answer "Is any additional device being installed?" to continue.'
                 : 'Please answer "Is any additional hardware being installed?" to continue.'}
             </p>
@@ -6401,9 +6464,8 @@ export function NewSubmissionForm() {
             {linxupVtObdPortConnected === "Yes" && (
               <>
                 <div id={`field-${linxupVtPhotoIssueKey("greenActivityLight")}`}>
-                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("greenActivityLight"))}>
-                    Picture of green activity light
-                    <RequiredMark />
+                  <label className={labelClassName}>
+                    Picture of green activity light (optional)
                   </label>
                   <input
                     id="linxup-vt-photo-greenActivityLight-obd"
@@ -6414,7 +6476,7 @@ export function NewSubmissionForm() {
                   />
                   <label
                     htmlFor="linxup-vt-photo-greenActivityLight-obd"
-                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), true, linxupVtPc.greenActivityLight >= 1)}
+                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), false, linxupVtPc.greenActivityLight >= 1)}
                   >
                     {PHOTO_UPLOAD_LABEL_SINGLE}
                   </label>
@@ -6427,7 +6489,6 @@ export function NewSubmissionForm() {
                   />
                   <PhotoUploadedBadge show={linxupVtPc.greenActivityLight >= 1} />
                   <PhotoFieldError message={linxupVtPhotoErrors.greenActivityLight} />
-                  {requiredHint(linxupVtPhotoIssueKey("greenActivityLight"))}
                 </div>
 
                 <div id={`field-${linxupVtPhotoIssueKey("installation")}`}>
@@ -6620,9 +6681,8 @@ export function NewSubmissionForm() {
                 </div>
 
                 <div id={`field-${linxupVtPhotoIssueKey("greenActivityLight")}`}>
-                  <label className={fieldLabelClass(linxupVtPhotoIssueKey("greenActivityLight"))}>
-                    Picture of green activity light
-                    <RequiredMark />
+                  <label className={labelClassName}>
+                    Picture of green activity light (optional)
                   </label>
                   <input
                     id="linxup-vt-photo-greenActivityLight-hardwire"
@@ -6633,7 +6693,7 @@ export function NewSubmissionForm() {
                   />
                   <label
                     htmlFor="linxup-vt-photo-greenActivityLight-hardwire"
-                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), true, linxupVtPc.greenActivityLight >= 1)}
+                    className={photoPickClass(linxupVtPhotoIssueKey("greenActivityLight"), false, linxupVtPc.greenActivityLight >= 1)}
                   >
                     {PHOTO_UPLOAD_LABEL_SINGLE}
                   </label>
@@ -6646,7 +6706,6 @@ export function NewSubmissionForm() {
                   />
                   <PhotoUploadedBadge show={linxupVtPc.greenActivityLight >= 1} />
                   <PhotoFieldError message={linxupVtPhotoErrors.greenActivityLight} />
-                  {requiredHint(linxupVtPhotoIssueKey("greenActivityLight"))}
                 </div>
 
                 <div id={`field-${linxupVtPhotoIssueKey("finalInstall")}`}>
@@ -6757,9 +6816,8 @@ export function NewSubmissionForm() {
             {linxupLcObdPortConnected === "Yes" && (
               <>
                 <div id={`field-${linxupLcPhotoIssueKey("greenActivityLight")}`}>
-                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("greenActivityLight"))}>
-                    Picture of green activity light
-                    <RequiredMark />
+                  <label className={labelClassName}>
+                    Picture of green activity light (optional)
                   </label>
                   <input
                     id="linxup-lc-photo-greenActivityLight-obd"
@@ -6770,7 +6828,7 @@ export function NewSubmissionForm() {
                   />
                   <label
                     htmlFor="linxup-lc-photo-greenActivityLight-obd"
-                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), true, linxupLcPc.greenActivityLight >= 1)}
+                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), false, linxupLcPc.greenActivityLight >= 1)}
                   >
                     {PHOTO_UPLOAD_LABEL_SINGLE}
                   </label>
@@ -6783,7 +6841,6 @@ export function NewSubmissionForm() {
                   />
                   <PhotoUploadedBadge show={linxupLcPc.greenActivityLight >= 1} />
                   <PhotoFieldError message={linxupLcPhotoErrors.greenActivityLight} />
-                  {requiredHint(linxupLcPhotoIssueKey("greenActivityLight"))}
                 </div>
 
                 <div id={`field-${linxupLcPhotoIssueKey("installation")}`}>
@@ -6959,9 +7016,8 @@ export function NewSubmissionForm() {
                 </div>
 
                 <div id={`field-${linxupLcPhotoIssueKey("greenActivityLight")}`}>
-                  <label className={fieldLabelClass(linxupLcPhotoIssueKey("greenActivityLight"))}>
-                    Picture of green activity light
-                    <RequiredMark />
+                  <label className={labelClassName}>
+                    Picture of green activity light (optional)
                   </label>
                   <input
                     id="linxup-lc-photo-greenActivityLight-hardwire"
@@ -6972,7 +7028,7 @@ export function NewSubmissionForm() {
                   />
                   <label
                     htmlFor="linxup-lc-photo-greenActivityLight-hardwire"
-                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), true, linxupLcPc.greenActivityLight >= 1)}
+                    className={photoPickClass(linxupLcPhotoIssueKey("greenActivityLight"), false, linxupLcPc.greenActivityLight >= 1)}
                   >
                     {PHOTO_UPLOAD_LABEL_SINGLE}
                   </label>
@@ -6985,7 +7041,6 @@ export function NewSubmissionForm() {
                   />
                   <PhotoUploadedBadge show={linxupLcPc.greenActivityLight >= 1} />
                   <PhotoFieldError message={linxupLcPhotoErrors.greenActivityLight} />
-                  {requiredHint(linxupLcPhotoIssueKey("greenActivityLight"))}
                 </div>
 
                 <div id={`field-${linxupLcPhotoIssueKey("finalInstall")}`}>
@@ -8031,13 +8086,19 @@ export function NewSubmissionForm() {
           </VAC4Section>
         )}
 
-        {/* Dynamic Sections — only products with dedicated form UI (CP4 / PPD). */}
+        {/* Dynamic Sections — only products with dedicated form UI (CP4 / PPD + aliases). */}
         {hasAnsweredAdditionalHardwareQuestion &&
           !isLinxUpProfile &&
           selectedSections
-            .filter((section) => section === "CP4" || section === "PPD")
-            .map((section) =>
-              section === "CP4" ? (
+            .filter((section) => {
+              const renderKey = resolveEffective(section);
+              return renderKey === "CP4" || renderKey === "PPD";
+            })
+            .map((section) => {
+              const renderKey = resolveEffective(section);
+              const ppdSectionTitle =
+                section === "PPD" ? "PPD / Pedestrian hardware" : productLabel(section) || section;
+              return renderKey === "CP4" ? (
                 <section key={section} className={cardClassName}>
                   <FormSectionHeader title="CP4 hardware" tone="green" />
                   <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
@@ -8645,9 +8706,9 @@ export function NewSubmissionForm() {
                     </div>
                   </div>
                 </section>
-              ) : section === "PPD" ? (
+              ) : renderKey === "PPD" ? (
                 <section key={section} className={cardClassName}>
-                  <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
+                  <FormSectionHeader title={ppdSectionTitle} tone="green" />
                   <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
                     <p className="font-semibold">Uses Vehicle Information from this card</p>
                     <p className="mt-1 text-emerald-900/90 dark:text-emerald-200/90">
@@ -9480,8 +9541,8 @@ export function NewSubmissionForm() {
                     </div>
                   </div>
                 </section>
-              ) : null
-            )}
+              ) : null;
+            })}
 
         <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
           <button type="button" className={btnSecondaryClassName} onClick={(event) => void handleSaveToDevice(event)}>
@@ -9626,20 +9687,27 @@ export function NewSubmissionForm() {
             <SummaryRow
               label={isLinxUpProfile ? "Additional devices" : "Additional hardware types"}
               value={
-                additional.length
-                  ? additional.map((type) => getFormDefinitionBySectionKey(type)?.label || type).join(", ")
+                selectedAdditional.length
+                  ? selectedAdditional.map((type) => productLabel(type) || type).join(", ")
                   : "—"
               }
             />
             {!isLinxUpProfile && (
-              <SummaryRow label="Hardware units on this card" value={selectedSections.length ? selectedSections.join(", ") : "—"} />
+              <SummaryRow
+                label="Hardware units on this card"
+                value={
+                  selectedSections.length
+                    ? selectedSections.map((type) => productLabel(type) || type).join(", ")
+                    : "—"
+                }
+              />
             )}
             {isLinxUpProfile && (
               <SummaryRow
                 label="Devices on this card"
                 value={
                   selectedSections.length
-                    ? selectedSections.map((type) => getFormDefinitionBySectionKey(type)?.label || type).join(", ")
+                    ? selectedSections.map((type) => productLabel(type) || type).join(", ")
                     : "—"
                 }
               />
@@ -9789,9 +9857,12 @@ export function NewSubmissionForm() {
         )}
 
         {!isLinxUpProfile && selectedSections
-          .filter((s) => s !== "VAC4")
-          .map((section) =>
-            section === "CP4" ? (
+          .filter((s) => resolveEffective(s) !== "VAC4")
+            .map((section) => {
+              const renderKey = resolveEffective(section);
+              const ppdSectionTitle =
+                section === "PPD" ? "PPD / Pedestrian hardware" : productLabel(section) || section;
+              return renderKey === "CP4" ? (
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title="CP4 hardware" tone="green" />
                 <div>
@@ -9865,9 +9936,9 @@ export function NewSubmissionForm() {
                   </div>
                 </div>
               </section>
-            ) : section === "PPD" ? (
+            ) : renderKey === "PPD" ? (
               <section key={`review-hw-${section}`} className={cardClassName}>
-                <FormSectionHeader title="PPD / Pedestrian hardware" tone="green" />
+                <FormSectionHeader title={ppdSectionTitle} tone="green" />
                 <div>
                   <SummaryRow label="Hub serial #" value={ppdHubSerial} />
                   <SummaryRow label="Camera serials" value={ppdCameraSerialsReviewSummary} />
@@ -9957,15 +10028,18 @@ export function NewSubmissionForm() {
               </section>
             ) : (
               <section key={`review-hw-${section}`} className={cardClassName}>
-                <FormSectionHeader title={`${section} Section`} tone="green" />
+                <FormSectionHeader
+                  title={`${productLabel(section) || section} Section`}
+                  tone="green"
+                />
                 <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300">
                   This hardware type is on the card; use the form for full details (not shown in this summary).
                 </p>
               </section>
-            )
-          )}
+            );
+          })}
 
-        {!isLinxUpProfile && selectedSections.includes("VAC4") && (
+        {!isLinxUpProfile && selectedIncludeEffective(selectedSections, "VAC4") && (
           <section className={cardClassName}>
             <FormSectionHeader title="VAC4 hardware" tone="purple" />
             <div>

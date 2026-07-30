@@ -3,7 +3,16 @@
  */
 
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "./format";
+import {
+  formatSectionKeysAsLabels,
+  getFormDefinitionById,
+  getFormLabelBySectionKey,
+} from "./form-registry";
 import { isLinxUpSectionKey } from "./linxup";
+import {
+  formatSectionKeysAsLabelsWithLookup,
+  getProductLabelWithLookup,
+} from "./product-config/product-lookup";
 import type { JobCardSubmissionPayload } from "./job-card-submission";
 
 export type EmailLayoutField = {
@@ -74,6 +83,10 @@ function detectLinxUp(p: JobCardSubmissionPayload): boolean {
 function productName(p: JobCardSubmissionPayload): string {
   return (
     p.linxup?.productLabel?.trim() ||
+    getProductLabelWithLookup(p.hardwareSelection?.primary, p.productDisplay) ||
+    getFormLabelBySectionKey(p.hardwareSelection?.primary) ||
+    getFormDefinitionById(p.formId)?.label ||
+    getFormDefinitionById(p.submissionType)?.label ||
     p.submissionType?.trim() ||
     p.formId?.trim() ||
     p.hardwareSelection.primary?.trim() ||
@@ -224,13 +237,14 @@ function buildLegacyDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
       id: "hardware",
       title: "Hardware",
       fields: [
-        { label: "Primary", value: dash(h.primary) },
+        { label: "Primary", value: dash(getProductLabelWithLookup(h.primary, p.productDisplay) || getFormLabelBySectionKey(h.primary) || h.primary) },
         {
           label: "Additional Hardware",
           value:
             h.hasAdditional === "Yes"
               ? h.additional.length
-                ? h.additional.join(", ")
+                ? formatSectionKeysAsLabelsWithLookup(h.additional, p.productDisplay) ||
+                  formatSectionKeysAsLabels(h.additional)
                 : "Yes"
               : dash(h.hasAdditional),
         },
@@ -261,7 +275,7 @@ function buildLegacyDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
     formId: p.formId,
     header: {
       title: "Installer Job Card",
-      productName: h.primary || "Powerfleet / Matrix",
+      productName: getFormLabelBySectionKey(h.primary) || h.primary || "Powerfleet / Matrix",
       customer: dash(c.customer),
       assetNumber: displayUpper(c.unitNumber),
       submittedAt: formatSubmittedAt(p.submissionTimestamp),

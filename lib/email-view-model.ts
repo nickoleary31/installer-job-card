@@ -11,6 +11,8 @@ import {
   renderPhotoSectionsText,
   type EmailPhotoSection,
 } from "@/lib/email-photo-sections";
+import { getFormDefinitionById, getFormLabelBySectionKey } from "@/lib/form-registry";
+import { getProductLabelWithLookup } from "@/lib/product-config/product-lookup";
 import { formatEmailSubject, type JobCardSubmissionPayload } from "@/lib/job-card-submission";
 
 export type {
@@ -55,10 +57,18 @@ function filenameContext(p: JobCardSubmissionPayload) {
 }
 
 function buildSubject(p: JobCardSubmissionPayload): string {
+  const productLabel =
+    p.linxup?.productLabel?.trim() ||
+    getProductLabelWithLookup(p.hardwareSelection?.primary, p.productDisplay) ||
+    getFormLabelBySectionKey(p.hardwareSelection?.primary) ||
+    getFormDefinitionById(p.formId)?.label ||
+    getFormDefinitionById(p.submissionType)?.label ||
+    p.submissionType ||
+    p.formId;
   return formatEmailSubject(
     p.coreJobInfo.customer,
     p.linxup?.assetNumber || p.coreJobInfo.unitNumber,
-    p.linxup?.productLabel || p.submissionType || p.formId,
+    productLabel,
   );
 }
 

@@ -1,4 +1,13 @@
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
+import {
+  formatSectionKeysAsLabels,
+  getFormLabelBySectionKey,
+  selectedSectionsIncludeEffective,
+} from "@/lib/form-registry";
+import {
+  formatSectionKeysAsLabelsWithLookup,
+  getProductLabelWithLookup,
+} from "@/lib/product-config/product-lookup";
 import { isLinxUpSectionKey, type JobCardLinxupPayload } from "@/lib/linxup";
 
 export type { JobCardLinxupPayload };
@@ -125,6 +134,14 @@ export type JobCardSubmissionPayload = {
     additional: string[];
   };
   selectedSections: string[];
+  /**
+   * Explicit product labels / baseFormIds captured at submit time so email/review
+   * do not depend on module-global overlay or which company was last resolved.
+   */
+  productDisplay?: {
+    labels: Record<string, string>;
+    baseFormIds: Record<string, string>;
+  };
   /** Registry form id when known (preferred over inferring from primary). */
   formId?: string;
   /** Registry submission type (legacy: VAC4/CP4/PPD; LinxUp: linxup_*). */
@@ -379,9 +396,9 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
     (p.formId ? p.formId.startsWith("linxup_") : false) ||
     (p.submissionType ? p.submissionType.startsWith("linxup_") : false) ||
     [...sectionSet].some((s) => isLinxUpSectionKey(s));
-  const includeVac4 = !includeLinxUp && sectionSet.has("VAC4");
-  const includePpd = !includeLinxUp && sectionSet.has("PPD");
-  const includeCp4 = !includeLinxUp && sectionSet.has("CP4");
+  const includeVac4 = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "VAC4");
+  const includePpd = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "PPD");
+  const includeCp4 = !includeLinxUp && selectedSectionsIncludeEffective([...sectionSet], "CP4");
 
   const textOrDash = (value: string | undefined) => (value && value.trim() ? value.trim() : "—");
   const displayValue = (value: string | undefined | null) => (value && value.trim() ? value.trim() : "Not Installed");
@@ -582,10 +599,21 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   lines.push(divider);
   lines.push("");
   lines.push("HARDWARE");
-  lines.push(`Primary: ${textOrDash(h.primary)}`);
+  lines.push(
+    `Primary: ${textOrDash(
+      getProductLabelWithLookup(h.primary, p.productDisplay) ||
+        getFormLabelBySectionKey(h.primary) ||
+        h.primary,
+    )}`,
+  );
   lines.push(
     `Additional Hardware: ${
-      h.hasAdditional === "Yes" ? (h.additional.length ? h.additional.join(", ") : "Yes") : textOrDash(h.hasAdditional)
+      h.hasAdditional === "Yes"
+        ? h.additional.length
+          ? formatSectionKeysAsLabelsWithLookup(h.additional, p.productDisplay) ||
+            formatSectionKeysAsLabels(h.additional)
+          : "Yes"
+        : textOrDash(h.hasAdditional)
     }`,
   );
   lines.push("");
