@@ -77,9 +77,15 @@ export type JobCardPpdPayload = {
   customBracketsNeeded: string;
   customBracketNotes: string;
   clientApproval: string;
-  /** Display / legacy: human-readable file name (selected upload or typed label). */
+  /**
+   * @deprecated Compatibility mirror of shared PPD JSON filename.
+   * Canonical: productFiles[].originalFileName for fileKey ppd_json_config.
+   */
   jsonFileName: string;
-  /** Set after successful upload with submission email. */
+  /**
+   * @deprecated Compatibility mirror for shared PPD review/email.
+   * Canonical representation is productFiles (fileKey ppd_json_config, productKey PPD).
+   */
   jsonConfigFile?: JobCardPpdJsonConfigFile;
   /** Mirrors PPD JSON section fields for email when upload not yet stored. */
   jsonConfigForm?: JobCardPpdJsonConfigForm;
@@ -147,6 +153,11 @@ export type JobCardSubmissionPayload = {
   /** Registry submission type (legacy: VAC4/CP4/PPD; LinxUp: linxup_*). */
   submissionType?: string;
   photoUploads: UploadedPhotoMetadata[];
+  /**
+   * Canonical product-scoped installation files (config/calibration/diagnostic).
+   * Preferred over deprecated ppd.jsonConfigFile / jsonFileName for new drafts and submissions.
+   */
+  productFiles?: import("./product-files/types").UploadedProductFile[];
   ppd?: JobCardPpdPayload;
   cp4?: JobCardCp4Payload;
   linxup?: JobCardLinxupPayload;
@@ -335,7 +346,7 @@ function formatPpdInstallLines(ppd: JobCardPpdPayload): string[] {
     lines.push(`PPD JSON — unit #: ${textOrDash(j.unitNumber)}`);
     if (j.notes?.trim()) lines.push(`PPD JSON — notes: ${textOrDash(j.notes)}`);
     lines.push(`PPD JSON file (uploaded): ${textOrDash(j.fileName)}`);
-    lines.push(`PPD JSON storage path: ${textOrDash(j.storagePath)}`);
+    // Do not include raw storagePath in client-facing email (preview/send).
     if (j.publicUrl?.trim()) lines.push(`PPD JSON link: ${j.publicUrl.trim()}`);
     lines.push(`PPD JSON uploaded: ${textOrDash(j.uploadedAt)}`);
   } else if (ppd.jsonConfigForm) {
@@ -658,6 +669,21 @@ export function formatEmailBodyFromPayload(p: JobCardSubmissionPayload): string 
   if (includeCp4 && p.cp4) {
     lines.push("CP4 INSTALL");
     lines.push(...formatCp4InstallLines(p.cp4));
+    lines.push("");
+    lines.push(divider);
+    lines.push("");
+  }
+
+  const extraProductFiles = (p.productFiles ?? []).filter(
+    (a) => a.fileKey !== "ppd_json_config" && a.includeInEmail !== false,
+  );
+  if (extraProductFiles.length > 0) {
+    lines.push("PRODUCT FILES");
+    for (const a of extraProductFiles) {
+      lines.push(`${a.displayLabel} (${a.productKey}): ${a.originalFileName || "—"}`);
+      // Do not include raw storagePath in client-facing email (preview/send).
+      if (a.downloadUrl?.trim()) lines.push(`  Link: ${a.downloadUrl.trim()}`);
+    }
     lines.push("");
     lines.push(divider);
     lines.push("");

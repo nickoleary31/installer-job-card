@@ -66,6 +66,7 @@ import {
   selectedSectionsIncludeEffectiveWithLookup,
   toFormDefinitionFromProduct,
   toProductDisplayContext,
+  type NormalizedProductDefinition,
 } from "@/lib/product-config";
 import { useCompanyProducts } from "@/lib/product-config/use-company-products";
 import {
@@ -84,8 +85,27 @@ import {
   sanitizeWorkOrderInput,
 } from "@/lib/format";
 import { SerialInput } from "@/components/SerialInput";
+import { ProductFileUpload } from "@/components/ProductFileUpload";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { insertCustomerSiteFileRow, uploadPpdJsonFileToStorage } from "@/lib/ppd-json-storage";
+import {
+  PPD_JSON_FILE_KEY,
+  PPD_PRODUCT_KEY,
+  productFileSlotId,
+  readUploadedProductFiles,
+  mergeDurableProductFiles,
+  extractProductFilesFromPayload,
+  collectRequiredProductFileIssues,
+  flattenUploadedProductFiles,
+  hydrateAllProductFileSlotsFromPayload,
+  mergeLegacyPpdIntoProductFiles,
+  ppdJsonConfigFromUploadedProductFile,
+  syncPpdPayloadWithProductFiles,
+  uploadProductFile,
+  insertProductFileSiteRowTyped,
+  type ProductFileUploadSlot,
+  type UploadedProductFile,
+} from "@/lib/product-files";
 
 const PHOTO_BUCKET = "job-card-photos";
 
@@ -228,6 +248,8 @@ type StoredJobCardDraft = {
       };
     };
     photoUploads?: UploadedPhotoMetadata[];
+    /** Canonical product-file metadata; bytes remain in Storage. */
+    productFiles?: UploadedProductFile[];
     photoSummary: {
       vac4PhotoFileNames: VacPhotoFileNames;
       vac4PhotoUrls: VacPhotoFileNames;
@@ -1525,6 +1547,8 @@ export function NewSubmissionForm() {
   const [ppdJsonFileName, setPpdJsonFileName] = useState("");
   const [ppdJsonLocalFile, setPpdJsonLocalFile] = useState<File | null>(null);
   const [ppdJsonUploadedConfig, setPpdJsonUploadedConfig] = useState<JobCardPpdJsonConfigFile | null>(null);
+  /** Product-file slots keyed by productKey::fileKey::device. */
+  const [productFileSlots, setProductFileSlots] = useState<Record<string, ProductFileUploadSlot>>({});
   const [ppdProjectCustomerId, setPpdProjectCustomerId] = useState<string | null>(null);
   const ppdJsonFileInputRef = useRef<HTMLInputElement | null>(null);
   const [ppdRelaysUsedForSpeedControl, setPpdRelaysUsedForSpeedControl] = useState("");
@@ -1781,6 +1805,67 @@ export function NewSubmissionForm() {
     [additional, availableAdditional],
   );
   const selectedSections = [effectivePrimary, ...selectedAdditional].filter(Boolean);
+
+  const selectedNormalizedProducts = useMemo((): NormalizedProductDefinition[] => {
+    return selectedSections
+      .map((sk) => resolvedProducts.find((p) => p.sectionKey === sk))
+      .filter((p): p is NormalizedProductDefinition => !!p);
+  }, [selectedSections, resolvedProducts]);
+
+  const selectedProductsWithFiles = useMemo(
+    () => selectedNormalizedProducts.filter((p) => (p.productFileDefinitions?.length ?? 0) > 0),
+    [selectedNormalizedProducts],
+  );
+
+  const ppdProductsWithFiles = useMemo(
+    () =>
+      selectedProductsWithFiles.filter(
+        (p) => resolveEffective(p.sectionKey) === "PPD",
+      ),
+    [selectedProductsWithFiles, resolveEffective],
+  );
+
+  const nonPpdProductsWithFiles = useMemo(
+    () =>
+      selectedProductsWithFiles.filter(
+        (p) => resolveEffective(p.sectionKey) !== "PPD",
+      ),
+    [selectedProductsWithFiles, resolveEffective],
+  );
+
+  /** Exact shared PPD product (Matrix/Powerfleet) when selected — deprecated ppd.json* mirror only. */
+  const sharedPpdProductSelected = useMemo(
+    () => selectedNormalizedProducts.some((p) => p.productKey === PPD_PRODUCT_KEY),
+    [selectedNormalizedProducts],
+  );
+
+  const applyProductFileSlotChange = (slot: ProductFileUploadSlot) => {
+    const id = productFileSlotId({
+      productKey: slot.productKey,
+      fileKey: slot.fileKey,
+      deviceInstanceId: slot.deviceInstanceId,
+    });
+    setProductFileSlots((prev) => ({ ...prev, [id]: slot }));
+    // Mirror shared PPD JSON onto deprecated ppd.json* fields for existing email/UI paths.
+    if (
+      slot.fileKey === PPD_JSON_FILE_KEY &&
+      slot.productKey === PPD_PRODUCT_KEY
+    ) {
+      if (slot.localFiles[0]) {
+        setPpdJsonLocalFile(slot.localFiles[0]);
+        setPpdJsonFileName(slot.localFiles[0].name);
+        setPpdJsonUploadedConfig(null);
+      } else if (slot.uploaded[0]) {
+        setPpdJsonLocalFile(null);
+        setPpdJsonUploadedConfig(ppdJsonConfigFromUploadedProductFile(slot.uploaded[0]));
+        setPpdJsonFileName(slot.uploaded[0].originalFileName);
+      } else {
+        setPpdJsonLocalFile(null);
+        setPpdJsonUploadedConfig(null);
+        setPpdJsonFileName("");
+      }
+    }
+  };
   const isLinxUpAssetTracker = selectedSections.some(
     (section) => section === LINXUP_ASSET_TRACKER_FORM_ID || isLinxUpAssetTrackerFormId(section),
   );
@@ -2493,13 +2578,6 @@ export function NewSubmissionForm() {
         }
       }
       if (!ppdClientApproval.trim()) issues.push("ppd-clientApproval");
-      if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
-        if (isOffline) {
-          issues.push("ppd-jsonOffline");
-        } else {
-          issues.push("ppd-jsonFile");
-        }
-      }
       if (ppdMonitorInstalled !== "Yes" && ppdMonitorInstalled !== "No") issues.push("ppd-monitorInstalled");
       if (ppdCustomBracketsNeeded !== "Yes" && ppdCustomBracketsNeeded !== "No") issues.push("ppd-customBracketsNeeded");
       if (ppdCustomBracketsNeeded === "Yes" && !ppdCustomBracketNotes.trim()) issues.push("ppd-customBracketNotes");
@@ -2585,6 +2663,18 @@ export function NewSubmissionForm() {
       if (cp4ShowAlarmIn2) {
         if (cp4Pc.alarmIn2 < 1) issues.push("photo-cp4-alarmIn2");
         if (!cp4AlarmIn2Description.trim()) issues.push("cp4-alarmIn2Description");
+      }
+    }
+
+    for (const fileIssue of collectRequiredProductFileIssues({
+      products: selectedNormalizedProducts,
+      slots: productFileSlots,
+      isOffline,
+    })) {
+      if (fileIssue.fileKey === PPD_JSON_FILE_KEY) {
+        issues.push(isOffline ? "ppd-jsonOffline" : "ppd-jsonFile");
+      } else {
+        issues.push(fileIssue.code);
       }
     }
 
@@ -3814,6 +3904,12 @@ export function NewSubmissionForm() {
       ...(ppdPayload ? { ppd: ppdPayload } : {}),
       ...(cp4Payload ? { cp4: cp4Payload } : {}),
       ...(linxupPayload ? { linxup: linxupPayload } : {}),
+      productFiles: mergeLegacyPpdIntoProductFiles({
+        productKey: PPD_PRODUCT_KEY,
+        productFiles: flattenUploadedProductFiles(productFileSlots),
+        ppd: ppdPayload,
+        baseFormId: "ppd",
+      }),
       vac4: {
       vehicleType: vac4VehicleType,
       otherVehicleType: vac4OtherVehicleType,
@@ -3963,14 +4059,15 @@ export function NewSubmissionForm() {
   const ensurePpdJsonOnPayload = async (
     payloadForSend: JobCardSubmissionPayload,
   ): Promise<JobCardSubmissionPayload> => {
-    if (!(selectedIncludeEffective(payloadForSend.selectedSections, "PPD") && payloadForSend.ppd)) {
+    // Only the exact shared PPD product uses the deprecated ppd.json* upload bridge.
+    if (!(sharedPpdProductSelected && payloadForSend.ppd)) {
       return payloadForSend;
     }
     if (isOffline) {
       throw new Error("JSON upload requires online connection.");
     }
     if (!ppdJsonLocalFile && !ppdJsonUploadedConfig) {
-      throw new Error("Select a PPD JSON configuration file (.json).");
+      throw new Error("Select a JSON configuration file (.json).");
     }
     const ctx = await resolveSelectedOrDefaultContextIds();
     const { data: projRow, error: projErr } = await supabase
@@ -4041,7 +4138,119 @@ export function NewSubmissionForm() {
         jsonFileName: jsonConfigFile.fileName,
         jsonConfigForm: ppdJsonConfigFormEffective,
       },
+      productFiles: mergeLegacyPpdIntoProductFiles({
+        productKey: PPD_PRODUCT_KEY,
+        productFiles: [
+          ...flattenUploadedProductFiles(productFileSlots).filter(
+            (a) =>
+              !(
+                a.productKey === PPD_PRODUCT_KEY &&
+                a.fileKey === PPD_JSON_FILE_KEY
+              ),
+          ),
+          {
+            fileKey: PPD_JSON_FILE_KEY,
+            productKey: PPD_PRODUCT_KEY,
+            originalFileName: jsonConfigFile.fileName,
+            storageBucket: "customer-site-files",
+            storagePath: jsonConfigFile.storagePath,
+            mimeType: "application/json",
+            sizeBytes: 0,
+            uploadedAt: jsonConfigFile.uploadedAt,
+            displayLabel: "PPD JSON configuration",
+            baseFormId: "ppd",
+            downloadUrl: jsonConfigFile.publicUrl,
+            includeInReview: true,
+            includeInEmail: true,
+            make: jsonConfigFile.make,
+            model: jsonConfigFile.model,
+            unitNumber: jsonConfigFile.unitNumber,
+            notes: jsonConfigFile.notes,
+            companyId: jsonConfigFile.companyId,
+            projectId: jsonConfigFile.projectId,
+            customerId: jsonConfigFile.customerId,
+          },
+        ],
+        ppd: { jsonConfigFile },
+        baseFormId: "ppd",
+      }),
     };
+  };
+
+  const ensureProductFilesOnPayload = async (
+    payloadForSend: JobCardSubmissionPayload,
+  ): Promise<JobCardSubmissionPayload> => {
+    let next = await ensurePpdJsonOnPayload(payloadForSend);
+    if (isOffline) return next;
+
+    const ctx = await resolveSelectedOrDefaultContextIds();
+    const { data: projRow, error: projErr } = await supabase
+      .from("projects")
+      .select("customer_id")
+      .eq("id", ctx.projectId)
+      .maybeSingle<{ customer_id: string | null }>();
+    const customerId = !projErr && projRow ? projRow.customer_id?.trim() || null : null;
+    const nj = normalizeUppercaseCoreJob(coreJob);
+    const make = nj.equipmentMake.trim();
+    const model = nj.equipmentModel.trim();
+    const unitNum = nj.unitNumber.trim();
+    const { data: userData } = await supabase.auth.getUser();
+
+    const nextSlots = { ...productFileSlots };
+    for (const product of selectedProductsWithFiles) {
+      for (const def of product.productFileDefinitions) {
+        if (!def.active) continue;
+        if (def.key === PPD_JSON_FILE_KEY && product.productKey === PPD_PRODUCT_KEY) {
+          continue; // Shared PPD JSON handled by ensurePpdJsonOnPayload mirror bridge
+        }
+        const id = productFileSlotId({ productKey: product.productKey, fileKey: def.key });
+        const slot = nextSlots[id];
+        if (!slot?.localFiles.length) continue;
+        const uploadedList = [...(slot.uploaded || [])];
+        for (const file of slot.localFiles) {
+          const uploaded = await uploadProductFile({
+            file,
+            definition: def,
+            productKey: product.productKey,
+            baseFormId: product.baseFormId,
+            companyId: ctx.companyId,
+            projectId: ctx.projectId,
+            customerId,
+            unitNumber: unitNum || "unit",
+            make,
+            model,
+            notes: "",
+            uploadedByUserId: userData.user?.id ?? null,
+          });
+          await insertProductFileSiteRowTyped({
+            file: uploaded,
+            submissionId: next.submissionId,
+          });
+          uploadedList.push(uploaded);
+        }
+        nextSlots[id] = {
+          ...slot,
+          localFiles: [],
+          uploaded: def.multiple ? uploadedList : uploadedList.slice(-1),
+        };
+      }
+    }
+    setProductFileSlots(nextSlots);
+
+    const files = mergeLegacyPpdIntoProductFiles({
+      productKey: PPD_PRODUCT_KEY,
+      productFiles: flattenUploadedProductFiles(nextSlots),
+      ppd: next.ppd,
+      baseFormId: "ppd",
+    });
+    next = {
+      ...next,
+      productFiles: files,
+      ...(next.ppd
+        ? { ppd: syncPpdPayloadWithProductFiles({ ppd: next.ppd, productKey: PPD_PRODUCT_KEY, files }) }
+        : {}),
+    };
+    return next;
   };
 
   const handleFinalSubmit = async () => {
@@ -4056,7 +4265,7 @@ export function NewSubmissionForm() {
     setSubmitPersistStatus("saving");
     try {
       let payload = await buildSubmissionPayload();
-      payload = await ensurePpdJsonOnPayload(payload);
+      payload = await ensureProductFilesOnPayload(payload);
       console.log("[Job card submission]", payload);
       setPendingEmailPayload(payload);
       await persistSubmittedJobCard(payload);
@@ -4207,6 +4416,30 @@ export function NewSubmissionForm() {
       } catch {
         // ignore
       }
+      {
+        const storedFiles = draft as {
+          productFiles?: unknown;
+          /** Uncommitted predecessor key; read only for compatibility. */
+          productArtifacts?: unknown;
+        };
+        const productFiles = readUploadedProductFiles(
+          storedFiles.productFiles ?? storedFiles.productArtifacts,
+        );
+        setProductFileSlots(
+          hydrateAllProductFileSlotsFromPayload({
+            productFiles,
+            ppd:
+              p.jsonConfigFile && typeof p.jsonConfigFile === "object"
+                ? {
+                    jsonConfigFile: p.jsonConfigFile as JobCardPpdJsonConfigFile,
+                    jsonFileName: draftString(p.jsonFileName),
+                  }
+                : null,
+            mirrorPpdProductKey: PPD_PRODUCT_KEY,
+            baseFormId: "ppd",
+          }),
+        );
+      }
       setPpdRelaysUsedForSpeedControl(draftString(p.relaysUsedForSpeedControl));
       setPpdRedWireDescription(draftString(p.redWireDescription));
       setPpdBlackWireDescription(draftString(p.blackWireDescription));
@@ -4228,6 +4461,7 @@ export function NewSubmissionForm() {
       setPpdJsonFileName("");
       setPpdJsonUploadedConfig(null);
       setPpdJsonLocalFile(null);
+      setProductFileSlots({});
       setPpdRelaysUsedForSpeedControl("");
       setPpdRedWireDescription("");
       setPpdBlackWireDescription("");
@@ -4502,6 +4736,21 @@ export function NewSubmissionForm() {
                 setPpdJsonLocalFile(restoredFile);
                 setPpdJsonFileName(localJson.name || "config.json");
                 setPpdJsonUploadedConfig(null);
+                const productKey =
+                  String(draft.data?.hardwareSelection?.primary || "").trim() || "PPD";
+                const slotId = productFileSlotId({
+                  productKey,
+                  fileKey: PPD_JSON_FILE_KEY,
+                });
+                setProductFileSlots((prev) => ({
+                  ...prev,
+                  [slotId]: {
+                    fileKey: PPD_JSON_FILE_KEY,
+                    productKey,
+                    localFiles: [restoredFile],
+                    uploaded: [],
+                  },
+                }));
               }
               setDraftNoticeMessage("Offline draft restored (text fields). Re-upload photos before submitting.");
             }, 0);
@@ -4987,6 +5236,14 @@ export function NewSubmissionForm() {
       },
       ...(cp4DraftPayload ? { cp4: cp4DraftPayload } : {}),
       photoUploads: photoSnapshot.photoUploads,
+      productFiles: mergeLegacyPpdIntoProductFiles({
+        productKey: PPD_PRODUCT_KEY,
+        productFiles: flattenUploadedProductFiles(productFileSlots),
+        ppd: {
+          jsonConfigFile: ppdJsonUploadedConfig || undefined,
+        },
+        baseFormId: "ppd",
+      }),
       photoSummary: {
         vac4PhotoFileNames: vacPhotoFileNames,
         vac4PhotoUrls: photoSnapshot.vacPhotoUrls,
@@ -5151,6 +5408,7 @@ export function NewSubmissionForm() {
         throw new Error(existingErr.message || "Failed to load existing draft for photo merge.");
       }
       const cloudUploads = extractPhotoUploadsFromPayload(existingRow?.payload || null);
+      const cloudProductFiles = extractProductFilesFromPayload(existingRow?.payload || null);
 
       const photoSnapshot = getPhotoPersistenceSnapshot();
       const memoryUploads = photoSnapshot.photoUploads || [];
@@ -5195,7 +5453,42 @@ export function NewSubmissionForm() {
         mergeResult.merged,
       ) as StoredJobCardDraft["data"];
 
-      if (selectedIncludeEffective(selectedSections, "PPD") && draftDataForSave.ppd) {
+      const memoryProductFiles = mergeLegacyPpdIntoProductFiles({
+        productKey: PPD_PRODUCT_KEY,
+        productFiles: flattenUploadedProductFiles(productFileSlots),
+        ppd: { jsonConfigFile: ppdJsonUploadedConfig || undefined },
+        baseFormId: "ppd",
+      });
+      const productFileMerge = mergeDurableProductFiles({
+        cloudFiles: cloudProductFiles,
+        memoryFiles: memoryProductFiles,
+        allowClear:
+          flattenUploadedProductFiles(productFileSlots).length === 0 &&
+          !ppdJsonLocalFile &&
+          !ppdJsonUploadedConfig &&
+          !ppdJsonFileName.trim(),
+      });
+      draftDataForSave = {
+        ...draftDataForSave,
+        productFiles: productFileMerge.merged,
+      };
+      if (productFileMerge.thinPayloadProtected && productFileMerge.merged[0]) {
+        const kept = productFileMerge.merged.find(
+          (f) => f.fileKey === PPD_JSON_FILE_KEY && f.productKey === PPD_PRODUCT_KEY,
+        );
+        if (kept && draftDataForSave.ppd) {
+          draftDataForSave = {
+            ...draftDataForSave,
+            ppd: {
+              ...draftDataForSave.ppd,
+              jsonFileName: kept.originalFileName,
+              jsonConfigFile: ppdJsonConfigFromUploadedProductFile(kept),
+            },
+          };
+        }
+      }
+
+      if (sharedPpdProductSelected && draftDataForSave.ppd) {
         const { data: projRow, error: projErr } = await supabase
           .from("projects")
           .select("customer_id")
@@ -5232,14 +5525,66 @@ export function NewSubmissionForm() {
           setPpdJsonUploadedConfig(uploadedConfig);
           setPpdJsonFileName(ppdJsonLocalFile.name);
           setPpdJsonLocalFile(null);
-          draftDataForSave = {
-            ...draftDataForSave,
-            ppd: {
-              ...draftDataForSave.ppd,
-              jsonFileName: ppdJsonLocalFile.name,
-              jsonConfigFile: uploadedConfig,
-            },
-          };
+          {
+            const slotId = productFileSlotId({
+              productKey: PPD_PRODUCT_KEY,
+              fileKey: PPD_JSON_FILE_KEY,
+            });
+            const uploadedProductFile = {
+              fileKey: PPD_JSON_FILE_KEY,
+              productKey: PPD_PRODUCT_KEY,
+              originalFileName: uploadedConfig.fileName,
+              storageBucket: "customer-site-files",
+              storagePath: uploadedConfig.storagePath,
+              mimeType: "application/json",
+              sizeBytes: 0,
+              uploadedAt: uploadedConfig.uploadedAt,
+              displayLabel: "PPD JSON configuration",
+              baseFormId: "ppd",
+              downloadUrl: uploadedConfig.publicUrl,
+              includeInReview: true,
+              includeInEmail: true,
+              make: uploadedConfig.make,
+              model: uploadedConfig.model,
+              unitNumber: uploadedConfig.unitNumber,
+              notes: uploadedConfig.notes,
+              companyId: uploadedConfig.companyId,
+              projectId: uploadedConfig.projectId,
+              customerId: uploadedConfig.customerId,
+            } satisfies UploadedProductFile;
+            setProductFileSlots((prev) => ({
+              ...prev,
+              [slotId]: {
+                fileKey: PPD_JSON_FILE_KEY,
+                productKey: PPD_PRODUCT_KEY,
+                localFiles: [],
+                uploaded: [uploadedProductFile],
+              },
+            }));
+            draftDataForSave = {
+              ...draftDataForSave,
+              ppd: {
+                ...draftDataForSave.ppd,
+                jsonFileName: ppdJsonLocalFile.name,
+                jsonConfigFile: uploadedConfig,
+              },
+              productFiles: mergeLegacyPpdIntoProductFiles({
+                productKey: PPD_PRODUCT_KEY,
+                productFiles: [
+                  ...flattenUploadedProductFiles(productFileSlots).filter(
+                    (a) =>
+                      !(
+                        a.productKey === PPD_PRODUCT_KEY &&
+                        a.fileKey === PPD_JSON_FILE_KEY
+                      ),
+                  ),
+                  uploadedProductFile,
+                ],
+                ppd: { jsonConfigFile: uploadedConfig },
+                baseFormId: "ppd",
+              }),
+            };
+          }
         } else if (ppdJsonUploadedConfig) {
           draftDataForSave = {
             ...draftDataForSave,
@@ -5547,7 +5892,9 @@ export function NewSubmissionForm() {
               ? "Select a .json configuration file."
               : key === "ppd-jsonOffline"
                 ? "Connect to the internet to upload the PPD JSON file."
-                : "Enter a value or make a selection to continue."}
+                : key.startsWith("product-file-")
+                  ? "Upload the required installation file for this product."
+                  : "Enter a value or make a selection to continue."}
       </p>
     ) : null;
 
@@ -8739,96 +9086,54 @@ export function NewSubmissionForm() {
                   </div>
 
                   <div className="space-y-6">
-                    <div className="space-y-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-800 dark:bg-emerald-950/30 sm:p-5">
-                      <p className="text-base font-semibold text-gray-900 dark:text-gray-100">
-                        PPD JSON configuration
-                      </p>
-                      <p className="text-sm text-gray-600 dark:text-gray-400">
-                        Upload the PPD JSON configuration file for this unit.
-                      </p>
-
-                      {isOffline ? (
-                        <p
-                          id="field-ppd-jsonOffline"
-                          className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
-                          role="status"
-                        >
-                          Cloud upload requires an online connection. You can still choose a .json file now — it will be
-                          saved with this device draft.
-                          {requiredHint("ppd-jsonOffline")}
-                        </p>
-                      ) : null}
-
-                      {ppdProjectCustomerId === null && !isOffline ? (
-                        <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
-                          No customer/site linked on this project — file will be stored under customer-sites/unassigned.
-                        </p>
-                      ) : null}
-
-                      <div id="field-ppd-jsonFile">
-                        <label className={fieldLabelClass("ppd-jsonFile")}>
-                          JSON file (.json)
-                          <RequiredMark />
-                        </label>
-                        <input
-                          ref={ppdJsonFileInputRef}
-                          type="file"
-                          accept=".json,application/json"
-                          className="hidden"
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            const lower = f.name.toLowerCase();
-                            if (!lower.endsWith(".json")) {
-                              setDraftNoticeMessage("Only .json files are allowed.");
-                              e.target.value = "";
-                              return;
-                            }
-                            setPpdJsonLocalFile(f);
-                            setPpdJsonFileName(f.name);
-                            setPpdJsonUploadedConfig(null);
-                            clearFieldHighlight("ppd-jsonFile");
-                            clearFieldHighlight("ppd-jsonOffline");
-                          }}
-                        />
-                        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                          <button
-                            type="button"
-                            className={btnSecondaryClassName}
-                            onClick={() => ppdJsonFileInputRef.current?.click()}
-                          >
-                            Choose JSON file
-                          </button>
-                          <p className="text-sm text-gray-800 dark:text-gray-200">
-                            {ppdJsonLocalFile ? (
-                              <span className="font-semibold">{ppdJsonLocalFile.name}</span>
-                            ) : ppdJsonUploadedConfig ? (
-                              <span className="font-semibold">
-                                JSON file already uploaded: {ppdJsonUploadedConfig.fileName || ppdJsonFileName}
-                              </span>
-                            ) : (
-                              <span className="text-gray-500 dark:text-gray-400">No file selected</span>
-                            )}
-                          </p>
-                          {ppdJsonLocalFile || ppdJsonUploadedConfig ? (
-                            <button
-                              type="button"
-                              className="text-sm font-semibold text-red-700 underline dark:text-red-400"
-                              onClick={() => {
-                                setPpdJsonLocalFile(null);
-                                setPpdJsonFileName("");
-                                setPpdJsonUploadedConfig(null);
-                                if (ppdJsonFileInputRef.current) ppdJsonFileInputRef.current.value = "";
+                    {ppdProductsWithFiles.map((product) =>
+                      product.productFileDefinitions.map((def) => {
+                        const slotId = productFileSlotId({
+                          productKey: product.productKey,
+                          fileKey: def.key,
+                        });
+                        const isSharedPpdJson = def.key === PPD_JSON_FILE_KEY;
+                        const highlightKey = isSharedPpdJson
+                          ? isOffline
+                            ? "ppd-jsonOffline"
+                            : "ppd-jsonFile"
+                          : `product-file-${product.productKey}-${def.key}`;
+                        return (
+                          <ProductFileUpload
+                            key={slotId}
+                            productKey={product.productKey}
+                            productLabel={product.displayLabel}
+                            definition={def}
+                            slot={productFileSlots[slotId]}
+                            isOffline={isOffline}
+                            highlight={hl(highlightKey)}
+                            fieldDomId={isSharedPpdJson ? "field-ppd-jsonFile" : undefined}
+                            requiredHint={requiredHint(highlightKey)}
+                            onChange={applyProductFileSlotChange}
+                            onValidationError={(message) => setDraftNoticeMessage(message)}
+                            onClearHighlight={() => {
+                              clearFieldHighlight(highlightKey);
+                              if (isSharedPpdJson) {
                                 clearFieldHighlight("ppd-jsonFile");
-                              }}
-                            >
-                              Remove file
-                            </button>
-                          ) : null}
-                        </div>
-                        {requiredHint("ppd-jsonFile")}
-                      </div>
-                    </div>
+                                clearFieldHighlight("ppd-jsonOffline");
+                              }
+                            }}
+                            secondaryButtonClassName={btnSecondaryClassName}
+                            fieldLabelClassName={fieldLabelClass(highlightKey)}
+                          />
+                        );
+                      }),
+                    )}
+
+                    {ppdProjectCustomerId === null &&
+                    !isOffline &&
+                    ppdProductsWithFiles.some((p) =>
+                      p.productFileDefinitions.some((d) => d.key === PPD_JSON_FILE_KEY),
+                    ) ? (
+                      <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                        No customer/site linked on this project — file will be stored under customer-sites/unassigned.
+                      </p>
+                    ) : null}
 
                     <div className="grid gap-5 sm:grid-cols-2">
                       <div id="field-ppd-hubSerial" className="sm:col-span-2">
@@ -9544,6 +9849,40 @@ export function NewSubmissionForm() {
               ) : null;
             })}
 
+        {nonPpdProductsWithFiles.length > 0 ? (
+          <section className={cardClassName}>
+            <FormSectionHeader title="Product Files" tone="green" />
+            <div className="space-y-6">
+              {nonPpdProductsWithFiles.map((product) =>
+                product.productFileDefinitions.map((def) => {
+                  const slotId = productFileSlotId({
+                    productKey: product.productKey,
+                    fileKey: def.key,
+                  });
+                  const highlightKey = `product-file-${product.productKey}-${def.key}`;
+                  return (
+                    <ProductFileUpload
+                      key={slotId}
+                      productKey={product.productKey}
+                      productLabel={product.displayLabel}
+                      definition={def}
+                      slot={productFileSlots[slotId]}
+                      isOffline={isOffline}
+                      highlight={hl(highlightKey)}
+                      requiredHint={requiredHint(highlightKey)}
+                      onChange={applyProductFileSlotChange}
+                      onValidationError={(message) => setDraftNoticeMessage(message)}
+                      onClearHighlight={() => clearFieldHighlight(highlightKey)}
+                      secondaryButtonClassName={btnSecondaryClassName}
+                      fieldLabelClassName={fieldLabelClass(highlightKey)}
+                    />
+                  );
+                }),
+              )}
+            </div>
+          </section>
+        ) : null}
+
         <div className="hidden md:flex md:flex-row md:flex-wrap md:justify-end md:gap-3 md:pt-2">
           <button type="button" className={btnSecondaryClassName} onClick={(event) => void handleSaveToDevice(event)}>
             <IconFloppy className="h-5 w-5" />
@@ -9947,6 +10286,33 @@ export function NewSubmissionForm() {
                     label="PPD JSON file"
                     value={ppdJsonLocalFile?.name || ppdJsonFileName || "—"}
                   />
+                  {ppdProductsWithFiles.flatMap((product) =>
+                    product.productFileDefinitions
+                      .filter(
+                        (d) =>
+                          d.includeInReview &&
+                          d.active &&
+                          d.key !== PPD_JSON_FILE_KEY,
+                      )
+                      .map((def) => {
+                        const slotId = productFileSlotId({
+                          productKey: product.productKey,
+                          fileKey: def.key,
+                        });
+                        const slot = productFileSlots[slotId];
+                        const names = [
+                          ...(slot?.localFiles.map((f) => f.name) ?? []),
+                          ...(slot?.uploaded.map((u) => u.originalFileName) ?? []),
+                        ];
+                        return (
+                          <SummaryRow
+                            key={slotId}
+                            label={`${def.label} (${product.displayLabel})`}
+                            value={names.length ? names.join(", ") : "—"}
+                          />
+                        );
+                      }),
+                  )}
                   <SummaryRow label="Modifications or custom brackets needed?" value={ppdCustomBracketsNeeded} />
                   {ppdCustomBracketsNeeded === "Yes" ? (
                     <SummaryRow label="Notes (modifications / brackets)" value={ppdCustomBracketNotes} />

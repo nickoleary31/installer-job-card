@@ -6,6 +6,7 @@ import { getBaseFormDefinition } from "./base-forms.ts";
 import { pairingFieldsFromConfiguration } from "./configuration.ts";
 import { selectedProductsViolateSingleInstanceBase } from "./pairing-guardrails.ts";
 import { resolveCompanyProductsFromRegistry } from "./registry-adapter.ts";
+import { resolveProductFileDefinitionsForProduct } from "../product-files/definitions.ts";
 import type {
   CompanyFormProductRow,
   CompanyProductResolveResult,
@@ -33,6 +34,13 @@ export function normalizeDatabaseProductRow(row: CompanyFormProductRow): Normali
     displayOrder: Number.isFinite(row.display_order) ? row.display_order : 100,
     allowedAdditionalProductKeys: config.allowedAdditionalProductKeys ?? null,
     maxAdditionalCount: config.maxAdditionalCount ?? null,
+    productFileDefinitions: resolveProductFileDefinitionsForProduct({
+      baseFormId: row.base_form_id,
+      productKey: row.product_key,
+      sectionKey: row.section_key || row.product_key,
+      // Do not pass base_form_id as formId — aliases reuse "ppd" with distinct product keys.
+      configuration: (row.configuration || {}) as Record<string, unknown>,
+    }),
     source: "database",
     configWarning: warning,
     databaseId: row.id,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { buildCidPhotoAttachments } from "@/lib/email-cid-attachments";
+import { buildProductFileEmailAttachments } from "@/lib/email-product-file-attachments";
 import { buildEmailPhotoSections } from "@/lib/email-photo-sections";
 import { buildOutboundEmailBodies } from "@/lib/email-view-model";
 import {
@@ -14,6 +15,7 @@ import {
   type JobCardSubmissionPayload,
 } from "@/lib/job-card-submission";
 import type { JobCardLinxupPayload } from "@/lib/linxup";
+import { readUploadedProductFiles } from "@/lib/product-files";
 
 const DEFAULT_RESEND_FROM = "onboarding@resend.dev";
 
@@ -187,6 +189,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   const ppd = p.ppd !== undefined ? normalizePpdPayload(p.ppd) : undefined;
   const cp4 = p.cp4 !== undefined ? normalizeCp4Payload(p.cp4) : undefined;
   const linxup = p.linxup !== undefined ? normalizeLinxupPayload(p.linxup) : undefined;
+  const productFiles = readUploadedProductFiles(p.productFiles ?? p.productArtifacts);
   const projectRecipientEmails = Array.isArray(p.projectRecipientEmails)
     ? p.projectRecipientEmails.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean)
     : [];
@@ -224,6 +227,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
     ...(ppd ? { ppd } : {}),
     ...(cp4 ? { cp4 } : {}),
     ...(linxup ? { linxup } : {}),
+    ...(productFiles && productFiles.length > 0 ? { productFiles } : {}),
     vac4: {
       vehicleType: stringOrEmpty(vac.vehicleType),
       otherVehicleType: stringOrEmpty(vac.otherVehicleType),
@@ -359,6 +363,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Email HTML missing CID photo references. Send aborted." }, { status: 500 });
   }
 
+  // Attach Product Files (PPD JSON, etc.) so recipients are not tied to expired signed URLs.
+  let productFileAttachments: Awaited<ReturnType<typeof buildProductFileEmailAttachments>> = {
+    attachments: [],
+    attached: [],
+    skipped: [],
+  };
+  try {
+    productFileAttachments = await buildProductFileEmailAttachments(payload);
+    if (productFileAttachments.skipped.length > 0) {
+      console.warn("[send-email] product file attachment skips", productFileAttachments.skipped);
+    }
+  } catch (err: unknown) {
+    console.warn("[send-email] product file attachments unavailable", err);
+  }
+
   const resend = new Resend(apiKey);
   let resendId: string | null = null;
 
@@ -369,12 +388,19 @@ export async function POST(req: Request) {
       subject: outbound.subject,
       text: outbound.textBody,
       html: outbound.htmlBody,
-      attachments: photoAttachments.attachments.map((a) => ({
-        content: a.content,
-        filename: a.filename,
-        contentId: a.contentId,
-        contentType: a.contentType,
-      })),
+      attachments: [
+        ...photoAttachments.attachments.map((a) => ({
+          content: a.content,
+          filename: a.filename,
+          contentId: a.contentId,
+          contentType: a.contentType,
+        })),
+        ...productFileAttachments.attachments.map((a) => ({
+          content: a.content,
+          filename: a.filename,
+          contentType: a.contentType,
+        })),
+      ],
     });
 
     if (error) {

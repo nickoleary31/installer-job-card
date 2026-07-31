@@ -17,6 +17,8 @@ export type ProductConfiguration = {
   allowedAdditionalProductKeys?: string[];
   /** Optional cap on how many additional products may be selected. */
   maxAdditionalCount?: number;
+  /** Installer file requirements (config/calibration/etc.). */
+  productFileDefinitions?: import("../product-files/types.ts").ProductFileDefinition[];
   /** Forward-compatible extension bag — unknown keys survive read/update. */
   [key: string]: unknown;
 };
@@ -56,6 +58,8 @@ export type NormalizedProductDefinition = {
   /** null = any other allowAdditional peer (registry Matrix-style). */
   allowedAdditionalProductKeys: string[] | null;
   maxAdditionalCount: number | null;
+  /** Installer-uploaded config/calibration/diagnostic files for this product. */
+  productFileDefinitions: import("../product-files/types.ts").ProductFileDefinition[];
   source: ProductConfigSource;
   /** Set when baseFormId is not a known registry implementation. */
   configWarning?: string;

@@ -83,7 +83,7 @@ function stripStorageUrls(text: string): string {
 
 /** In-app Email Preview. */
 export function buildEmailViewModel(p: JobCardSubmissionPayload): EmailViewModel {
-  const layoutDocument = buildEmailLayoutDocument(p);
+  const layoutDocument = buildEmailLayoutDocument(p, { includeProductFileLinks: true });
   const photoSections = preparePhotoSections(p);
   const photoGalleryUrl = `${resolvePublicAppUrl()}/photos/${encodeURIComponent(p.submissionId)}`;
   const textBody = renderEmailLayoutPlainWithPhotos(layoutDocument, renderPhotoSectionsText(photoSections));
@@ -112,7 +112,8 @@ export function buildOutboundEmailBodies(
     photoSections?: EmailPhotoSection[];
   },
 ): { subject: string; textBody: string; htmlBody: string; photoSections: EmailPhotoSection[]; layoutDocument: ReturnType<typeof buildEmailLayoutDocument> } {
-  const layoutDocument = buildEmailLayoutDocument(p);
+  // Omit Product File storage links in outbound body; files are attached when practical.
+  const layoutDocument = buildEmailLayoutDocument(p, { includeProductFileLinks: false });
   const photoSections = options.photoSections ?? preparePhotoSections(p);
   const failureBlock =
     options.attachmentFailures && options.attachmentFailures.length > 0

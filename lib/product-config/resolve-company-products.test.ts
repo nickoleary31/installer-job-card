@@ -366,6 +366,7 @@ describe("single-instance pairing guardrails", () => {
         displayOrder: 1,
         allowedAdditionalProductKeys: ["dev_b"],
         maxAdditionalCount: 1,
+        productFileDefinitions: [],
         source: "database",
       },
       {
@@ -382,6 +383,7 @@ describe("single-instance pairing guardrails", () => {
         displayOrder: 2,
         allowedAdditionalProductKeys: null,
         maxAdditionalCount: null,
+        productFileDefinitions: [],
         source: "database",
       },
     ];
@@ -434,6 +436,24 @@ describe("configuration forward compatibility", () => {
     assert.deepEqual(merged.futureOcrMap, { hub: "ppdHubSerial" });
     assert.equal(merged.installGuideId, "guide-9");
   });
+
+  it("normalizes productFileDefinitions while preserving unknown keys", () => {
+    const parsed = parseProductConfiguration({
+      productFileDefinitions: [
+        {
+          key: "calibration_report_pdf",
+          label: "Calibration PDF",
+          category: "calibration",
+          required: true,
+          acceptedExtensions: ["pdf"],
+        },
+      ],
+      futureSectionSchema: { v: 2 },
+    });
+    assert.equal(parsed.productFileDefinitions?.[0]?.key, "calibration_report_pdf");
+    assert.equal(parsed.productFileDefinitions?.[0]?.acceptedExtensions?.[0], ".pdf");
+    assert.deepEqual(parsed.futureSectionSchema, { v: 2 });
+  });
 });
 
 describe("explicit product display for email/review", () => {
@@ -454,6 +474,7 @@ describe("explicit product display for email/review", () => {
         displayOrder: 1,
         allowedAdditionalProductKeys: null,
         maxAdditionalCount: null,
+        productFileDefinitions: [],
         source: "database",
       },
     ]);

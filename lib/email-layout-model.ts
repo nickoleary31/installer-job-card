@@ -7,6 +7,7 @@ import {
   formatSectionKeysAsLabels,
   getFormDefinitionById,
   getFormLabelBySectionKey,
+  selectedSectionsIncludeEffective,
 } from "./form-registry";
 import { isLinxUpSectionKey } from "./linxup";
 import {
@@ -14,6 +15,16 @@ import {
   getProductLabelWithLookup,
 } from "./product-config/product-lookup";
 import type { JobCardSubmissionPayload } from "./job-card-submission";
+import { PPD_JSON_FILE_KEY } from "./product-files/types";
+
+export type EmailLayoutOptions = {
+  /**
+   * When true (Email Preview), include usable Product File download links.
+   * Outbound email should omit storage URLs (attachments or omit links) so
+   * stripStorageUrls / send guards remain valid.
+   */
+  includeProductFileLinks?: boolean;
+};
 
 export type EmailLayoutField = {
   label: string;
@@ -192,7 +203,11 @@ function buildLinxUpDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
   };
 }
 
-function buildLegacyDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
+function buildLegacyDocument(
+  p: JobCardSubmissionPayload,
+  options: EmailLayoutOptions = {},
+): EmailLayoutDocument {
+  const includeLinks = options.includeProductFileLinks === true;
   const c = p.coreJobInfo;
   const v = p.vac4;
   const h = p.hardwareSelection;
@@ -270,6 +285,66 @@ function buildLegacyDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
     });
   }
 
+  const includePpd = selectedSectionsIncludeEffective(p.selectedSections ?? [], "PPD");
+  if (includePpd && p.ppd) {
+    const ppdFields: EmailLayoutField[] = [
+      { label: "Hub serial", value: dash(p.ppd.hubSerial) },
+      { label: "Client approval", value: dash(p.ppd.clientApproval) },
+    ];
+    const ppdJsonName =
+      p.ppd.jsonConfigFile?.fileName?.trim() ||
+      p.ppd.jsonFileName?.trim() ||
+      (p.productFiles ?? []).find((f) => f.fileKey === PPD_JSON_FILE_KEY)?.originalFileName?.trim() ||
+      "";
+    if (ppdJsonName) {
+      ppdFields.push({ label: "JSON Configuration File", value: ppdJsonName });
+    }
+    const ppdLink =
+      p.ppd.jsonConfigFile?.publicUrl?.trim() ||
+      (p.productFiles ?? []).find((f) => f.fileKey === PPD_JSON_FILE_KEY)?.downloadUrl?.trim() ||
+      "";
+    if (includeLinks && ppdLink) {
+      ppdFields.push({ label: "JSON Configuration File link", value: ppdLink });
+    } else if (ppdJsonName && !includeLinks) {
+      ppdFields.push({
+        label: "JSON Configuration File delivery",
+        value: "Attached to this email when available",
+      });
+    }
+    sections.push({
+      id: "ppd",
+      title: "PPD Install",
+      fields: ppdFields,
+    });
+  }
+
+  const extraProductFiles = (p.productFiles ?? []).filter(
+    (f) => f.fileKey !== PPD_JSON_FILE_KEY && f.includeInEmail !== false && f.originalFileName,
+  );
+  if (extraProductFiles.length > 0) {
+    const fields: EmailLayoutField[] = [];
+    for (const file of extraProductFiles) {
+      const productLabel =
+        getProductLabelWithLookup(file.productKey, p.productDisplay) || file.productKey;
+      fields.push({
+        label: `${file.displayLabel || "Product File"} (${productLabel})`,
+        value: file.originalFileName,
+      });
+      if (includeLinks && file.downloadUrl?.trim()) {
+        fields.push({
+          label: `${file.displayLabel || "Product File"} link`,
+          value: file.downloadUrl.trim(),
+        });
+      } else if (!includeLinks) {
+        fields.push({
+          label: `${file.displayLabel || "Product File"} delivery`,
+          value: "Attached to this email when available",
+        });
+      }
+    }
+    sections.push({ id: "product-files", title: "Product Files", fields });
+  }
+
   return {
     submissionId: p.submissionId,
     formId: p.formId,
@@ -285,9 +360,12 @@ function buildLegacyDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
   };
 }
 
-export function buildEmailLayoutDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
+export function buildEmailLayoutDocument(
+  p: JobCardSubmissionPayload,
+  options: EmailLayoutOptions = {},
+): EmailLayoutDocument {
   if (detectLinxUp(p)) return buildLinxUpDocument(p);
-  return buildLegacyDocument(p);
+  return buildLegacyDocument(p, options);
 }
 
 export function renderLayoutDocumentPlainText(doc: EmailLayoutDocument): string {

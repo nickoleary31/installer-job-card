@@ -9,6 +9,7 @@ import {
   getFormsForCompanyName,
   type FormDefinition,
 } from "../form-registry.ts";
+import { resolveProductFileDefinitionsForProduct } from "../product-files/definitions.ts";
 import type { NormalizedProductDefinition } from "./types.ts";
 
 function toNormalizedFromRegistryForm(
@@ -44,10 +45,13 @@ function toNormalizedFromRegistryForm(
     }
   }
 
+  const baseFormId = form.baseFormId || form.id;
+  // Exact shared PPD form (id "ppd" / productKey "PPD") gets the shared JSON default via
+  // resolveProductFileDefinitionsForProduct — never via baseFormId inheritance for aliases.
   return {
     productKey: form.sectionKey,
     displayLabel: form.label,
-    baseFormId: form.baseFormId || form.id,
+    baseFormId,
     sectionKey: form.sectionKey,
     submissionType: form.submissionType,
     draftKey: form.draftKey,
@@ -58,6 +62,12 @@ function toNormalizedFromRegistryForm(
     displayOrder: form.displayOrder,
     allowedAdditionalProductKeys,
     maxAdditionalCount,
+    productFileDefinitions: resolveProductFileDefinitionsForProduct({
+      baseFormId,
+      productKey: form.sectionKey,
+      sectionKey: form.sectionKey,
+      formId: form.id,
+    }),
     source: "registry",
   };
 }

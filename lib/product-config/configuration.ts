@@ -3,6 +3,7 @@
  */
 
 import type { ProductConfiguration } from "./types.ts";
+import { parseProductFileDefinitions } from "../product-files/definitions.ts";
 
 export type ProductConfigurationRecord = ProductConfiguration & Record<string, unknown>;
 
@@ -40,6 +41,18 @@ export function parseProductConfiguration(raw: unknown): ProductConfigurationRec
         delete preserved.maxAdditionalCount;
       }
     }
+  }
+
+  if ("productFileDefinitions" in preserved) {
+    if (Array.isArray(preserved.productFileDefinitions)) {
+      preserved.productFileDefinitions = parseProductFileDefinitions(preserved.productFileDefinitions);
+    } else if (preserved.productFileDefinitions == null) {
+      delete preserved.productFileDefinitions;
+    }
+  } else if (Array.isArray(preserved.artifactDefinitions)) {
+    // Backward-compatible read of the uncommitted predecessor key. Keep the old
+    // key in the extension bag so unknown configuration continues to round-trip.
+    preserved.productFileDefinitions = parseProductFileDefinitions(preserved.artifactDefinitions);
   }
 
   return preserved;
