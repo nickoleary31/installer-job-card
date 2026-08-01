@@ -29,8 +29,12 @@ export type StarterDataSnapshot = {
     globalRole: "admin" | "technician" | null;
     displayName?: string | null;
     email?: string | null;
+    phone?: string | null;
+    jobTitle?: string | null;
     /** Optional for older cached snapshots; treat missing as active. */
     profileIsActive?: boolean;
+    /** Optional for older cached snapshots; treat missing as complete. */
+    onboardingCompleted?: boolean;
     companyIds: string[];
     companyRolesById: Record<string, "admin" | "technician">;
   };

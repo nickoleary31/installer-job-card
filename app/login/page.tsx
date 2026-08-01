@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { resolvePostLoginPath } from "@/lib/auth/onboarding";
+import { loadCurrentAuthUserContext } from "@/lib/auth/userContext";
 import { supabase } from "@/lib/supabase/client";
 
 export default function LoginPage() {
@@ -27,7 +29,9 @@ export default function LoginPage() {
         password,
       });
       if (signInError) throw signInError;
-      router.push("/home");
+
+      const context = await loadCurrentAuthUserContext();
+      router.replace(resolvePostLoginPath(context.onboardingCompleted));
       router.refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to log in";
@@ -89,4 +93,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

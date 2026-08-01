@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { resolveAcceptInviteRedirectTo } from "@/lib/auth/onboarding";
 import {
   asString,
   authorizeCompanyUserManager,
@@ -123,8 +124,10 @@ export async function POST(req: Request) {
   }
 
   if (!targetUserId) {
+    const redirectTo = resolveAcceptInviteRedirectTo(req);
     const { data: invitedData, error: inviteError } = await serviceClient.auth.admin.inviteUserByEmail(email, {
       data: displayName ? { display_name: displayName } : undefined,
+      redirectTo,
     });
     if (inviteError) {
       return NextResponse.json({ error: inviteError.message }, { status: 500 });
@@ -141,11 +144,30 @@ export async function POST(req: Request) {
         display_name: displayName || null,
         global_role: "technician",
         is_active: true,
+        phone: null,
+        job_title: null,
+        onboarding_completed_at: null,
       },
       { onConflict: "id" },
     );
     if (profileInsertError) {
-      return NextResponse.json({ error: profileInsertError.message }, { status: 500 });
+      const missingOnboardingCols = /onboarding_completed_at|job_title|phone/i.test(profileInsertError.message);
+      if (!missingOnboardingCols) {
+        return NextResponse.json({ error: profileInsertError.message }, { status: 500 });
+      }
+      const { error: legacyProfileError } = await serviceClient.from("user_profiles").upsert(
+        {
+          id: targetUserId,
+          email,
+          display_name: displayName || null,
+          global_role: "technician",
+          is_active: true,
+        },
+        { onConflict: "id" },
+      );
+      if (legacyProfileError) {
+        return NextResponse.json({ error: legacyProfileError.message }, { status: 500 });
+      }
     }
   } else if (existingProfile) {
     const { data: existingMembership } = await serviceClient

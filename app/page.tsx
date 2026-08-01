@@ -12,6 +12,7 @@ import {
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { urlLooksLikeInviteAuthCallback } from "@/lib/auth/onboarding";
 import {
   type CoreJobFields,
   type Vac4DescriptionKey,
@@ -10619,6 +10620,11 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
+    // Supabase may rewrite invite redirect_to to Site URL (/). Keep the root
+    // page from bouncing invite sessions into /home -> /login before accept-invite.
+    if (typeof window !== "undefined" && urlLooksLikeInviteAuthCallback(window.location.href)) {
+      return;
+    }
     router.replace("/home");
   }, [router]);
 

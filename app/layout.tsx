@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import AuthStatusBar from "./providers/AuthStatusBar";
 import { AuthUserContextProvider } from "./providers/AuthUserContextProvider";
+import InviteCallbackForwarder from "./providers/InviteCallbackForwarder";
+import OnboardingGate from "./providers/OnboardingGate";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -47,8 +49,9 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <AuthUserContextProvider>
+          <InviteCallbackForwarder />
           <AuthStatusBar />
-          {children}
+          <OnboardingGate>{children}</OnboardingGate>
         </AuthUserContextProvider>
       </body>
     </html>

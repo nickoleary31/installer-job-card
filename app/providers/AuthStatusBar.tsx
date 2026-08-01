@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { ACCEPT_INVITE_PATH } from "@/lib/auth/onboarding";
 import { deleteStarterDataSnapshot } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 import { useAuthUserContext } from "./AuthUserContextProvider";
@@ -66,6 +67,8 @@ export default function AuthStatusBar() {
 
   const signedInIdentity =
     context.displayName?.trim() || context.email?.trim() || context.userId || null;
+  const brandHref =
+    context.userId && !context.onboardingCompleted ? ACCEPT_INVITE_PATH : "/home";
 
   return (
     <div className="border-b border-gray-200 bg-white px-4 py-2 text-xs text-gray-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
@@ -76,7 +79,7 @@ export default function AuthStatusBar() {
       ) : null}
       <div className="mx-auto w-full max-w-6xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <Link href="/home" className="flex min-w-0 items-center gap-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+          <Link href={brandHref} className="flex min-w-0 items-center gap-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <Image src="/icon.png" alt="Installer Sheetz" width={24} height={24} className="h-6 w-6 rounded" />
             <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">Installer Sheetz</p>
           </Link>

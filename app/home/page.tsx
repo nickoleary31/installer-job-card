@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import { urlLooksLikeInviteAuthCallback } from "@/lib/auth/onboarding";
 
 export default function HomeDashboardPage() {
   const router = useRouter();
@@ -12,6 +13,9 @@ export default function HomeDashboardPage() {
 
   useEffect(() => {
     if (authLoading) return;
+    if (typeof window !== "undefined" && urlLooksLikeInviteAuthCallback(window.location.href)) {
+      return;
+    }
     if (!userId) router.replace("/login");
   }, [authLoading, userId, router]);
 
@@ -19,6 +23,14 @@ export default function HomeDashboardPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
         <p className="text-sm text-gray-600 dark:text-slate-400">Checking sign-in…</p>
+      </main>
+    );
+  }
+
+  if (typeof window !== "undefined" && urlLooksLikeInviteAuthCallback(window.location.href)) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <p className="text-sm font-semibold text-gray-800">Verifying invitation…</p>
       </main>
     );
   }
