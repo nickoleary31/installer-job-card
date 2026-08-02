@@ -10,6 +10,8 @@ import {
   selectedSectionsIncludeEffective,
 } from "./form-registry";
 import { isLinxUpSectionKey } from "./linxup";
+import { buildInstalledSystemEmailSections } from "./product-devices/email-sections";
+import { normalizeInstalledProductSystems } from "./product-devices/normalize";
 import {
   formatSectionKeysAsLabelsWithLookup,
   getProductLabelWithLookup,
@@ -145,6 +147,30 @@ function buildLinxUpDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
   const hasVehicleTracker = formId === "linxup_vehicle_tracker" || !!vt;
   const lc = lx?.linxCam;
   const hasLinxCam = formId === "linxup_linxcam" || !!lc;
+
+  const systems = normalizeInstalledProductSystems({
+    installedProductSystems: (p as { installedProductSystems?: import("./product-devices/types").InstalledProductSystem[] })
+      .installedProductSystems,
+    installedDevices: p.installedDevices,
+  });
+  if (systems.length > 0) {
+    for (const section of buildInstalledSystemEmailSections(systems)) {
+      sections.push(section);
+    }
+  } else {
+    const di = lx?.deviceIdentifiers;
+    if (di && (di.activationCode || di.serialNumber || di.imei || di.macAddress)) {
+      const fields: EmailLayoutField[] = [];
+      if (di.activationCode) fields.push({ label: "Activation code", value: di.activationCode });
+      if (di.serialNumber) fields.push({ label: "Serial number", value: di.serialNumber });
+      if (di.imei) fields.push({ label: "IMEI", value: di.imei });
+      if (di.macAddress) fields.push({ label: "MAC address", value: di.macAddress });
+      if (di.installationVariant) {
+        fields.push({ label: "Installation variant", value: di.installationVariant });
+      }
+      sections.push({ id: "device-identifiers", title: "Device identifiers", fields });
+    }
+  }
 
   if (hasAssetTracker) {
     sections.push({

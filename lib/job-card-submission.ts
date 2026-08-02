@@ -158,6 +158,12 @@ export type JobCardSubmissionPayload = {
    * Preferred over deprecated ppd.jsonConfigFile / jsonFileName for new drafts and submissions.
    */
   productFiles?: import("./product-files/types").UploadedProductFile[];
+  /**
+   * Phase 1 Product Devices pilot: vehicle-centric installed product systems.
+   * Prefer installedProductSystems; installedDevices remains for legacy dual-compat.
+   */
+  installedProductSystems?: import("./product-devices/types").InstalledProductSystem[];
+  installedDevices?: import("./product-devices/types").InstalledProductDevice[];
   ppd?: JobCardPpdPayload;
   cp4?: JobCardCp4Payload;
   linxup?: JobCardLinxupPayload;
