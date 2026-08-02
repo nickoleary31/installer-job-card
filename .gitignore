@@ -43,12 +43,23 @@ next-env.d.ts
 # Local draft photo recovery dry-run artifacts (may contain signed URLs)
 recovery-dry-run-output/
 
+<<<<<<< HEAD
 # Tesseract trained data (downloaded by tesseract.js; local OCR prototype only)
+=======
+# Local label-scan prototype fixtures (may contain real device identifiers)
+fixtures/label-scan/
+lib/prototype/label-scan/fixtures/
+
+# Tesseract trained data (downloaded by tesseract.js; do not commit)
+>>>>>>> 59b6db3 (prototype: preserve device label OCR and classification)
 eng.traineddata
 
 # Local verification / UX audit screenshots (generated)
 tmp-product-files-verification/
 tmp-ux-audit-screenshots/
+<<<<<<< HEAD
 
 # Local label-scan fixtures (may contain real device identifiers; OCR branch)
 fixtures/label-scan/
+=======
+>>>>>>> 59b6db3 (prototype: preserve device label OCR and classification)
