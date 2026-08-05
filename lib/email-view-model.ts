@@ -110,10 +110,15 @@ export function buildOutboundEmailBodies(
     /** True failures only — never successful optimization notes. */
     attachmentFailures?: string[];
     photoSections?: EmailPhotoSection[];
+    /** Product file keys actually attached this send — see EmailLayoutOptions. */
+    attachedProductFileKeys?: Set<string>;
   },
 ): { subject: string; textBody: string; htmlBody: string; photoSections: EmailPhotoSection[]; layoutDocument: ReturnType<typeof buildEmailLayoutDocument> } {
   // Omit Product File storage links in outbound body; files are attached when practical.
-  const layoutDocument = buildEmailLayoutDocument(p, { includeProductFileLinks: false });
+  const layoutDocument = buildEmailLayoutDocument(p, {
+    includeProductFileLinks: false,
+    attachedProductFileKeys: options.attachedProductFileKeys,
+  });
   const photoSections = options.photoSections ?? preparePhotoSections(p);
   const failureBlock =
     options.attachmentFailures && options.attachmentFailures.length > 0

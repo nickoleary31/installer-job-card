@@ -3,6 +3,12 @@
  * Never silently routes on weak scores — UI must confirm / override / retake.
  */
 
+import {
+  BLAXTAIR_AHD_KEYWORD_RE,
+  BLAXTAIR_AHD_TOKEN_RE,
+  BLAXTAIR_IPV4_RE,
+  BLAXTAIR_PART_NUMBER_RE,
+} from "./blaxtair-profile.ts";
 import { extractFromBarcodeAndOcr } from "./extract.ts";
 import {
   listPrototypeProfiles,
@@ -74,12 +80,20 @@ function scoreProfile(args: {
             { re: /\bS\/N\b|\bSERIAL\b/, label: "Serial field", weight: 8 },
             // Penalize OBD-specific wording later via negative evidence
           ]
-        : [
-            { re: /\bMAC\b/, label: "MAC field", weight: 28 },
-            { re: /SERIAL\s*NUM/, label: "Serial Num label", weight: 16 },
-            { re: /\bLINXCAM\b|\bLINX\s*CAM\b/, label: "LinxCam token", weight: 20 },
-            { re: /MADE IN VIETNAM/, label: "Made in Vietnam", weight: 6 },
-          ];
+        : args.profile.formId === "blaxtair_ahd_camera"
+          ? [
+              { re: BLAXTAIR_AHD_KEYWORD_RE, label: "AHD Camera keyword", weight: 40 },
+              { re: BLAXTAIR_AHD_TOKEN_RE, label: "AHD token", weight: 15 },
+              { re: /\bP\/N\b|PART\s*NUMBER/, label: "Part Number field", weight: 8 },
+              { re: /\bS\/N\b|\bSERIAL\b/, label: "Serial field", weight: 6 },
+              { re: /\bIP\b|IP\s*ADDRESS/, label: "IP field", weight: 8 },
+            ]
+          : [
+              { re: /\bMAC\b/, label: "MAC field", weight: 28 },
+              { re: /SERIAL\s*NUM/, label: "Serial Num label", weight: 16 },
+              { re: /\bLINXCAM\b|\bLINX\s*CAM\b/, label: "LinxCam token", weight: 20 },
+              { re: /MADE IN VIETNAM/, label: "Made in Vietnam", weight: 6 },
+            ];
 
   for (const hit of keywordHits) {
     if (hit.re.test(upper)) {
@@ -147,6 +161,26 @@ function scoreProfile(args: {
       score -= 25;
       pushEvidence(evidence, "structure", "IMEI present (against LinxCam)", -25);
     }
+  } else if (args.profile.formId === "blaxtair_ahd_camera") {
+    const hasIpValue = BLAXTAIR_IPV4_RE.test(upper);
+    const hasPartNumberValue = BLAXTAIR_PART_NUMBER_RE.test(upper);
+    if (hasIpValue) {
+      score += 22;
+      pushEvidence(evidence, "structure", "IPv4-shaped value present (Blaxtair signal)", 22);
+    }
+    if (hasPartNumberValue) {
+      score += 18;
+      pushEvidence(evidence, "structure", "NNN-NNN-NNN part-number shape present", 18);
+    }
+    // LinxUp-only signals should not co-occur on a genuine Blaxtair label.
+    if (hasImei) {
+      score -= 25;
+      pushEvidence(evidence, "structure", "IMEI present (against Blaxtair)", -25);
+    }
+    if (hasMacKeyword && hasMacValue) {
+      score -= 20;
+      pushEvidence(evidence, "structure", "MAC address present (against Blaxtair)", -20);
+    }
   } else {
     if (hasImei) {
       score += 12;
@@ -156,6 +190,15 @@ function scoreProfile(args: {
       score -= 20;
       pushEvidence(evidence, "structure", "MAC-only label (against tracker)", -20);
     }
+    if (BLAXTAIR_AHD_KEYWORD_RE.test(upper)) {
+      score -= 30;
+      pushEvidence(evidence, "disambiguation", "AHD Camera wording (against LinxUp tracker)", -30);
+    }
+  }
+
+  if (args.profile.formId === "linxup_linxcam" && BLAXTAIR_AHD_KEYWORD_RE.test(upper)) {
+    score -= 20;
+    pushEvidence(evidence, "disambiguation", "AHD Camera wording (against LinxCam)", -20);
   }
 
   // Disambiguate AT3 vs OBD
@@ -237,6 +280,16 @@ export function classifyDeviceLabel(args: {
     const hasKeyword = /\bMAC\b|SERIAL\s*NUM|\bLINXCAM\b/.test(upper);
     const hasBarcode = args.barcodePayloads.length > 0;
     if (!hasKeyword && !hasBarcode) {
+      confidence = Math.min(confidence, 40);
+    }
+  }
+
+  // Blaxtair: never high-band without the AHD Camera keyword or IP/part-number structure.
+  if (top?.profile.formId === "blaxtair_ahd_camera") {
+    const upper = `${args.ocrText}\n${args.barcodePayloads.join("\n")}`.toUpperCase();
+    const hasKeyword = BLAXTAIR_AHD_KEYWORD_RE.test(upper) || BLAXTAIR_AHD_TOKEN_RE.test(upper);
+    const hasStructure = BLAXTAIR_IPV4_RE.test(upper) || BLAXTAIR_PART_NUMBER_RE.test(upper);
+    if (!hasKeyword && !hasStructure) {
       confidence = Math.min(confidence, 40);
     }
   }

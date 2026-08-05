@@ -229,6 +229,7 @@ export function updateComponentFields(
       | "extractionSource"
       | "detectionConfidence"
       | "identifierEdits"
+      | "wireLeads"
     >
   >,
 ): InstalledProductSystem {
@@ -240,6 +241,13 @@ export function updateComponentFields(
     ),
     updatedAt: now,
   };
+}
+
+export function setSystemExternalAlarm(
+  system: InstalledProductSystem,
+  alarm: InstalledProductSystem["externalAlarm"],
+): InstalledProductSystem {
+  return { ...system, externalAlarm: alarm, updatedAt: new Date().toISOString() };
 }
 
 export function removeComponentById(

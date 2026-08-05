@@ -3,7 +3,15 @@
  * Future: point FormDefinition.labelExtractionProfileId at these.
  */
 
-export type LabelFieldKey = "activationCode" | "serial" | "imei" | "iccid" | "mac" | "deviceId";
+export type LabelFieldKey =
+  | "activationCode"
+  | "serial"
+  | "imei"
+  | "iccid"
+  | "mac"
+  | "deviceId"
+  | "partNumber"
+  | "ipAddress";
 
 export type LabelFieldRegion = {
   /** Relative crop band inside the label guide (0–1). */
@@ -32,7 +40,11 @@ export type LabelExtractionProfile = {
   id: string;
   formId: string;
   /** Classifier / family id (same as formId for v1 families). */
-  deviceFamily: "linxup_asset_tracker" | "linxup_vehicle_tracker" | "linxup_linxcam";
+  deviceFamily:
+    | "linxup_asset_tracker"
+    | "linxup_vehicle_tracker"
+    | "linxup_linxcam"
+    | "blaxtair_ahd_camera";
   productLabel: string;
   uiSelectLabel: string;
   expectedBarcodeFormats: Array<"QR_CODE" | "CODE_128" | "CODE_39" | "DATA_MATRIX" | "EAN_13">;

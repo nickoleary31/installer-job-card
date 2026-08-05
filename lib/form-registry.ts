@@ -317,20 +317,17 @@ export function formatSectionKeysAsLabels(sectionKeys: readonly string[] | null 
 
 /**
  * Forms shown in the primary product dropdown.
- * Blaxtair: devices only — SSC Speed is secondary-only (not offered as primary).
+ * Blaxtair: SSC Speed may also be primary (added standalone to an already-installed system) —
+ * getAllowedAdditionalSectionKeys already handles the SSC-as-primary pairing case below.
  */
 export function getAllowedPrimaryForms(companyName: string | null | undefined): FormDefinition[] {
-  const forms = getFormsForCompanyName(companyName);
-  if (resolveCompanySlug(companyName) === "blaxtair") {
-    return forms.filter((f) => f.id !== "blaxtair_ssc_speed");
-  }
-  return forms;
+  return getFormsForCompanyName(companyName);
 }
 
 /**
  * Additional/secondary options for the current primary.
  * Blaxtair: device primary → SSC Speed only (never two PPD devices).
- * Legacy SSC-as-primary drafts may still pair with one device.
+ * SSC Speed primary (e.g. added standalone to an existing system) → a device only.
  * Matrix / other companies: unchanged (all other assigned forms).
  */
 export function getAllowedAdditionalSectionKeys(
@@ -350,7 +347,7 @@ export function getAllowedAdditionalSectionKeys(
     return allowed.filter((key) => key === "blaxtair_ssc_speed");
   }
 
-  // Legacy: SSC Speed was selectable as primary before secondary-only rule.
+  // SSC Speed as primary (added standalone to an existing system) may pair with one device.
   if (isBlaxtairSscSpeedSectionKey(primary)) {
     return allowed.filter((key) => isBlaxtairDeviceSectionKey(key));
   }

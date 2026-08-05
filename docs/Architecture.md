@@ -129,3 +129,5 @@ Unset or `off` / `false` / `0` keeps the classic product picker path.
 - [Product_Devices.md](./Product_Devices.md)
 - [OCR_Strategy.md](./OCR_Strategy.md)
 - [Roadmap.md](./Roadmap.md)
+- [Blaxtair_Demo_Duplicate_Detection.md](./Blaxtair_Demo_Duplicate_Detection.md)
+- [Blaxtair_Demo_Full_Job_Card.md](./Blaxtair_Demo_Full_Job_Card.md)

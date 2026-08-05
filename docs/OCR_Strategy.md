@@ -117,4 +117,4 @@ Bridge types: `lib/product-devices/ocr-contract.ts` (on `main` Product Devices c
 
 ## Related
 
-- [Product_Devices.md](./Product_Devices.md) · [Roadmap.md](./Roadmap.md)
+- [Product_Devices.md](./Product_Devices.md) · [Roadmap.md](./Roadmap.md) · [Blaxtair_Demo_Duplicate_Detection.md](./Blaxtair_Demo_Duplicate_Detection.md) · [Blaxtair_Demo_Full_Job_Card.md](./Blaxtair_Demo_Full_Job_Card.md)

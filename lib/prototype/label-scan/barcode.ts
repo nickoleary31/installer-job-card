@@ -10,7 +10,7 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
 }
 
-async function decodeOnce(canvas: HTMLCanvasElement): Promise<string[]> {
+export async function decodeOnce(canvas: HTMLCanvasElement): Promise<string[]> {
   const reader = new BrowserMultiFormatReader();
   const payloads = new Set<string>();
   try {

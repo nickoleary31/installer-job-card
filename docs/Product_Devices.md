@@ -122,4 +122,4 @@ Immediate disable: set off / unset and restart `next dev` (or redeploy env).
 
 ## Related
 
-- [OCR_Strategy.md](./OCR_Strategy.md) · [Architecture.md](./Architecture.md) · [Roadmap.md](./Roadmap.md)
+- [OCR_Strategy.md](./OCR_Strategy.md) · [Architecture.md](./Architecture.md) · [Roadmap.md](./Roadmap.md) · [Blaxtair_Demo_Duplicate_Detection.md](./Blaxtair_Demo_Duplicate_Detection.md) · [Blaxtair_Demo_Full_Job_Card.md](./Blaxtair_Demo_Full_Job_Card.md)

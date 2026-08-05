@@ -3,7 +3,7 @@
  * Retries 90/180/270° when the first pass lacks strong label keywords (e.g. rotated AT3).
  */
 
-import { decodeBarcodesAggressive, decodeBarcodesFromCanvas } from "./barcode.ts";
+import { decodeBarcodesAggressive, decodeBarcodesFromCanvas, decodeOnce } from "./barcode.ts";
 import { classifyDeviceLabel } from "./classify.ts";
 import { extractFromBarcodeAndOcr, type ExtractionResult } from "./extract.ts";
 import { runLabelOcr } from "./ocr.ts";
@@ -43,11 +43,18 @@ function countValid(extraction: ExtractionResult): number {
 }
 
 function hasStrongLabelKeywords(text: string): boolean {
-  return /OBD\s*ACTIVATION|ACTIVATION\s*CODE|\bIMEI\b|\bMAC\b|SERIAL\s*NUM/i.test(text);
+  return /OBD\s*ACTIVATION|ACTIVATION\s*CODE|\bIMEI\b|\bMAC\b|SERIAL\s*NUM|\bAHD\b/i.test(text);
 }
 
-function passScore(ocrText: string, barcodes: string[]): number {
-  const classification = classifyDeviceLabel({ ocrText, barcodePayloads: barcodes });
+/**
+ * Score a pass for "best rotation" selection. Must classify against the profile actually
+ * being scanned — classifyDeviceLabel's default candidate list is LinxUp-only, so for any
+ * other profile (e.g. Blaxtair) a correct, cleanly-read pass would score near zero (no LinxUp
+ * evidence) while garbled wrong-orientation noise could score higher by incidental keyword
+ * matches, causing the wrong rotation to be selected.
+ */
+function passScore(ocrText: string, barcodes: string[], profile: LabelExtractionProfile): number {
+  const classification = classifyDeviceLabel({ ocrText, barcodePayloads: barcodes, profiles: [profile] });
   return (
     (classification.top?.score || 0) * 2 +
     (ocrText.match(/IMEI|MAC|ACTIVATION|S\/N|SERIAL|SIN/gi) || []).length * 5 +
@@ -55,10 +62,16 @@ function passScore(ocrText: string, barcodes: string[]): number {
   );
 }
 
-async function decodePass(canvases: HTMLCanvasElement[], aggressive: boolean): Promise<string[]> {
+async function decodePass(
+  canvases: HTMLCanvasElement[],
+  aggressive: boolean,
+  quickOnly: boolean,
+): Promise<string[]> {
   const barcodePayloads: string[] = [];
   for (const c of canvases) {
-    if (aggressive) {
+    if (quickOnly) {
+      uniquePush(barcodePayloads, await decodeOnce(c));
+    } else if (aggressive) {
       uniquePush(barcodePayloads, (await decodeBarcodesAggressive(c)).payloads);
     } else {
       uniquePush(barcodePayloads, await decodeBarcodesFromCanvas(c));
@@ -73,13 +86,28 @@ export async function runLabelScanPipeline(args: {
   guide?: GuideRect | null;
   /** When true (default for uploads), process the whole image as the label. */
   useFullFrame?: boolean;
+  /**
+   * When true, skip barcode/2D decode entirely (OCR-only). Default false.
+   */
+  skipBarcodeDecode?: boolean;
+  /**
+   * When true, try a single quick barcode decode per canvas/angle and do not escalate to
+   * decodeBarcodesAggressive. The aggressive fallback's crop regions (LINXCAM_BARCODE_CROPS)
+   * are tuned for LinxCam's side-by-side sticker layout — for any other label layout it burns
+   * through ~288 attempts finding nothing whenever the quick decode fails, which is slow even
+   * on a single label and gets worse with a full-resolution real photo. Default false so LinxUp
+   * behavior (which this fallback was built for) is unchanged.
+   */
+  barcodeQuickOnly?: boolean;
+  /** Max working width for Blob sources before downscaling. Default 1800. */
+  maxSourceWidth?: number;
 }): Promise<PipelineArtifacts> {
   let baseCanvas: HTMLCanvasElement;
   if (args.source instanceof HTMLCanvasElement) {
     baseCanvas = args.source;
   } else {
     const bitmap = await loadImageBitmap(args.source);
-    const maxW = 1800;
+    const maxW = args.maxSourceWidth ?? 1800;
     const scale = bitmap.width > maxW ? maxW / bitmap.width : 1;
     baseCanvas = drawToCanvas(bitmap, Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
     bitmap.close();
@@ -101,10 +129,15 @@ export async function runLabelScanPipeline(args: {
 
     const t0 = performance.now();
     const aggressive = args.profile.formId === "linxup_linxcam";
-    const barcodePayloads = await decodePass([croppedCanvas, enhancedCanvas, fullCanvas], aggressive);
-    if (args.profile.barcodeRegionHint) {
+    const quickOnly = args.barcodeQuickOnly === true;
+    const barcodePayloads = args.skipBarcodeDecode
+      ? []
+      : await decodePass([croppedCanvas, enhancedCanvas, fullCanvas], aggressive, quickOnly);
+    if (!args.skipBarcodeDecode && args.profile.barcodeRegionHint) {
       const band = cropToGuide(fullCanvas, args.profile.barcodeRegionHint);
-      if (aggressive) {
+      if (quickOnly) {
+        uniquePush(barcodePayloads, await decodeOnce(band));
+      } else if (aggressive) {
         uniquePush(barcodePayloads, (await decodeBarcodesAggressive(band)).payloads);
       } else {
         uniquePush(barcodePayloads, await decodeBarcodesFromCanvas(band));
@@ -149,7 +182,7 @@ export async function runLabelScanPipeline(args: {
         : extractionRaw;
 
     const usedText = extraction.rawOcrText;
-    const score = passScore(usedText, barcodePayloads);
+    const score = passScore(usedText, barcodePayloads, args.profile);
 
     if (!best || score > bestScore) {
       bestScore = score;

@@ -11,7 +11,7 @@ export type FieldCandidate = {
   value: string;
   /** Unmodified matched token before display normalization. */
   rawValue: string;
-  source: "barcode" | "ocr" | "manual";
+  source: "barcode" | "ocr" | "manual" | "inferred";
   confidence: number; // 0–100
   validationOk: boolean;
   validationReason?: string;
@@ -88,7 +88,9 @@ function candidateQuality(
 ): number {
   let q = (validationOk ? 40 : 0) + (aliasHit ? 20 : 0) + Math.min(value.length, 20);
   if (fieldKey === "activationCode" && /^[A-Z0-9]{2,4}-[A-Z0-9]{2,4}$/i.test(value)) q += 25;
-  if (fieldKey === "serial" && value.length >= 10) q += 15;
+  // Gate on validationOk — otherwise a long invalid alias-adjacent fragment (e.g. OCR noise
+  // trailing an unrelated field's value) can outscore a short but genuinely valid serial.
+  if (fieldKey === "serial" && validationOk && value.length >= 10) q += 15;
   if (fieldKey === "serial" && value.length < 8) q -= 10;
   if (fieldKey === "imei" && /^\d{15}$/.test(value.replace(/\D/g, ""))) q += 20;
   if (fieldKey === "mac" && value.replace(/[^0-9A-Fa-f]/g, "").length === 12) q += 20;

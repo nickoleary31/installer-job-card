@@ -64,9 +64,18 @@ export type LabelPhotoRef = {
   componentId?: string;
   storagePath?: string;
   publicUrl?: string;
+  /** Bounded-size preview for local/offline display — never the sole retained copy in production. */
   localPreview?: string;
   originalFileName?: string;
   uploadedAt?: string;
+  /**
+   * Content-based hash (e.g. SHA-256 of the original file bytes), not derived from filename.
+   * Powers job-card-wide photo-reuse detection across every photo category, not just this one.
+   * Prototype: computed client-side, checked against a localStorage registry (see
+   * lib/prototype/photo-dedup-registry.ts). Production: computed at upload time and checked
+   * against a global Storage-backed fingerprint index — see docs/Blaxtair_Demo_Duplicate_Detection.md.
+   */
+  contentFingerprint?: string;
 };
 
 export type InstallPhotoRef = {
@@ -144,6 +153,12 @@ export type ProductDeviceDefinition = {
   active: boolean;
 };
 
+/** One colored wire lead on a camera/monitor — used=false means not connected on this install. */
+export type WireLeadState = {
+  used: boolean;
+  description: string;
+};
+
 /** Physical unit inside an installed company product/system. */
 export type InstalledProductComponent = {
   id: string;
@@ -167,6 +182,8 @@ export type InstalledProductComponent = {
   identifierEdits: IdentifierEdit[];
   manualFallbackReason: ManualFallbackReason | null;
   manualFallbackNotes?: string;
+  /** Per-wire-color usage/connection-point notes (Blaxtair camera/monitor wire leads). Keyed by wire key, e.g. "ground"/"out1". */
+  wireLeads?: Record<string, WireLeadState>;
   installDetails: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -190,6 +207,12 @@ export type InstalledProductSystem = {
   components: InstalledProductComponent[];
   /** Expected camera count for multi-camera systems (technician-chosen). */
   plannedCameraCount?: number | null;
+  /** External pedestrian-detection alarm (Blaxtair) — system-level, not tied to one camera. */
+  externalAlarm?: {
+    installed: boolean;
+    /** Component ids of the camera(s) that trigger this alarm. */
+    triggerComponentIds: string[];
+  } | null;
   installDetails: Record<string, unknown>;
   installPhotos: InstallPhotoRef[];
   /** Product Files stay system-scoped unless a future schema marks component-scoped. */

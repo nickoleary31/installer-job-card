@@ -32,8 +32,14 @@ export function rotateCanvas(source: HTMLCanvasElement, degrees: 0 | 90 | 180 | 
   return out;
 }
 
+/**
+ * Explicitly request EXIF-aware decoding. Phone photos commonly store rotation as EXIF
+ * metadata rather than physically rotating pixels; createImageBitmap's default
+ * imageOrientation is inconsistent across browsers, so leaving it unset can silently hand
+ * OCR/barcode a sideways or mirrored image regardless of how the photo displays elsewhere.
+ */
 export async function loadImageBitmap(file: Blob): Promise<ImageBitmap> {
-  return createImageBitmap(file);
+  return createImageBitmap(file, { imageOrientation: "from-image" });
 }
 
 /** Draw source into canvas; auto-orient via browser decode (EXIF handled by createImageBitmap when supported). */
@@ -98,6 +104,20 @@ export function enhanceForOcr(source: HTMLCanvasElement): HTMLCanvasElement {
 
 export function canvasToDataUrl(canvas: HTMLCanvasElement, type = "image/jpeg", quality = 0.92): string {
   return canvas.toDataURL(type, quality);
+}
+
+/** Bounded-size JPEG for local persistence (localStorage) — full working canvases are too large to store. */
+export function canvasToThumbnailDataUrl(canvas: HTMLCanvasElement, maxWidth = 480, quality = 0.7): string {
+  if (canvas.width <= maxWidth) return canvasToDataUrl(canvas, "image/jpeg", quality);
+  const scale = maxWidth / canvas.width;
+  const out = document.createElement("canvas");
+  out.width = maxWidth;
+  out.height = Math.max(1, Math.round(canvas.height * scale));
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("2D canvas unavailable");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(canvas, 0, 0, out.width, out.height);
+  return canvasToDataUrl(out, "image/jpeg", quality);
 }
 
 /** Build synthetic demo labels (no real device PII). */
