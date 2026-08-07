@@ -42,3 +42,14 @@ next-env.d.ts
 
 # Local draft photo recovery dry-run artifacts (may contain signed URLs)
 recovery-dry-run-output/
+
+# Local label-scan prototype fixtures (may contain real device identifiers)
+fixtures/label-scan/
+lib/prototype/label-scan/fixtures/
+
+# Tesseract trained data (downloaded by tesseract.js; do not commit)
+eng.traineddata
+
+# Local verification / UX audit screenshots (generated)
+tmp-product-files-verification/
+tmp-ux-audit-screenshots/

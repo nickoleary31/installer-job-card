@@ -3,8 +3,8 @@
 -- Does not remove registry Blaxtair entries; DB rows override registry when present.
 -- Company id is the existing production Blaxtair UUID (do not re-create the company).
 
--- Primary: four Blaxtair devices → PPD base
--- Additional: SSC Speed only → Speed SSC base
+-- Primary: four Blaxtair devices → PPD base, or SSC Speed (standalone add-to-existing-system) → Speed SSC base
+-- Additional: SSC Speed pairs with a device; a device pairs with SSC Speed (never two devices)
 
 insert into public.company_form_products (
   company_id,
@@ -85,7 +85,7 @@ values
     'blaxtair_ssc_speed',
     'blaxtair_ssc_speed',
     'blaxtair_ssc_speed',
-    false,
+    true,
     true,
     true,
     240,

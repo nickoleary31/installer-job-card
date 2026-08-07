@@ -10,6 +10,9 @@ import {
   selectedSectionsIncludeEffective,
 } from "./form-registry";
 import { isLinxUpSectionKey } from "./linxup";
+import { buildInstalledSystemEmailSections } from "./product-devices/email-sections";
+import { buildBlaxtairWireAndAlarmEmailSections } from "./product-devices/blaxtair-ahd-email";
+import { normalizeInstalledProductSystems } from "./product-devices/normalize";
 import {
   formatSectionKeysAsLabelsWithLookup,
   getProductLabelWithLookup,
@@ -24,6 +27,13 @@ export type EmailLayoutOptions = {
    * stripStorageUrls / send guards remain valid.
    */
   includeProductFileLinks?: boolean;
+  /**
+   * Product file keys that were actually downloaded and attached to this send
+   * (known only after buildProductFileEmailAttachments has run). When omitted
+   * (e.g. Email Preview, which never attaches), delivery wording stays a hedge
+   * since the real attach attempt hasn't happened yet.
+   */
+  attachedProductFileKeys?: Set<string>;
 };
 
 export type EmailLayoutField = {
@@ -146,6 +156,30 @@ function buildLinxUpDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
   const lc = lx?.linxCam;
   const hasLinxCam = formId === "linxup_linxcam" || !!lc;
 
+  const systems = normalizeInstalledProductSystems({
+    installedProductSystems: (p as { installedProductSystems?: import("./product-devices/types").InstalledProductSystem[] })
+      .installedProductSystems,
+    installedDevices: p.installedDevices,
+  });
+  if (systems.length > 0) {
+    for (const section of buildInstalledSystemEmailSections(systems)) {
+      sections.push(section);
+    }
+  } else {
+    const di = lx?.deviceIdentifiers;
+    if (di && (di.activationCode || di.serialNumber || di.imei || di.macAddress)) {
+      const fields: EmailLayoutField[] = [];
+      if (di.activationCode) fields.push({ label: "Activation code", value: di.activationCode });
+      if (di.serialNumber) fields.push({ label: "Serial number", value: di.serialNumber });
+      if (di.imei) fields.push({ label: "IMEI", value: di.imei });
+      if (di.macAddress) fields.push({ label: "MAC address", value: di.macAddress });
+      if (di.installationVariant) {
+        fields.push({ label: "Installation variant", value: di.installationVariant });
+      }
+      sections.push({ id: "device-identifiers", title: "Device identifiers", fields });
+    }
+  }
+
   if (hasAssetTracker) {
     sections.push({
       id: "product",
@@ -203,11 +237,24 @@ function buildLinxUpDocument(p: JobCardSubmissionPayload): EmailLayoutDocument {
   };
 }
 
+/**
+ * Delivery-status wording for a Product File. Reflects the real attach outcome when known
+ * (attachedProductFileKeys is populated after buildProductFileEmailAttachments runs); falls
+ * back to a hedge only when the caller hasn't attempted the attach yet (Email Preview).
+ */
+function productFileDeliveryValue(attachedKeys: Set<string> | undefined, fileKey: string): string {
+  if (!attachedKeys) return "Attached to this email when available";
+  return attachedKeys.has(fileKey)
+    ? "Attached to this email"
+    : "Could not attach automatically — contact the installer for this file";
+}
+
 function buildLegacyDocument(
   p: JobCardSubmissionPayload,
   options: EmailLayoutOptions = {},
 ): EmailLayoutDocument {
   const includeLinks = options.includeProductFileLinks === true;
+  const attachedProductFileKeys = options.attachedProductFileKeys;
   const c = p.coreJobInfo;
   const v = p.vac4;
   const h = p.hardwareSelection;
@@ -267,6 +314,24 @@ function buildLegacyDocument(
     },
   ];
 
+  const installedSystems = normalizeInstalledProductSystems({
+    installedProductSystems: (p as { installedProductSystems?: import("./product-devices/types").InstalledProductSystem[] })
+      .installedProductSystems,
+    installedDevices: p.installedDevices,
+  });
+  if (installedSystems.length > 0) {
+    for (const section of buildInstalledSystemEmailSections(installedSystems)) {
+      sections.push(section);
+    }
+    if (p.selectedSections.includes("blaxtair_ahd") || p.hardwareSelection?.primary === "blaxtair_ahd") {
+      for (const system of installedSystems) {
+        for (const section of buildBlaxtairWireAndAlarmEmailSections(system)) {
+          sections.push(section);
+        }
+      }
+    }
+  }
+
   if (p.selectedSections.includes("VAC4")) {
     sections.push({
       id: "vac4",
@@ -285,7 +350,40 @@ function buildLegacyDocument(
     });
   }
 
-  const includePpd = selectedSectionsIncludeEffective(p.selectedSections ?? [], "PPD");
+  if (p.selectedSections.includes("blaxtair_ssc_speed") && p.sscSpeed) {
+    const ssc = p.sscSpeed;
+    const fields: EmailLayoutField[] = [
+      { label: "Connected via", value: dash(ssc.connectionType) },
+      { label: "Power connection", value: display(ssc.powerDescription) },
+      { label: "Ground connection", value: display(ssc.groundDescription) },
+      { label: "Ignition connection", value: display(ssc.ignitionDescription) },
+    ];
+    if (ssc.connectionType === "Hardwire") {
+      fields.push({ label: "Speed signal", value: display(ssc.speedSignalDescription) });
+      if (ssc.hasDirectionSignal) {
+        fields.push({ label: "Direction signal", value: display(ssc.directionDescription) });
+      }
+    }
+    const configFile = (p.productFiles ?? []).find((f) => f.fileKey === "ssc_config");
+    if (configFile) {
+      fields.push({ label: "Configuration file", value: configFile.originalFileName });
+      if (includeLinks && configFile.downloadUrl?.trim()) {
+        fields.push({ label: "Configuration file link", value: configFile.downloadUrl.trim() });
+      } else if (!includeLinks) {
+        fields.push({
+          label: "Configuration file delivery",
+          value: productFileDeliveryValue(attachedProductFileKeys, "ssc_config"),
+        });
+      }
+    }
+    sections.push({ id: "ssc-speed", title: "SSC Speed Install", fields });
+  }
+
+  // Skip the generic PPD text block when a structured installed-product system already covers
+  // this ground (e.g. Blaxtair AHD) — showing empty "Hub serial —" fields alongside the real
+  // camera/monitor section is redundant. Real PPD/Matrix/Powerfleet submissions never populate
+  // installedSystems, so this only changes behavior for products using the newer model.
+  const includePpd = installedSystems.length === 0 && selectedSectionsIncludeEffective(p.selectedSections ?? [], "PPD");
   if (includePpd && p.ppd) {
     const ppdFields: EmailLayoutField[] = [
       { label: "Hub serial", value: dash(p.ppd.hubSerial) },
@@ -308,7 +406,7 @@ function buildLegacyDocument(
     } else if (ppdJsonName && !includeLinks) {
       ppdFields.push({
         label: "JSON Configuration File delivery",
-        value: "Attached to this email when available",
+        value: productFileDeliveryValue(attachedProductFileKeys, PPD_JSON_FILE_KEY),
       });
     }
     sections.push({
@@ -319,7 +417,7 @@ function buildLegacyDocument(
   }
 
   const extraProductFiles = (p.productFiles ?? []).filter(
-    (f) => f.fileKey !== PPD_JSON_FILE_KEY && f.includeInEmail !== false && f.originalFileName,
+    (f) => f.fileKey !== PPD_JSON_FILE_KEY && f.fileKey !== "ssc_config" && f.includeInEmail !== false && f.originalFileName,
   );
   if (extraProductFiles.length > 0) {
     const fields: EmailLayoutField[] = [];
@@ -338,7 +436,7 @@ function buildLegacyDocument(
       } else if (!includeLinks) {
         fields.push({
           label: `${file.displayLabel || "Product File"} delivery`,
-          value: "Attached to this email when available",
+          value: productFileDeliveryValue(attachedProductFileKeys, file.fileKey),
         });
       }
     }

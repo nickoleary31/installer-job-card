@@ -11,6 +11,10 @@ import type { EmailSendMode } from "@/lib/email-recipients";
 import type { JobCardSubmissionPayload } from "@/lib/job-card-submission";
 import { formatServiceAppointment, formatUpper, formatWorkOrder } from "@/lib/format";
 import { getFormDefinitionById, getFormDefinitionBySectionKey, isLinxUpSectionKey } from "@/lib/form-registry";
+import { normalizeInstalledProductSystems } from "@/lib/product-devices/normalize";
+import { buildInstalledSystemEmailSections, type SimpleEmailSection } from "@/lib/product-devices/email-sections";
+import { buildBlaxtairWireAndAlarmEmailSections } from "@/lib/product-devices/blaxtair-ahd-email";
+import type { InstalledProductSystem } from "@/lib/product-devices/types";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -117,7 +121,33 @@ type SubmissionPayloadLite = {
     group?: "vac4" | "vehicle" | "ppd" | "cp4" | "linxup";
     fieldName?: string;
   }>;
+  installedProductSystems?: InstalledProductSystem[];
+  sscSpeed?: {
+    connectionType?: "" | "CAN" | "Hardwire";
+    powerDescription?: string;
+    groundDescription?: string;
+    ignitionDescription?: string;
+    speedSignalDescription?: string;
+    hasDirectionSignal?: boolean;
+    directionDescription?: string;
+  };
+  productFiles?: Array<{ fileKey?: string; originalFileName?: string }>;
 };
+
+function isBlaxtairAhdPayload(payload: SubmissionPayloadLite): boolean {
+  if (payload.selectedSections?.includes("blaxtair_ahd")) return true;
+  if (payload.hardwareSelection?.primary === "blaxtair_ahd") return true;
+  return Array.isArray(payload.installedProductSystems) && payload.installedProductSystems.length > 0;
+}
+
+function isSscSpeedPayload(payload: SubmissionPayloadLite): boolean {
+  if (!payload.sscSpeed) return false;
+  if (payload.selectedSections?.includes("blaxtair_ssc_speed")) return true;
+  return (
+    payload.hardwareSelection?.primary === "blaxtair_ssc_speed" ||
+    !!payload.hardwareSelection?.additional?.includes("blaxtair_ssc_speed")
+  );
+}
 
 function isLinxUpPayload(payload: SubmissionPayloadLite): boolean {
   if (payload.linxup) return true;
@@ -223,6 +253,49 @@ function renderDetailText(value: string) {
 
 function renderDetailValue(value: string | undefined | null) {
   return renderDetailText(displayValue(value));
+}
+
+/** Mirrors the SSC Speed field list built for the outbound email (lib/email-layout-model.ts). */
+function buildSscSpeedSections(payload: SubmissionPayloadLite): SimpleEmailSection[] {
+  const ssc = payload.sscSpeed;
+  if (!ssc) return [];
+  const fields: SimpleEmailSection["fields"] = [
+    { label: "Connected via", value: textOrDash(ssc.connectionType) },
+    { label: "Power connection", value: displayValue(ssc.powerDescription) },
+    { label: "Ground connection", value: displayValue(ssc.groundDescription) },
+    { label: "Ignition connection", value: displayValue(ssc.ignitionDescription) },
+  ];
+  if (ssc.connectionType === "Hardwire") {
+    fields.push({ label: "Speed signal", value: displayValue(ssc.speedSignalDescription) });
+    if (ssc.hasDirectionSignal) {
+      fields.push({ label: "Direction signal", value: displayValue(ssc.directionDescription) });
+    }
+  }
+  const configFile = payload.productFiles?.find((f) => f.fileKey === "ssc_config");
+  if (configFile?.originalFileName) {
+    fields.push({ label: "Configuration file", value: configFile.originalFileName });
+  }
+  return [{ id: "ssc-speed", title: "SSC Speed Install", fields }];
+}
+
+/** Read-only render of SimpleEmailSection[] — same shape used to build the actual sent email. */
+function SimpleEmailSections({ sections }: { sections: SimpleEmailSection[] }) {
+  return (
+    <>
+      {sections.map((section) => (
+        <section key={section.id}>
+          <h3 className="text-sm font-bold text-gray-900">{section.title}</h3>
+          <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+            {section.fields.map((field, i) => (
+              <p key={`${section.id}-${i}`}>
+                <span className="font-semibold text-gray-600">{field.label}:</span> {field.value}
+              </p>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
+  );
 }
 
 export default function SubmittedPage() {
@@ -736,6 +809,35 @@ export default function SubmittedPage() {
                   </div>
                 </section>
 
+                {isBlaxtairAhdPayload(row.payload) || isSscSpeedPayload(row.payload) ? (
+                  <>
+                    {isBlaxtairAhdPayload(row.payload) ? (
+                      <SimpleEmailSections
+                        sections={(() => {
+                          const systems = normalizeInstalledProductSystems({
+                            installedProductSystems: row.payload.installedProductSystems,
+                          });
+                          return [
+                            ...buildInstalledSystemEmailSections(systems),
+                            ...systems.flatMap((system) => buildBlaxtairWireAndAlarmEmailSections(system)),
+                          ];
+                        })()}
+                      />
+                    ) : null}
+                    {isSscSpeedPayload(row.payload) ? (
+                      <SimpleEmailSections sections={buildSscSpeedSections(row.payload)} />
+                    ) : null}
+                    <section>
+                      <h3 className="text-sm font-bold text-gray-900">Vehicle Pictures</h3>
+                      <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
+                        <p><span className="font-semibold text-gray-600">Vehicle Front:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleFront")}</p>
+                        <p><span className="font-semibold text-gray-600">Vehicle Side:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleSide")}</p>
+                        <p><span className="font-semibold text-gray-600">Vehicle Rear:</span> {photoCountFromUploads(row.payload, "vehicle", "vehicleRear")}</p>
+                      </div>
+                    </section>
+                  </>
+                ) : (
+                  <>
                 <section>
                   <h3 className="text-sm font-bold text-gray-900">VAC4 Summary</h3>
                   <div className="mt-2 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
@@ -786,6 +888,8 @@ export default function SubmittedPage() {
                     <p><span className="font-semibold text-gray-600">External Indicator:</span> {row.payload.vac4?.photoCounts?.externalIndicator ?? 0}</p>
                   </div>
                 </section>
+                  </>
+                )}
                   </>
                 )}
               </div>

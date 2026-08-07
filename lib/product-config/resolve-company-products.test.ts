@@ -334,11 +334,11 @@ describe("product-config hybrid resolver", () => {
     assert.equal(areAdditionalProductsAllowed(products, "PPD", ["Speed Transmon", "Speed SSC"]), true);
   });
 
-  it("registry Blaxtair compatibility only permits SSC Speed as additional", () => {
+  it("registry Blaxtair compatibility allows SSC Speed as primary too (standalone add-to-existing-system case)", () => {
     const products = resolveCompanyProductsFromRegistry(BLAXTAIR_COMPANY_NAME);
     assert.deepEqual(
       getAllowedPrimaryProducts(products).map((p) => p.productKey),
-      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3"],
+      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed"],
     );
     assert.deepEqual(
       getAllowedAdditionalProducts(products, "blaxtair_ahd").map((p) => p.productKey),

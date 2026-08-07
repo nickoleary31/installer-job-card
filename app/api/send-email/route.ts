@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { buildCidPhotoAttachments } from "@/lib/email-cid-attachments";
@@ -12,6 +13,7 @@ import { persistEmailHistory } from "@/lib/email-submission-history";
 import {
   type JobCardCp4Payload,
   type JobCardPpdPayload,
+  type JobCardSscSpeedPayload,
   type JobCardSubmissionPayload,
 } from "@/lib/job-card-submission";
 import type { JobCardLinxupPayload } from "@/lib/linxup";
@@ -120,6 +122,35 @@ function normalizeCp4Payload(raw: unknown): JobCardCp4Payload | undefined {
   };
 }
 
+function normalizeSscSpeedPayload(raw: unknown): JobCardSscSpeedPayload | undefined {
+  if (!isRecord(raw)) return undefined;
+  const connectionType = stringOrEmpty(raw.connectionType);
+  return {
+    connectionType: connectionType === "CAN" || connectionType === "Hardwire" ? connectionType : "",
+    powerDescription: stringOrEmpty(raw.powerDescription),
+    groundDescription: stringOrEmpty(raw.groundDescription),
+    ignitionDescription: stringOrEmpty(raw.ignitionDescription),
+    speedSignalDescription: stringOrEmpty(raw.speedSignalDescription),
+    hasDirectionSignal: raw.hasDirectionSignal === true,
+    directionDescription: stringOrEmpty(raw.directionDescription),
+  };
+}
+
+/**
+ * Loose structural pass-through, matching the same trust level already used for
+ * photoUploads[] in this route (first-party client payload, not third-party input) —
+ * filters to array items that at least look like an installed system, then casts.
+ */
+function normalizeInstalledProductSystems(
+  raw: unknown,
+): JobCardSubmissionPayload["installedProductSystems"] {
+  if (!Array.isArray(raw)) return undefined;
+  const systems = raw.filter(
+    (s): s is Record<string, unknown> => isRecord(s) && typeof s.id === "string" && Array.isArray(s.components),
+  );
+  return systems.length > 0 ? (systems as JobCardSubmissionPayload["installedProductSystems"]) : undefined;
+}
+
 function normalizeLinxupPayload(raw: unknown): JobCardLinxupPayload | undefined {
   if (!isRecord(raw)) return undefined;
   const formId = stringOrEmpty(raw.formId);
@@ -188,6 +219,7 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
   const photoUploads = Array.isArray(p.photoUploads) ? p.photoUploads.filter((x) => isRecord(x)) : [];
   const ppd = p.ppd !== undefined ? normalizePpdPayload(p.ppd) : undefined;
   const cp4 = p.cp4 !== undefined ? normalizeCp4Payload(p.cp4) : undefined;
+  const sscSpeed = p.sscSpeed !== undefined ? normalizeSscSpeedPayload(p.sscSpeed) : undefined;
   const linxup = p.linxup !== undefined ? normalizeLinxupPayload(p.linxup) : undefined;
   const productFiles = readUploadedProductFiles(p.productFiles ?? p.productArtifacts);
   const projectRecipientEmails = Array.isArray(p.projectRecipientEmails)
@@ -226,8 +258,13 @@ function normalizeSubmissionPayload(p: unknown): JobCardSubmissionPayload | null
     photoUploads: photoUploads as JobCardSubmissionPayload["photoUploads"],
     ...(ppd ? { ppd } : {}),
     ...(cp4 ? { cp4 } : {}),
+    ...(sscSpeed ? { sscSpeed } : {}),
     ...(linxup ? { linxup } : {}),
     ...(productFiles && productFiles.length > 0 ? { productFiles } : {}),
+    ...(() => {
+      const installedProductSystems = normalizeInstalledProductSystems(p.installedProductSystems);
+      return installedProductSystems ? { installedProductSystems } : {};
+    })(),
     vac4: {
       vehicleType: stringOrEmpty(vac.vehicleType),
       otherVehicleType: stringOrEmpty(vac.otherVehicleType),
@@ -296,13 +333,16 @@ export async function POST(req: Request) {
   };
 
   let photoAttachments;
+  const photoPhaseStartedAt = Date.now();
   try {
     const sections = buildEmailPhotoSections(payload);
     photoAttachments = await buildCidPhotoAttachments(sections, {
       filenameContext,
       allowPartialSend,
     });
+    console.info("[send-email] timing", { phase: "photoAttachments", ms: Date.now() - photoPhaseStartedAt });
   } catch (err: unknown) {
+    console.info("[send-email] timing", { phase: "photoAttachments", ms: Date.now() - photoPhaseStartedAt, threw: true });
     const message = err instanceof Error ? err.message : "Failed to attach photos";
     return NextResponse.json({ error: message }, { status: 503 });
   }
@@ -347,13 +387,36 @@ export async function POST(req: Request) {
     );
   }
 
+  // Attach Product Files (PPD JSON, SSC config, etc.) before building the email body, so the
+  // body's "delivery" wording can reflect the real attach outcome instead of a hedge.
+  let productFileAttachments: Awaited<ReturnType<typeof buildProductFileEmailAttachments>> = {
+    attachments: [],
+    attached: [],
+    skipped: [],
+  };
+  const productFilePhaseStartedAt = Date.now();
+  try {
+    productFileAttachments = await buildProductFileEmailAttachments(payload);
+    if (productFileAttachments.skipped.length > 0) {
+      console.warn("[send-email] product file attachment skips", productFileAttachments.skipped);
+    }
+    console.info("[send-email] timing", { phase: "productFileAttachments", ms: Date.now() - productFilePhaseStartedAt });
+  } catch (err: unknown) {
+    console.info("[send-email] timing", { phase: "productFileAttachments", ms: Date.now() - productFilePhaseStartedAt, threw: true });
+    console.warn("[send-email] product file attachments unavailable", err);
+  }
+  const attachedProductFileKeys = new Set(productFileAttachments.attached.map((a) => a.fileKey));
+
   // Only true failures may appear in the email body (partial-send path).
   // Successful optimizations stay in server logs / API diagnostics only.
+  const outboundStartedAt = Date.now();
   const outbound = buildOutboundEmailBodies(payload, {
     cidByStoragePath: photoAttachments.cidByStoragePath,
     attachmentFailures: failureMessages.length > 0 ? failureMessages : undefined,
     photoSections: photoAttachments.photoSections,
+    attachedProductFileKeys,
   });
+  console.info("[send-email] timing", { phase: "buildOutboundEmailBodies", ms: Date.now() - outboundStartedAt });
 
   if (/supabase\.co\/storage/i.test(outbound.htmlBody) || /supabase\.co\/storage/i.test(outbound.textBody)) {
     return NextResponse.json({ error: "Email body incorrectly included Storage URLs. Send aborted." }, { status: 500 });
@@ -363,44 +426,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Email HTML missing CID photo references. Send aborted." }, { status: 500 });
   }
 
-  // Attach Product Files (PPD JSON, etc.) so recipients are not tied to expired signed URLs.
-  let productFileAttachments: Awaited<ReturnType<typeof buildProductFileEmailAttachments>> = {
-    attachments: [],
-    attached: [],
-    skipped: [],
-  };
-  try {
-    productFileAttachments = await buildProductFileEmailAttachments(payload);
-    if (productFileAttachments.skipped.length > 0) {
-      console.warn("[send-email] product file attachment skips", productFileAttachments.skipped);
-    }
-  } catch (err: unknown) {
-    console.warn("[send-email] product file attachments unavailable", err);
-  }
-
   const resend = new Resend(apiKey);
   let resendId: string | null = null;
 
+  // Stable per submission+mode+recipients (not per HTTP request): if a flaky network path
+  // between us and Resend causes a client-visible failure after Resend already queued the
+  // send, retrying with the same key lets Resend return the original result instead of
+  // sending the customer a duplicate email. Deliberately excludes body/attachments so it
+  // stays valid across our own retries of "the same" logical send.
+  const idempotencyKey = createHash("sha256")
+    .update(`${payload.submissionId}:${sendMode}:${to.join(",")}`)
+    .digest("hex");
+
+  const resendCallStartedAt = Date.now();
   try {
-    const { data, error } = await resend.emails.send({
-      from,
-      to,
-      subject: outbound.subject,
-      text: outbound.textBody,
-      html: outbound.htmlBody,
-      attachments: [
-        ...photoAttachments.attachments.map((a) => ({
-          content: a.content,
-          filename: a.filename,
-          contentId: a.contentId,
-          contentType: a.contentType,
-        })),
-        ...productFileAttachments.attachments.map((a) => ({
-          content: a.content,
-          filename: a.filename,
-          contentType: a.contentType,
-        })),
-      ],
+    const { data, error } = await resend.emails.send(
+      {
+        from,
+        to,
+        subject: outbound.subject,
+        text: outbound.textBody,
+        html: outbound.htmlBody,
+        attachments: [
+          ...photoAttachments.attachments.map((a) => ({
+            content: a.content,
+            filename: a.filename,
+            contentId: a.contentId,
+            contentType: a.contentType,
+          })),
+          ...productFileAttachments.attachments.map((a) => ({
+            content: a.content,
+            filename: a.filename,
+            contentType: a.contentType,
+          })),
+        ],
+      },
+      { idempotencyKey },
+    );
+    console.info("[send-email] timing", {
+      phase: "resend.emails.send",
+      ms: Date.now() - resendCallStartedAt,
+      hadError: !!error,
+      errorStatusCode: error?.statusCode,
+      errorName: error?.name,
     });
 
     if (error) {

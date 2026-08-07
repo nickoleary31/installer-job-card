@@ -17,6 +17,7 @@ import {
   type CoreJobFields,
   type Vac4DescriptionKey,
   type JobCardCp4Payload,
+  type JobCardSscSpeedPayload,
   type JobCardPpdPayload,
   type JobCardPpdJsonConfigFile,
   type JobCardPpdJsonConfigForm,
@@ -104,9 +105,22 @@ import {
   syncPpdPayloadWithProductFiles,
   uploadProductFile,
   insertProductFileSiteRowTyped,
+  type ProductFileDefinition,
   type ProductFileUploadSlot,
   type UploadedProductFile,
 } from "@/lib/product-files";
+import {
+  BlaxtairAhdEquipmentSection,
+  BlaxtairAhdReviewSummary,
+  type BlaxtairPhotoSlot,
+  type BlaxtairPhotoSlotKey,
+} from "@/components/product-devices/BlaxtairAhdEquipmentSection";
+import {
+  BlaxtairSscSpeedSection,
+  type SscPhotoSlotKey,
+  type SscSpeedFieldState,
+} from "@/components/product-devices/BlaxtairSscSpeedSection";
+import type { InstalledProductSystem } from "@/lib/product-devices";
 
 const PHOTO_BUCKET = "job-card-photos";
 
@@ -221,6 +235,8 @@ type StoredJobCardDraft = {
     ppd?: StoredPpdDraftPayload;
     /** CP4 text/select fields only (local photos are not in draft JSON). Omit when CP4 not selected or on older drafts. */
     cp4?: StoredCp4DraftPayload;
+    /** Blaxtair SSC Speed text fields (photos/config file travel via photoUploads/productFiles). */
+    sscSpeed?: JobCardSscSpeedPayload;
     /** Registry form id when known. */
     formId?: string;
     /** Registry submission type. */
@@ -251,6 +267,8 @@ type StoredJobCardDraft = {
     photoUploads?: UploadedPhotoMetadata[];
     /** Canonical product-file metadata; bytes remain in Storage. */
     productFiles?: UploadedProductFile[];
+    /** Blaxtair AHD equipment (camera(s) + monitor) — see BlaxtairAhdEquipmentSection. */
+    installedProductSystems?: InstalledProductSystem[];
     photoSummary: {
       vac4PhotoFileNames: VacPhotoFileNames;
       vac4PhotoUrls: VacPhotoFileNames;
@@ -497,6 +515,64 @@ const PPD_PHOTO_KEYS = [
   "redAlarmOut",
   "yellowAlarmOut",
   "blackAlarmGround",
+  // Blaxtair AHD label photos — single-photo "replace" slots, reusing the PPD upload plumbing
+  // (Storage bucket, photoUploads[], draft persistence, email photo attachments) unchanged.
+  "blaxtairCamera1",
+  "blaxtairCamera2",
+  "blaxtairCamera3",
+  "blaxtairCamera4",
+  "blaxtairMonitor",
+  "blaxtairMonitorMounting",
+  // Blaxtair AHD camera "mounted" confirmation photos (distinct from the label photo).
+  "blaxtairCamera1Mounting",
+  "blaxtairCamera2Mounting",
+  "blaxtairCamera3Mounting",
+  "blaxtairCamera4Mounting",
+  // Blaxtair AHD camera wire leads — Black/Ground, Red/Out1, Yellow/Out2, Green/Out3, White/In1.
+  "blaxtairCamera1WireGround",
+  "blaxtairCamera1WireOut1",
+  "blaxtairCamera1WireOut2",
+  "blaxtairCamera1WireOut3",
+  "blaxtairCamera1WireIn1",
+  "blaxtairCamera2WireGround",
+  "blaxtairCamera2WireOut1",
+  "blaxtairCamera2WireOut2",
+  "blaxtairCamera2WireOut3",
+  "blaxtairCamera2WireIn1",
+  "blaxtairCamera3WireGround",
+  "blaxtairCamera3WireOut1",
+  "blaxtairCamera3WireOut2",
+  "blaxtairCamera3WireOut3",
+  "blaxtairCamera3WireIn1",
+  "blaxtairCamera4WireGround",
+  "blaxtairCamera4WireOut1",
+  "blaxtairCamera4WireOut2",
+  "blaxtairCamera4WireOut3",
+  "blaxtairCamera4WireIn1",
+  // Blaxtair AHD monitor wire leads — Black/Ground, Red/ConstantPower, Orange/Ignition required;
+  // White/Trigger1..Yellow/Trigger5 optional.
+  "blaxtairMonitorWireGround",
+  "blaxtairMonitorWirePower",
+  "blaxtairMonitorWireIgnition",
+  "blaxtairMonitorWireTrigger1",
+  "blaxtairMonitorWireTrigger2",
+  "blaxtairMonitorWireTrigger3",
+  "blaxtairMonitorWireTrigger4",
+  "blaxtairMonitorWireTrigger5",
+  // Blaxtair AHD external pedestrian-alarm mounting photo (system-level, not per-camera).
+  "blaxtairAlarmMounting",
+  // Blaxtair AHD wire path — system-level, multi-photo (mirrors legacy PPD/CP4/VAC4 wire path).
+  "blaxtairWirePath",
+  // Blaxtair SSC Speed (secondary product, simple photo+manual-entry fields).
+  "sscLabel",
+  "sscPower",
+  "sscGround",
+  "sscIgnition",
+  "sscCanConnection",
+  "sscSpeedSignal",
+  "sscDirection",
+  "sscMounting",
+  "sscWirePath",
 ] as const;
 type PpdPhotoKey = (typeof PPD_PHOTO_KEYS)[number];
 
@@ -932,6 +1008,55 @@ const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
   redAlarmOut: "PPD — red alarm out",
   yellowAlarmOut: "PPD — yellow alarm out",
   blackAlarmGround: "PPD — black alarm ground",
+  blaxtairCamera1: "Blaxtair — camera 1 label",
+  blaxtairCamera2: "Blaxtair — camera 2 label",
+  blaxtairCamera3: "Blaxtair — camera 3 label",
+  blaxtairCamera4: "Blaxtair — camera 4 label",
+  blaxtairMonitor: "Blaxtair — monitor label",
+  blaxtairMonitorMounting: "Blaxtair — monitor mounting photo",
+  blaxtairCamera1Mounting: "Blaxtair — camera 1 mounted",
+  blaxtairCamera2Mounting: "Blaxtair — camera 2 mounted",
+  blaxtairCamera3Mounting: "Blaxtair — camera 3 mounted",
+  blaxtairCamera4Mounting: "Blaxtair — camera 4 mounted",
+  blaxtairCamera1WireGround: "Blaxtair — camera 1 wire: Black (Ground)",
+  blaxtairCamera1WireOut1: "Blaxtair — camera 1 wire: Red (Out 1)",
+  blaxtairCamera1WireOut2: "Blaxtair — camera 1 wire: Yellow (Out 2)",
+  blaxtairCamera1WireOut3: "Blaxtair — camera 1 wire: Green (Out 3)",
+  blaxtairCamera1WireIn1: "Blaxtair — camera 1 wire: White (In 1)",
+  blaxtairCamera2WireGround: "Blaxtair — camera 2 wire: Black (Ground)",
+  blaxtairCamera2WireOut1: "Blaxtair — camera 2 wire: Red (Out 1)",
+  blaxtairCamera2WireOut2: "Blaxtair — camera 2 wire: Yellow (Out 2)",
+  blaxtairCamera2WireOut3: "Blaxtair — camera 2 wire: Green (Out 3)",
+  blaxtairCamera2WireIn1: "Blaxtair — camera 2 wire: White (In 1)",
+  blaxtairCamera3WireGround: "Blaxtair — camera 3 wire: Black (Ground)",
+  blaxtairCamera3WireOut1: "Blaxtair — camera 3 wire: Red (Out 1)",
+  blaxtairCamera3WireOut2: "Blaxtair — camera 3 wire: Yellow (Out 2)",
+  blaxtairCamera3WireOut3: "Blaxtair — camera 3 wire: Green (Out 3)",
+  blaxtairCamera3WireIn1: "Blaxtair — camera 3 wire: White (In 1)",
+  blaxtairCamera4WireGround: "Blaxtair — camera 4 wire: Black (Ground)",
+  blaxtairCamera4WireOut1: "Blaxtair — camera 4 wire: Red (Out 1)",
+  blaxtairCamera4WireOut2: "Blaxtair — camera 4 wire: Yellow (Out 2)",
+  blaxtairCamera4WireOut3: "Blaxtair — camera 4 wire: Green (Out 3)",
+  blaxtairCamera4WireIn1: "Blaxtair — camera 4 wire: White (In 1)",
+  blaxtairMonitorWireGround: "Blaxtair — monitor wire: Black (Ground)",
+  blaxtairMonitorWirePower: "Blaxtair — monitor wire: Red (Constant Power)",
+  blaxtairMonitorWireIgnition: "Blaxtair — monitor wire: Orange (Ignition)",
+  blaxtairMonitorWireTrigger1: "Blaxtair — monitor wire: White (Trigger 1)",
+  blaxtairMonitorWireTrigger2: "Blaxtair — monitor wire: Blue (Trigger 2)",
+  blaxtairMonitorWireTrigger3: "Blaxtair — monitor wire: Green (Trigger 3)",
+  blaxtairMonitorWireTrigger4: "Blaxtair — monitor wire: Brown (Trigger 4)",
+  blaxtairMonitorWireTrigger5: "Blaxtair — monitor wire: Yellow (Trigger 5)",
+  blaxtairAlarmMounting: "Blaxtair — external alarm mounting",
+  blaxtairWirePath: "Blaxtair — wire path",
+  sscLabel: "SSC Speed — label photo",
+  sscPower: "SSC Speed — power connection",
+  sscGround: "SSC Speed — ground connection",
+  sscIgnition: "SSC Speed — ignition connection",
+  sscCanConnection: "SSC Speed — CAN connection",
+  sscSpeedSignal: "SSC Speed — speed signal connection",
+  sscDirection: "SSC Speed — direction signal connection",
+  sscMounting: "SSC Speed — mounting",
+  sscWirePath: "SSC Speed — wire path",
 };
 
 const CP4_PHOTO_LABELS: Record<Cp4PhotoKey, string> = {
@@ -1003,7 +1128,7 @@ const PHOTO_FIELD_LABELS: Record<UploadFieldName, string> = {
 };
 
 /** Shared upload control copy for VAC4, PPD, CP4, and vehicle photos */
-const PHOTO_UPLOAD_LABEL_SINGLE = "Take or upload photo";
+export const PHOTO_UPLOAD_LABEL_SINGLE = "Take or upload photo";
 const PHOTO_UPLOAD_LABEL_MULTI = "Take or upload photos";
 
 const VAC_PHOTO_KEYS = Object.keys(emptyVacPhotoFileNames()) as (keyof VacPhotoFileNames)[];
@@ -1036,7 +1161,7 @@ function VAC4Section({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function RequiredMark() {
+export function RequiredMark() {
   return (
     <span className="text-red-600 font-bold" aria-hidden="true">
       *
@@ -1151,7 +1276,7 @@ function FormSectionHeader({ title, tone }: { title: string; tone: "blue" | "gre
   );
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
+export function SummaryRow({ label, value }: { label: string; value: string }) {
   const shown = value.trim() ? value : "Not Installed";
   const valueClass =
     shown === "Not Installed"
@@ -1188,13 +1313,13 @@ function formatPhotoSelectionLine(count: number, names: string[]) {
   return `${names.length} photos: ${names.join(", ")}`;
 }
 
-function PhotoUploadFeedback({ count, names }: { count: number; names: string[] }) {
+export function PhotoUploadFeedback({ count, names }: { count: number; names: string[] }) {
   const line = formatPhotoSelectionLine(count, names);
   if (!line) return null;
   return <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{line}</p>;
 }
 
-type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string; uploadedAt?: string };
+export type RemoteThumb = { publicUrl: string; filename: string; storagePath?: string; uploadedAt?: string };
 
 type CombinedPhotoPreview =
   | { kind: "remote"; key: string; remote: RemoteThumb }
@@ -1326,7 +1451,7 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
   return entries;
 }
 
-function PhotoThumbnailGrid({
+export function PhotoThumbnailGrid({
   files,
   remotePhotos = [],
   onRemoveRemote,
@@ -1410,7 +1535,7 @@ function PhotoThumbnailGrid({
   );
 }
 
-function PhotoUploadedBadge({
+export function PhotoUploadedBadge({
   show,
   status,
 }: {
@@ -1439,7 +1564,7 @@ function PhotoUploadedBadge({
   );
 }
 
-function PhotoFieldError({ message }: { message: string | null }) {
+export function PhotoFieldError({ message }: { message: string | null }) {
   if (!message) return null;
   return <p className="mt-1 text-sm font-medium text-red-600">{message}</p>;
 }
@@ -1496,6 +1621,21 @@ export function NewSubmissionForm() {
   const [linxupLcPhotoErrors, setLinxupLcPhotoErrors] = useState<Record<LinxupLcPhotoKey, string | null>>(() =>
     emptyLinxupLcPhotoErrors(),
   );
+  /** Blaxtair AHD equipment (camera(s) + monitor) — only populated when that product is selected. */
+  const [blaxtairSystem, setBlaxtairSystem] = useState<InstalledProductSystem | null>(null);
+  /** Blaxtair SSC Speed — simple photo + manual-entry fields, only populated when that product is selected. */
+  const [sscFields, setSscFields] = useState<SscSpeedFieldState>({
+    connectionType: "",
+    powerDescription: "",
+    groundDescription: "",
+    ignitionDescription: "",
+    speedSignalDescription: "",
+    hasDirectionSignal: false,
+    directionDescription: "",
+  });
+  const [sscConfigFile, setSscConfigFile] = useState<UploadedProductFile | null>(null);
+  const [sscConfigFileUploading, setSscConfigFileUploading] = useState(false);
+  const [sscConfigFileError, setSscConfigFileError] = useState<string | null>(null);
   const [submissionCompletedAt, setSubmissionCompletedAt] = useState<number | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<"Draft" | "Submitted">("Draft");
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
@@ -1622,6 +1762,74 @@ export function NewSubmissionForm() {
         storagePath: p.storagePath,
         uploadedAt: p.uploadedAt,
       }));
+  };
+
+  /** Multi-photo Blaxtair slots (galleries, not single "replace" fields) — everything else stays single. */
+  const BLAXTAIR_MULTI_PHOTO_KEYS: PpdPhotoKey[] = ["blaxtairWirePath", "sscWirePath"];
+
+  const getBlaxtairPhotoSlot = (key: BlaxtairPhotoSlotKey): BlaxtairPhotoSlot => {
+    const ppdKey = key as PpdPhotoKey;
+    const uploadField = ppdUploadFieldFor(ppdKey);
+    const mode: "single" | "multi" = BLAXTAIR_MULTI_PHOTO_KEYS.includes(ppdKey) ? "multi" : "single";
+    return {
+      files: ppdPhotoFiles[ppdKey],
+      remoteThumbs: remoteThumbsForPpdField(ppdKey),
+      error: ppdPhotoErrors[ppdKey],
+      uploadedCount: photoMetadataByField[uploadField].filter((p) => p.publicUrl?.trim()).length,
+      persistStatus: photoFieldPersistStatus[uploadField] ?? undefined,
+      onUpload: (e) => void applyPpdPhotoUpload(ppdKey, e, mode),
+      onRemoveLocal: (file) => removePpdLocalPhoto(ppdKey, file),
+      onRemoveRemote: (remote) => void removeUploadedPhotoFromField(uploadField, remote),
+    };
+  };
+
+  const getSscPhotoSlot = (key: SscPhotoSlotKey): BlaxtairPhotoSlot => getBlaxtairPhotoSlot(key as unknown as BlaxtairPhotoSlotKey);
+
+  const handleSscConfigFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return;
+    setSscConfigFileUploading(true);
+    setSscConfigFileError(null);
+    try {
+      const projectContext = await resolveProjectContextPayload();
+      const dotIndex = file.name.lastIndexOf(".");
+      const ext = dotIndex >= 0 ? file.name.slice(dotIndex) : "";
+      const slugify = (v: string, fallback: string) => (v.trim().replace(/[^a-zA-Z0-9._-]/g, "_") || fallback);
+      const siteSlug = slugify(projectContext.projectName || coreJob.location, "site");
+      const unitSlug = slugify(coreJob.unitNumber, "asset");
+      const renamedFile = new File([file], `${siteSlug}_${unitSlug}${ext}`, { type: file.type });
+      const definition: ProductFileDefinition = {
+        key: "ssc_config",
+        label: "SSC Speed configuration file",
+        category: "configuration",
+        required: true,
+        multiple: false,
+        acceptedExtensions: [],
+        acceptedMimeTypes: [],
+        includeInReview: true,
+        includeInEmail: true,
+        productScoped: true,
+        displayOrder: 0,
+        active: true,
+      };
+      const uploaded = await uploadProductFile({
+        file: renamedFile,
+        definition,
+        productKey: "SSC_SPEED",
+        baseFormId: "speed_ssc",
+        companyId: projectContext.companyId,
+        projectId: projectContext.projectId,
+        customerId: null,
+        unitNumber: coreJob.unitNumber,
+      });
+      await insertProductFileSiteRowTyped({ file: uploaded, submissionId });
+      setSscConfigFile(uploaded);
+    } catch (err) {
+      setSscConfigFileError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setSscConfigFileUploading(false);
+    }
   };
 
   const remoteThumbsForCp4Field = (key: Cp4PhotoKey): RemoteThumb[] => {
@@ -2447,6 +2655,7 @@ export function NewSubmissionForm() {
       if (!linxupVehicleType.trim()) issues.push("linxup-vehicleType");
       if (!linxupHoursMiles.trim()) issues.push("linxup-hoursMiles");
       if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
+      if (vehiclePictureCounts.vehicleRear < 1) issues.push("photo-vehicleRear");
       if (isLinxUpVehicleTracker) {
         if (linxupVtPc.vehicleTrackerTag < 1) issues.push("photo-linxup-vt-vehicleTrackerTag");
         if (linxupVtObdPortConnected !== "Yes" && linxupVtObdPortConnected !== "No") {
@@ -2514,6 +2723,7 @@ export function NewSubmissionForm() {
     if (!coreJob.equipmentSerial.trim()) issues.push("vehicle-equipmentSerial");
     if (vehiclePictureCounts.vehicleFront < 1) issues.push("photo-vehicleFront");
     if (vehiclePictureCounts.vehicleSide < 1) issues.push("photo-vehicleSide");
+    if (vehiclePictureCounts.vehicleRear < 1) issues.push("photo-vehicleRear");
     if (!coreJob.installerName.trim()) issues.push("core-installerName");
     if (hasAdditional !== "Yes" && hasAdditional !== "No") issues.push("hw-hasAdditional");
 
@@ -2571,7 +2781,92 @@ export function NewSubmissionForm() {
       }
     }
 
-    if (selectedIncludeEffective(selectedSections, "PPD")) {
+    if (selectedSections.includes("blaxtair_ahd")) {
+      const hasBlaxtairPhoto = (field: PpdPhotoKey) =>
+        photoMetadataByField[ppdUploadFieldFor(field)].some((p) => p.publicUrl?.trim());
+      if (!blaxtairSystem || !blaxtairSystem.plannedCameraCount) {
+        issues.push("blaxtair-equipment");
+      } else {
+        const CAMERA_WIRE_KEYS: Array<{ key: string; suffix: string }> = [
+          { key: "ground", suffix: "Ground" },
+          { key: "out1", suffix: "Out1" },
+          { key: "out2", suffix: "Out2" },
+          { key: "out3", suffix: "Out3" },
+          { key: "in1", suffix: "In1" },
+        ];
+        const MONITOR_WIRE_KEYS: Array<{ key: string; suffix: string; required: boolean }> = [
+          { key: "ground", suffix: "Ground", required: true },
+          { key: "power", suffix: "Power", required: true },
+          { key: "ignition", suffix: "Ignition", required: true },
+          { key: "trigger1", suffix: "Trigger1", required: false },
+          { key: "trigger2", suffix: "Trigger2", required: false },
+          { key: "trigger3", suffix: "Trigger3", required: false },
+          { key: "trigger4", suffix: "Trigger4", required: false },
+          { key: "trigger5", suffix: "Trigger5", required: false },
+        ];
+        for (const c of blaxtairSystem.components) {
+          const key = `blaxtair-${c.id}`;
+          const isMonitor = c.componentType === "monitor";
+          const cameraNum = isMonitor ? null : c.slotKey.slice("camera_".length);
+          const photoField = isMonitor ? "blaxtairMonitor" : (`blaxtairCamera${cameraNum}` as PpdPhotoKey);
+          const hasPhoto = hasBlaxtairPhoto(photoField);
+          if (!c.technicianConfirmed || !hasPhoto) issues.push(key);
+          if (isMonitor) {
+            if (!hasBlaxtairPhoto("blaxtairMonitorMounting")) issues.push(`${key}-mountingPhoto`);
+          } else {
+            if (!hasBlaxtairPhoto(`blaxtairCamera${cameraNum}Mounting` as PpdPhotoKey)) issues.push(`${key}-installPhoto`);
+          }
+          const wireKeys = isMonitor ? MONITOR_WIRE_KEYS : CAMERA_WIRE_KEYS.map((w) => ({ ...w, required: false }));
+          for (const wireDef of wireKeys) {
+            const lead = c.wireLeads?.[wireDef.key];
+            const used = wireDef.required || lead?.used;
+            if (!used) continue;
+            const wireField = isMonitor
+              ? (`blaxtairMonitorWire${wireDef.suffix}` as PpdPhotoKey)
+              : (`blaxtairCamera${cameraNum}Wire${wireDef.suffix}` as PpdPhotoKey);
+            if (!hasBlaxtairPhoto(wireField) || !lead?.description.trim()) {
+              issues.push(`${key}-wire-${wireDef.key}`);
+            }
+          }
+        }
+        const alarm = blaxtairSystem.externalAlarm;
+        if (alarm?.installed) {
+          if (!hasBlaxtairPhoto("blaxtairAlarmMounting")) issues.push("blaxtair-alarm-mountingPhoto");
+          if (alarm.triggerComponentIds.length === 0) issues.push("blaxtair-alarm-cameras");
+        }
+        if (!hasBlaxtairPhoto("blaxtairWirePath")) issues.push(ppdPhotoIssueKey("blaxtairWirePath"));
+      }
+    }
+
+    if (selectedSections.includes("blaxtair_ssc_speed")) {
+      const hasSscPhoto = (field: PpdPhotoKey) => photoMetadataByField[ppdUploadFieldFor(field)].some((p) => p.publicUrl?.trim());
+      if (!hasSscPhoto("sscLabel")) issues.push("ssc-label");
+      if (!hasSscPhoto("sscPower")) issues.push("ssc-power");
+      if (!sscFields.powerDescription.trim()) issues.push("ssc-power-description");
+      if (!hasSscPhoto("sscGround")) issues.push("ssc-ground");
+      if (!sscFields.groundDescription.trim()) issues.push("ssc-ground-description");
+      if (!hasSscPhoto("sscIgnition")) issues.push("ssc-ignition");
+      if (!sscFields.ignitionDescription.trim()) issues.push("ssc-ignition-description");
+      if (sscFields.connectionType !== "CAN" && sscFields.connectionType !== "Hardwire") {
+        issues.push("ssc-connectionType");
+      } else if (sscFields.connectionType === "CAN") {
+        if (!hasSscPhoto("sscCanConnection")) issues.push("ssc-canConnection");
+      } else {
+        if (!hasSscPhoto("sscSpeedSignal")) issues.push("ssc-speedSignal");
+        if (!sscFields.speedSignalDescription.trim()) issues.push("ssc-speedSignal-description");
+        if (sscFields.hasDirectionSignal) {
+          if (!hasSscPhoto("sscDirection")) issues.push("ssc-direction");
+          if (!sscFields.directionDescription.trim()) issues.push("ssc-direction-description");
+        }
+      }
+      if (!hasSscPhoto("sscMounting")) issues.push("ssc-mounting");
+      if (!hasSscPhoto("sscWirePath")) issues.push("ssc-wirePath");
+      // Config file upload is temporarily hidden from the SSC Speed section — see
+      // SSC_CONFIG_FILE_UPLOAD_ENABLED in BlaxtairSscSpeedSection.tsx. Do not require it
+      // while the field is hidden, or the form becomes impossible to submit.
+    }
+
+    if (selectedIncludeEffective(selectedSections, "PPD") && !selectedSections.includes("blaxtair_ahd")) {
       if (!ppdHubSerial.trim()) issues.push("ppd-hubSerial");
       for (const loc of ppdCameraLocations) {
         if (!ppdCameraSerialsByLocation[loc]?.trim()) {
@@ -2916,8 +3211,7 @@ export function NewSubmissionForm() {
   const isVacPhotoField = (key: UploadFieldName): key is keyof VacPhotoFileNames => VAC_PHOTO_KEYS.includes(key as keyof VacPhotoFileNames);
 
   const isPhotoFieldRequiredNow = (field: UploadFieldName): boolean => {
-    if (field === "vehicleFront" || field === "vehicleSide") return true;
-    if (field === "vehicleRear") return false;
+    if (field === "vehicleFront" || field === "vehicleSide" || field === "vehicleRear") return true;
     if (!selectedSections.includes("VAC4")) return false;
 
     const isElectricDrive = vac4DriveType === "Electric";
@@ -3842,6 +4136,7 @@ export function NewSubmissionForm() {
           powerConverterDescription: cp4PowerConverterDescription,
         }
       : undefined;
+    const sscSpeedPayload = selectedSections.includes("blaxtair_ssc_speed") ? { ...sscFields } : undefined;
     const linxupPayload = isLinxUpProfile && selectedPrimaryForm
       ? buildLinxUpPayload({
           formId: selectedPrimaryForm.id,
@@ -3904,13 +4199,18 @@ export function NewSubmissionForm() {
       photoUploads: [...photoSnapshot.photoUploads],
       ...(ppdPayload ? { ppd: ppdPayload } : {}),
       ...(cp4Payload ? { cp4: cp4Payload } : {}),
+      ...(sscSpeedPayload ? { sscSpeed: sscSpeedPayload } : {}),
       ...(linxupPayload ? { linxup: linxupPayload } : {}),
-      productFiles: mergeLegacyPpdIntoProductFiles({
-        productKey: PPD_PRODUCT_KEY,
-        productFiles: flattenUploadedProductFiles(productFileSlots),
-        ppd: ppdPayload,
-        baseFormId: "ppd",
-      }),
+      ...(blaxtairSystem ? { installedProductSystems: [blaxtairSystem] } : {}),
+      productFiles: [
+        ...mergeLegacyPpdIntoProductFiles({
+          productKey: PPD_PRODUCT_KEY,
+          productFiles: flattenUploadedProductFiles(productFileSlots),
+          ppd: ppdPayload,
+          baseFormId: "ppd",
+        }),
+        ...(sscConfigFile ? [sscConfigFile] : []),
+      ],
       vac4: {
       vehicleType: vac4VehicleType,
       otherVehicleType: vac4OtherVehicleType,
@@ -4371,6 +4671,7 @@ export function NewSubmissionForm() {
     setHasAdditional(draft.hardwareSelection?.hasAdditional || "");
     // Keep stored IDs; selectedAdditional derives allowed extras once company context is ready.
     setAdditional(Array.isArray(draft.hardwareSelection?.additional) ? draft.hardwareSelection.additional : []);
+    setBlaxtairSystem(Array.isArray(draft.installedProductSystems) ? (draft.installedProductSystems[0] ?? null) : null);
     setVac4VehicleType(String(draft.vac4?.vehicleType || ""));
     setVac4OtherVehicleType(String(draft.vac4?.otherVehicleType || ""));
     setVac4DriveType(String(draft.vac4?.driveType || ""));
@@ -4519,6 +4820,38 @@ export function NewSubmissionForm() {
       setCp4WhiteWireDescription("");
       setCp4MonitorMountingDescription("");
       setCp4PowerConverterDescription("");
+    }
+
+    const rawSsc = draft.sscSpeed;
+    if (rawSsc !== undefined && rawSsc !== null && typeof rawSsc === "object" && !Array.isArray(rawSsc)) {
+      const s = rawSsc as Record<string, unknown>;
+      const connectionType = draftString(s.connectionType);
+      setSscFields({
+        connectionType: connectionType === "CAN" || connectionType === "Hardwire" ? connectionType : "",
+        powerDescription: draftString(s.powerDescription),
+        groundDescription: draftString(s.groundDescription),
+        ignitionDescription: draftString(s.ignitionDescription),
+        speedSignalDescription: draftString(s.speedSignalDescription),
+        hasDirectionSignal: !!s.hasDirectionSignal,
+        directionDescription: draftString(s.directionDescription),
+      });
+    } else {
+      setSscFields({
+        connectionType: "",
+        powerDescription: "",
+        groundDescription: "",
+        ignitionDescription: "",
+        speedSignalDescription: "",
+        hasDirectionSignal: false,
+        directionDescription: "",
+      });
+    }
+    {
+      const draftProductFiles = readUploadedProductFiles(
+        (draft as { productFiles?: unknown }).productFiles ?? (draft as { productArtifacts?: unknown }).productArtifacts,
+      );
+      setSscConfigFile(draftProductFiles.find((f) => f.fileKey === "ssc_config") ?? null);
+      setSscConfigFileError(null);
     }
 
     if (draft.linxup || (draft.formId && draft.formId.startsWith("linxup_")) || isLinxUpSectionKey(draft.hardwareSelection?.primary)) {
@@ -5236,15 +5569,20 @@ export function NewSubmissionForm() {
         blackAlarmGroundDescription: ppdBlackAlarmGroundDescription,
       },
       ...(cp4DraftPayload ? { cp4: cp4DraftPayload } : {}),
+      ...(selectedSections.includes("blaxtair_ssc_speed") ? { sscSpeed: { ...sscFields } } : {}),
       photoUploads: photoSnapshot.photoUploads,
-      productFiles: mergeLegacyPpdIntoProductFiles({
-        productKey: PPD_PRODUCT_KEY,
-        productFiles: flattenUploadedProductFiles(productFileSlots),
-        ppd: {
-          jsonConfigFile: ppdJsonUploadedConfig || undefined,
-        },
-        baseFormId: "ppd",
-      }),
+      productFiles: [
+        ...mergeLegacyPpdIntoProductFiles({
+          productKey: PPD_PRODUCT_KEY,
+          productFiles: flattenUploadedProductFiles(productFileSlots),
+          ppd: {
+            jsonConfigFile: ppdJsonUploadedConfig || undefined,
+          },
+          baseFormId: "ppd",
+        }),
+        ...(sscConfigFile ? [sscConfigFile] : []),
+      ],
+      ...(blaxtairSystem ? { installedProductSystems: [blaxtairSystem] } : {}),
       photoSummary: {
         vac4PhotoFileNames: vacPhotoFileNames,
         vac4PhotoUrls: photoSnapshot.vacPhotoUrls,
@@ -5454,12 +5792,15 @@ export function NewSubmissionForm() {
         mergeResult.merged,
       ) as StoredJobCardDraft["data"];
 
-      const memoryProductFiles = mergeLegacyPpdIntoProductFiles({
-        productKey: PPD_PRODUCT_KEY,
-        productFiles: flattenUploadedProductFiles(productFileSlots),
-        ppd: { jsonConfigFile: ppdJsonUploadedConfig || undefined },
-        baseFormId: "ppd",
-      });
+      const memoryProductFiles = [
+        ...mergeLegacyPpdIntoProductFiles({
+          productKey: PPD_PRODUCT_KEY,
+          productFiles: flattenUploadedProductFiles(productFileSlots),
+          ppd: { jsonConfigFile: ppdJsonUploadedConfig || undefined },
+          baseFormId: "ppd",
+        }),
+        ...(sscConfigFile ? [sscConfigFile] : []),
+      ];
       const productFileMerge = mergeDurableProductFiles({
         cloudFiles: cloudProductFiles,
         memoryFiles: memoryProductFiles,
@@ -5467,7 +5808,8 @@ export function NewSubmissionForm() {
           flattenUploadedProductFiles(productFileSlots).length === 0 &&
           !ppdJsonLocalFile &&
           !ppdJsonUploadedConfig &&
-          !ppdJsonFileName.trim(),
+          !ppdJsonFileName.trim() &&
+          !sscConfigFile,
       });
       draftDataForSave = {
         ...draftDataForSave,
@@ -5885,7 +6227,13 @@ export function NewSubmissionForm() {
   const requiredHint = (key: string) =>
     hl(key) ? (
       <p className="mt-1 text-sm font-medium text-red-600 dark:text-red-400">
-        {key.startsWith("photo-")
+        {key === "blaxtair-equipment"
+          ? "Confirm every camera and the monitor, including their required photos, before continuing."
+          : key.includes("-wire-") && !key.endsWith("-description")
+            ? "Add a clear photo of this wire connection."
+            : key.endsWith("-description") && key.includes("-wire-")
+              ? "Describe the connection point for this wire."
+              : key.startsWith("photo-")
           ? "Add at least one clear photo here."
           : key === "cp4-cameraQuantity"
             ? "Select 1–4 cameras."
@@ -6608,7 +6956,10 @@ export function NewSubmissionForm() {
             </div>
 
             <div id="field-photo-vehicleRear">
-              <label className={labelClassName}>Vehicle rear photo (optional)</label>
+              <label className={fieldLabelClass("photo-vehicleRear")}>
+                Vehicle rear photo(s)
+                <RequiredMark />
+              </label>
               <input
                 id="vehicleRearPictures"
                 type="file"
@@ -6619,7 +6970,7 @@ export function NewSubmissionForm() {
               />
               <label
                 htmlFor="vehicleRearPictures"
-                className={photoPickClass("photo-vehicleRear", false, vehiclePictureCounts.vehicleRear >= 1)}
+                className={photoPickClass("photo-vehicleRear", true, vehiclePictureCounts.vehicleRear >= 1)}
               >
                 {PHOTO_UPLOAD_LABEL_MULTI}
               </label>
@@ -6635,6 +6986,7 @@ export function NewSubmissionForm() {
                 status={photoFieldPersistStatus.vehicleRear || null}
               />
               <PhotoFieldError message={vehiclePictureErrors.vehicleRear} />
+              {requiredHint("photo-vehicleRear")}
             </div>
           </div>
         </section>
@@ -8440,7 +8792,7 @@ export function NewSubmissionForm() {
           selectedSections
             .filter((section) => {
               const renderKey = resolveEffective(section);
-              return renderKey === "CP4" || renderKey === "PPD";
+              return renderKey === "CP4" || renderKey === "PPD" || renderKey === "Speed SSC";
             })
             .map((section) => {
               const renderKey = resolveEffective(section);
@@ -9054,9 +9406,42 @@ export function NewSubmissionForm() {
                     </div>
                   </div>
                 </section>
+              ) : renderKey === "Speed SSC" ? (
+                <section key={section} className={cardClassName}>
+                  <FormSectionHeader title={productLabel(section) || "SSC Speed"} tone="green" />
+                  <BlaxtairSscSpeedSection
+                    value={sscFields}
+                    onChange={(field, value) => setSscFields((prev) => ({ ...prev, [field]: value }))}
+                    getPhotoSlot={getSscPhotoSlot}
+                    configFile={sscConfigFile}
+                    configFileUploading={sscConfigFileUploading}
+                    configFileError={sscConfigFileError}
+                    onConfigFileChange={(e) => void handleSscConfigFileUpload(e)}
+                    fieldLabelClass={fieldLabelClass}
+                    fieldInputClass={fieldInputClass}
+                    fieldSelectClass={fieldSelectClass}
+                    photoPickClass={photoPickClass}
+                    requiredHint={requiredHint}
+                  />
+                </section>
               ) : renderKey === "PPD" ? (
                 <section key={section} className={cardClassName}>
                   <FormSectionHeader title={ppdSectionTitle} tone="green" />
+                  {section === "blaxtair_ahd" ? (
+                    <BlaxtairAhdEquipmentSection
+                      system={blaxtairSystem}
+                      onChangeSystem={setBlaxtairSystem}
+                      fieldLabelClass={fieldLabelClass}
+                      fieldInputClass={fieldInputClass}
+                      fieldSelectClass={fieldSelectClass}
+                      photoPickClass={photoPickClass}
+                      requiredHint={requiredHint}
+                      clearFieldHighlight={clearFieldHighlight}
+                      getPhotoSlot={getBlaxtairPhotoSlot}
+                      reviewHighlights={reviewHighlights}
+                    />
+                  ) : (
+                    <>
                   <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-100">
                     <p className="font-semibold">Uses Vehicle Information from this card</p>
                     <p className="mt-1 text-emerald-900/90 dark:text-emerald-200/90">
@@ -9846,6 +10231,8 @@ export function NewSubmissionForm() {
                       ) : null}
                     </div>
                   </div>
+                    </>
+                  )}
                 </section>
               ) : null;
             })}
@@ -10276,9 +10663,32 @@ export function NewSubmissionForm() {
                   </div>
                 </div>
               </section>
+            ) : renderKey === "Speed SSC" ? (
+              <section key={`review-hw-${section}`} className={cardClassName}>
+                <FormSectionHeader title={productLabel(section) || "SSC Speed"} tone="green" />
+                <div>
+                  <SummaryRow label="Connected via" value={sscFields.connectionType} />
+                  <SummaryRow label="Power connection" value={sscFields.powerDescription} />
+                  <SummaryRow label="Ground connection" value={sscFields.groundDescription} />
+                  <SummaryRow label="Ignition connection" value={sscFields.ignitionDescription} />
+                  {sscFields.connectionType === "Hardwire" ? (
+                    <>
+                      <SummaryRow label="Speed signal" value={sscFields.speedSignalDescription} />
+                      <SummaryRow label="Has direction signal?" value={sscFields.hasDirectionSignal ? "Yes" : "No"} />
+                      {sscFields.hasDirectionSignal ? (
+                        <SummaryRow label="Direction signal" value={sscFields.directionDescription} />
+                      ) : null}
+                    </>
+                  ) : null}
+                  <SummaryRow label="Configuration file" value={sscConfigFile?.originalFileName ?? ""} />
+                </div>
+              </section>
             ) : renderKey === "PPD" ? (
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title={ppdSectionTitle} tone="green" />
+                {section === "blaxtair_ahd" ? (
+                  <BlaxtairAhdReviewSummary system={blaxtairSystem} getPhotoSlot={getBlaxtairPhotoSlot} />
+                ) : (
                 <div>
                   <SummaryRow label="Hub serial #" value={ppdHubSerial} />
                   <SummaryRow label="Camera serials" value={ppdCameraSerialsReviewSummary} />
@@ -10392,6 +10802,7 @@ export function NewSubmissionForm() {
                     ) : null}
                   </div>
                 </div>
+                )}
               </section>
             ) : (
               <section key={`review-hw-${section}`} className={cardClassName}>

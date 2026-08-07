@@ -76,6 +76,18 @@ export type JobCardLinxupPayload = {
   vehicleTracker?: JobCardLinxupVehicleTrackerPayload;
   /** LinxCam OBD / hardwire details (when LinxCam is on the card). */
   linxCam?: JobCardLinxupLinxCamPayload;
+  /**
+   * Pilot dual-write: device identifiers from installedDevices (review/email).
+   * Not used by legacy submissions.
+   */
+  deviceIdentifiers?: {
+    activationCode?: string;
+    serialNumber?: string;
+    imei?: string;
+    macAddress?: string;
+    installationVariant?: "obd_ii" | "jbus" | "standard" | null;
+  };
+  installedDeviceIds?: string[];
 };
 
 export function isLinxUpVehicleType(value: string): value is LinxUpVehicleType {

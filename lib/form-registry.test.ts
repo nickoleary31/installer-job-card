@@ -49,12 +49,18 @@ describe("form-registry Blaxtair association", () => {
     assert.equal(sectionKeys.size, 5);
   });
 
-  it("offers only Blaxtair devices as primary; SSC Speed is secondary-only", () => {
+  it("offers all five Blaxtair products as primary, including SSC Speed (standalone add-to-existing-system case)", () => {
     assert.deepEqual(
       getAllowedPrimaryForms(BLAXTAIR_COMPANY_NAME).map((f) => f.id),
-      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3"],
+      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed"],
     );
-    assert.ok(!getAllowedPrimaryForms(BLAXTAIR_COMPANY_NAME).some((f) => f.id === "blaxtair_ssc_speed"));
+  });
+
+  it("still never allows two Blaxtair PPD-family devices together, whichever is primary", () => {
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ahd", ["blaxtair_origin"]), false);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ahd", ["blaxtair_ssc_speed"]), true);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ssc_speed", ["blaxtair_ahd"]), true);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ssc_speed", ["blaxtair_origin"]), true);
   });
 
   it("maps Blaxtair products to Matrix PPD / Speed SSC bases", () => {

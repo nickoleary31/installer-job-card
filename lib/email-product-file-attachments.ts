@@ -21,8 +21,8 @@ export type ProductFileEmailAttachment = {
 
 export type BuildProductFileEmailAttachmentsResult = {
   attachments: ProductFileEmailAttachment[];
-  attached: { label: string; filename: string; storagePath: string }[];
-  skipped: { label: string; filename: string; storagePath: string; reason: string }[];
+  attached: { fileKey: string; label: string; filename: string; storagePath: string }[];
+  skipped: { fileKey: string; label: string; filename: string; storagePath: string; reason: string }[];
 };
 
 function serviceClient(existing?: SupabaseClient): SupabaseClient {
@@ -82,6 +82,7 @@ export async function buildProductFileEmailAttachments(
       const { data, error } = await supabase.storage.from(bucket).download(storagePath);
       if (error || !data) {
         skipped.push({
+          fileKey: file.fileKey,
           label,
           filename,
           storagePath,
@@ -92,6 +93,7 @@ export async function buildProductFileEmailAttachments(
       const buffer = Buffer.from(await data.arrayBuffer());
       if (buffer.byteLength > MAX_PRODUCT_FILE_ATTACHMENT_BYTES) {
         skipped.push({
+          fileKey: file.fileKey,
           label,
           filename,
           storagePath,
@@ -106,9 +108,10 @@ export async function buildProductFileEmailAttachments(
         storagePath,
         label,
       });
-      attached.push({ label, filename, storagePath });
+      attached.push({ fileKey: file.fileKey, label, filename, storagePath });
     } catch (err: unknown) {
       skipped.push({
+        fileKey: file.fileKey,
         label,
         filename,
         storagePath,

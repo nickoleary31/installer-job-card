@@ -125,6 +125,17 @@ export type JobCardCp4Payload = {
   powerConverterDescription: string;
 };
 
+/** Blaxtair SSC Speed text fields (photos/config file travel via photoUploads/productFiles). */
+export type JobCardSscSpeedPayload = {
+  connectionType: "" | "CAN" | "Hardwire";
+  powerDescription: string;
+  groundDescription: string;
+  ignitionDescription: string;
+  speedSignalDescription: string;
+  hasDirectionSignal: boolean;
+  directionDescription: string;
+};
+
 export type JobCardSubmissionPayload = {
   submissionId: string;
   submissionTimestamp: string;
@@ -158,8 +169,15 @@ export type JobCardSubmissionPayload = {
    * Preferred over deprecated ppd.jsonConfigFile / jsonFileName for new drafts and submissions.
    */
   productFiles?: import("./product-files/types").UploadedProductFile[];
+  /**
+   * Phase 1 Product Devices pilot: vehicle-centric installed product systems.
+   * Prefer installedProductSystems; installedDevices remains for legacy dual-compat.
+   */
+  installedProductSystems?: import("./product-devices/types").InstalledProductSystem[];
+  installedDevices?: import("./product-devices/types").InstalledProductDevice[];
   ppd?: JobCardPpdPayload;
   cp4?: JobCardCp4Payload;
+  sscSpeed?: JobCardSscSpeedPayload;
   linxup?: JobCardLinxupPayload;
   vac4: {
     vehicleType: string;

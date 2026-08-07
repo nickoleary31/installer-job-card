@@ -167,6 +167,28 @@ function emptyResult(sections: EmailPhotoSection[]): PhotoCidAttachmentResult {
   };
 }
 
+/** Fetch+optimize is I/O and CPU heavy — run a bounded number concurrently instead of one-at-a-time, which turns a 20-photo job card into a minutes-long serial chain that times out before Resend is ever called. */
+const DOWNLOAD_OPTIMIZE_CONCURRENCY = 5;
+
+type RefOutcome =
+  | { ref: PhotoRef; ok: true; contentId: string; filename: string; optimizedImage: Awaited<ReturnType<typeof optimizeImageForEmailAttachment>> }
+  | { ref: PhotoRef; ok: false; reason: string; filename: string };
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex;
+      nextIndex += 1;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 export async function buildCidPhotoAttachments(
   sections: EmailPhotoSection[],
   options: BuildCidPhotoAttachmentsOptions = {},
@@ -194,8 +216,10 @@ export async function buildCidPhotoAttachments(
 
   const supabase = options.supabase ?? createServiceRoleStorageClient();
 
-  for (const ref of refs) {
-    const contentId = contentIdForStoragePath(ref.storagePath);
+  // Phase 1 — fetch + optimize every ref concurrently (bounded). No shared mutable state here,
+  // so this is safe to run out of order; results stay indexed to `refs` for deterministic phase 2.
+  const batchStartedAt = Date.now();
+  const outcomes = await mapWithConcurrency(refs, DOWNLOAD_OPTIMIZE_CONCURRENCY, async (ref): Promise<RefOutcome> => {
     const attachmentDisplayName = buildEmailAttachmentFilename({
       customer: ctx.customer,
       assetNumber: ctx.assetNumber,
@@ -203,30 +227,22 @@ export async function buildCidPhotoAttachments(
       sequenceInField: ref.sequenceInField,
       extension: "jpg",
     });
-
-    const pushFailure = (reason: string, filename = attachmentDisplayName) => {
-      skippedCount += 1;
-      failures.push({
-        label: ref.fieldLabel,
-        filename,
-        storagePath: ref.storagePath,
-        reason,
-      });
-    };
-
+    const downloadStartedAt = Date.now();
     try {
       const { data, error } = await supabase.storage.from(JOB_CARD_PHOTOS_BUCKET).download(ref.storagePath);
+      const downloadMs = Date.now() - downloadStartedAt;
       if (error || !data) {
-        pushFailure(error?.message || "download failed");
-        continue;
+        console.info("[email-photos] timing", { storagePath: ref.storagePath, downloadMs, ok: false, stage: "download" });
+        return { ref, ok: false, reason: error?.message || "download failed", filename: attachmentDisplayName };
       }
 
       const raw = Buffer.from(await data.arrayBuffer());
       if (raw.byteLength === 0) {
-        pushFailure("empty file");
-        continue;
+        console.info("[email-photos] timing", { storagePath: ref.storagePath, downloadMs, ok: false, stage: "empty" });
+        return { ref, ok: false, reason: "empty file", filename: attachmentDisplayName };
       }
 
+      const optimizeStartedAt = Date.now();
       let optimizedImage;
       try {
         optimizedImage = await optimizeImageForEmailAttachment(raw, {
@@ -234,10 +250,20 @@ export async function buildCidPhotoAttachments(
           hardMaxBytes: HARD_MAX_ATTACHMENT_BYTES,
         });
       } catch (optErr) {
+        const optimizeMs = Date.now() - optimizeStartedAt;
+        console.info("[email-photos] timing", { storagePath: ref.storagePath, downloadMs, optimizeMs, ok: false, stage: "optimize" });
         const msg = optErr instanceof Error ? optErr.message : "optimization failed";
-        pushFailure(msg);
-        continue;
+        return { ref, ok: false, reason: msg, filename: attachmentDisplayName };
       }
+      const optimizeMs = Date.now() - optimizeStartedAt;
+      console.info("[email-photos] timing", {
+        storagePath: ref.storagePath,
+        downloadMs,
+        optimizeMs,
+        totalMs: Date.now() - downloadStartedAt,
+        originalKB: Math.round(raw.byteLength / 1024),
+        ok: true,
+      });
 
       const ext = optimizedImage.extension;
       const filename =
@@ -245,55 +271,75 @@ export async function buildCidPhotoAttachments(
           ? attachmentDisplayName.replace(/\.[^.]+$/, ".jpg")
           : attachmentDisplayName.replace(/\.[^.]+$/, ".png");
 
-      if (totalOptimizedBytes + optimizedImage.optimizedBytes > MAX_TOTAL_PHOTO_ATTACHMENT_BYTES) {
-        pushFailure(
-          `total attachment size would exceed ${Math.round(MAX_TOTAL_PHOTO_ATTACHMENT_BYTES / (1024 * 1024))}MB`,
-          filename,
-        );
-        continue;
-      }
-
-      const optimizeDetail: PhotoOptimizeDetail = {
-        label: ref.fieldLabel,
-        filename,
-        storagePath: ref.storagePath,
-        originalBytes: optimizedImage.originalBytes,
-        optimizedBytes: optimizedImage.optimizedBytes,
-        width: optimizedImage.width,
-        height: optimizedImage.height,
-      };
-      optimized.push(optimizeDetail);
-
-      attachments.push({
-        content: optimizedImage.buffer,
-        filename,
-        contentId,
-        contentType: optimizedImage.contentType,
-        originalBytes: optimizedImage.originalBytes,
-        optimizedBytes: optimizedImage.optimizedBytes,
-        storagePath: ref.storagePath,
-        fieldLabel: ref.fieldLabel,
-      });
-      cidByStoragePath.set(ref.storagePath, contentId);
-      attached.push({
-        label: ref.fieldLabel,
-        filename,
-        storagePath: ref.storagePath,
-        contentId,
-        originalBytes: optimizedImage.originalBytes,
-        optimizedBytes: optimizedImage.optimizedBytes,
-      });
-      statsByPath.set(ref.storagePath, {
-        attachmentDisplayName: filename,
-        originalBytes: optimizedImage.originalBytes,
-        optimizedBytes: optimizedImage.optimizedBytes,
-      });
-      totalOptimizedBytes += optimizedImage.optimizedBytes;
-      totalOriginalBytes += optimizedImage.originalBytes;
+      return { ref, ok: true, contentId: contentIdForStoragePath(ref.storagePath), filename, optimizedImage };
     } catch (e) {
+      const downloadMs = Date.now() - downloadStartedAt;
+      console.info("[email-photos] timing", { storagePath: ref.storagePath, downloadMs, ok: false, stage: "exception" });
       const message = e instanceof Error ? e.message : "unknown error";
-      pushFailure(message);
+      return { ref, ok: false, reason: message, filename: attachmentDisplayName };
     }
+  });
+  console.info("[email-photos] batch complete", { refCount: refs.length, totalBatchMs: Date.now() - batchStartedAt });
+
+  // Phase 2 — apply the running total-size budget in the original, deterministic ref order.
+  for (const outcome of outcomes) {
+    const { ref } = outcome;
+    const pushFailure = (reason: string, filename: string) => {
+      skippedCount += 1;
+      failures.push({ label: ref.fieldLabel, filename, storagePath: ref.storagePath, reason });
+    };
+
+    if (!outcome.ok) {
+      pushFailure(outcome.reason, outcome.filename);
+      continue;
+    }
+
+    const { contentId, filename, optimizedImage } = outcome;
+
+    if (totalOptimizedBytes + optimizedImage.optimizedBytes > MAX_TOTAL_PHOTO_ATTACHMENT_BYTES) {
+      pushFailure(
+        `total attachment size would exceed ${Math.round(MAX_TOTAL_PHOTO_ATTACHMENT_BYTES / (1024 * 1024))}MB`,
+        filename,
+      );
+      continue;
+    }
+
+    optimized.push({
+      label: ref.fieldLabel,
+      filename,
+      storagePath: ref.storagePath,
+      originalBytes: optimizedImage.originalBytes,
+      optimizedBytes: optimizedImage.optimizedBytes,
+      width: optimizedImage.width,
+      height: optimizedImage.height,
+    });
+
+    attachments.push({
+      content: optimizedImage.buffer,
+      filename,
+      contentId,
+      contentType: optimizedImage.contentType,
+      originalBytes: optimizedImage.originalBytes,
+      optimizedBytes: optimizedImage.optimizedBytes,
+      storagePath: ref.storagePath,
+      fieldLabel: ref.fieldLabel,
+    });
+    cidByStoragePath.set(ref.storagePath, contentId);
+    attached.push({
+      label: ref.fieldLabel,
+      filename,
+      storagePath: ref.storagePath,
+      contentId,
+      originalBytes: optimizedImage.originalBytes,
+      optimizedBytes: optimizedImage.optimizedBytes,
+    });
+    statsByPath.set(ref.storagePath, {
+      attachmentDisplayName: filename,
+      originalBytes: optimizedImage.originalBytes,
+      optimizedBytes: optimizedImage.optimizedBytes,
+    });
+    totalOptimizedBytes += optimizedImage.optimizedBytes;
+    totalOriginalBytes += optimizedImage.originalBytes;
   }
 
   const blocked = failures.length > 0 && !options.allowPartialSend;
