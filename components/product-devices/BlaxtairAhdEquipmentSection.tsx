@@ -671,7 +671,6 @@ export function BlaxtairAhdEquipmentSection(props: {
                     type="file"
                     className="hidden"
                     accept="image/png,image/jpeg,image/jpg"
-                    capture={ocrAvailable ? "environment" : undefined}
                     onChange={(e) => handlePhotoChange(component, e)}
                   />
                   <label
@@ -1205,7 +1204,6 @@ function BlaxtairFirstCameraCapture(props: {
           type="file"
           className="hidden"
           accept="image/png,image/jpeg,image/jpg"
-          capture="environment"
           onChange={(e) => {
             const file = e.target.files?.[0] ?? null;
             if (file) props.onScan(file, e);
