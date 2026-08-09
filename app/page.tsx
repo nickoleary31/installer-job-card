@@ -2006,6 +2006,17 @@ export function NewSubmissionForm() {
   }, [selectableProducts]);
   /** True when rendering the shared LinxUp field profile. */
   const isLinxUpProfile = companyUsesLinxUpProfile || isLinxUpSectionKey(effectivePrimary);
+  /**
+   * Company only has Blaxtair products — mirrors companyUsesLinxUpProfile so the
+   * Blaxtair-only Hours/Miles field can show before hardware is picked, matching how
+   * technicians actually fill the form top-to-bottom (Vehicle Information first).
+   */
+  const companyUsesBlaxtairProfile = useMemo(() => {
+    return (
+      selectableProducts.length > 0 &&
+      selectableProducts.every((p) => p.sectionKey.startsWith("blaxtair_"))
+    );
+  }, [selectableProducts]);
   const availableAdditional = useMemo(() => {
     return getAllowedAdditionalProducts(resolvedProducts, effectivePrimary).map((p) => p.sectionKey);
   }, [resolvedProducts, effectivePrimary]);
@@ -2015,8 +2026,10 @@ export function NewSubmissionForm() {
     [additional, availableAdditional],
   );
   const selectedSections = [effectivePrimary, ...selectedAdditional].filter(Boolean);
-  /** True for any Blaxtair product (AHD/MR130-MR260/Origin/3/SSC Speed), primary or additional. */
-  const isBlaxtairFamily = selectedSections.some((s) => s.startsWith("blaxtair_"));
+  /** True for any Blaxtair product (AHD/MR130-MR260/Origin/3/SSC Speed), primary or additional,
+   * or before hardware is picked when the company only offers Blaxtair products. */
+  const isBlaxtairFamily =
+    companyUsesBlaxtairProfile || selectedSections.some((s) => s.startsWith("blaxtair_"));
 
   const selectedNormalizedProducts = useMemo((): NormalizedProductDefinition[] => {
     return selectedSections
