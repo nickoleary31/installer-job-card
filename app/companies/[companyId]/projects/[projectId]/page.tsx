@@ -135,11 +135,11 @@ const EXPENSE_CATEGORIES = [
 
 const getReceiptValidationError = (file: File | null) => {
   if (!file) return null;
-  if (!["image/jpeg", "image/png"].includes(file.type)) {
-    return "Only JPEG and PNG receipt images are allowed.";
+  if (!["image/jpeg", "image/png", "application/pdf"].includes(file.type)) {
+    return "Only JPEG, PNG, or PDF receipts are allowed.";
   }
   if (file.size > MAX_RECEIPT_BYTES) {
-    return "Receipt image is too large (10MB max).";
+    return "Receipt file is too large (10MB max).";
   }
   return null;
 };
@@ -768,7 +768,7 @@ export default function ProjectDashboardPage() {
                   <input
                     ref={uploadReceiptInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/jpg"
+                    accept="image/png,image/jpeg,image/jpg,application/pdf"
                     onChange={handleReceiptFileChange}
                     className="hidden"
                   />
@@ -788,16 +788,22 @@ export default function ProjectDashboardPage() {
                       Upload Receipt
                     </button>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500">JPEG or PNG, up to 10MB.</p>
+                  <p className="mt-1 text-xs text-gray-500">JPEG, PNG, or PDF, up to 10MB.</p>
                   {receiptFile ? <p className="mt-1 text-xs text-gray-600">Selected: {receiptFile.name}</p> : null}
                   {receiptPreviewUrl ? (
                     <div className="mt-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={receiptPreviewUrl}
-                        alt="Receipt preview"
-                        className="h-24 w-24 rounded-lg border border-gray-200 object-cover"
-                      />
+                      {receiptFile?.type === "application/pdf" ? (
+                        <div className="flex h-24 w-24 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-xs font-semibold text-gray-600">
+                          PDF selected
+                        </div>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={receiptPreviewUrl}
+                          alt="Receipt preview"
+                          className="h-24 w-24 rounded-lg border border-gray-200 object-cover"
+                        />
+                      )}
                     </div>
                   ) : null}
                   {receiptValidationError ? <p className="mt-1 text-xs font-semibold text-amber-700">{receiptValidationError}</p> : null}
