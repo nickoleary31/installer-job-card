@@ -1659,6 +1659,7 @@ export function NewSubmissionForm() {
   const [vac4VehicleVoltageOther, setVac4VehicleVoltageOther] = useState("");
   const [vac4ClientApproval, setVac4ClientApproval] = useState("");
   const [vac4HourMeter, setVac4HourMeter] = useState("");
+  const [blaxtairHoursMiles, setBlaxtairHoursMiles] = useState("");
   const [sensorHubInstalled, setSensorHubInstalled] = useState("");
   const [liftSenseInstalled, setLiftSenseInstalled] = useState("");
   const [operatorPresenceInstalled, setOperatorPresenceInstalled] = useState("");
@@ -2014,6 +2015,8 @@ export function NewSubmissionForm() {
     [additional, availableAdditional],
   );
   const selectedSections = [effectivePrimary, ...selectedAdditional].filter(Boolean);
+  /** True for any Blaxtair product (AHD/MR130-MR260/Origin/3/SSC Speed), primary or additional. */
+  const isBlaxtairFamily = selectedSections.some((s) => s.startsWith("blaxtair_"));
 
   const selectedNormalizedProducts = useMemo((): NormalizedProductDefinition[] => {
     return selectedSections
@@ -2779,6 +2782,10 @@ export function NewSubmissionForm() {
         if (pc.brownWire < 1) issues.push("photo-brownWire");
         if (!brownWireDescription.trim()) issues.push("vac4-brownWireDescription");
       }
+    }
+
+    if (isBlaxtairFamily) {
+      if (!blaxtairHoursMiles.trim()) issues.push("blaxtair-hoursMiles");
     }
 
     if (selectedSections.includes("blaxtair_ahd")) {
@@ -4219,6 +4226,7 @@ export function NewSubmissionForm() {
       vehicleVoltageOther: vac4VehicleVoltageOther,
       clientApproval: vac4ClientApproval,
       hourMeter: vac4HourMeter,
+      blaxtairHoursMiles,
       sensorHubInstalled,
       liftSenseInstalled,
       operatorPresenceInstalled,
@@ -4679,6 +4687,7 @@ export function NewSubmissionForm() {
     setVac4VehicleVoltageOther(String(draft.vac4?.vehicleVoltageOther || ""));
     setVac4ClientApproval(String(draft.vac4?.clientApproval || ""));
     setVac4HourMeter(String(draft.vac4?.hourMeter || ""));
+    setBlaxtairHoursMiles(String(draft.vac4?.blaxtairHoursMiles || ""));
     setSensorHubInstalled(String(draft.vac4?.sensorHubInstalled || ""));
     setLiftSenseInstalled(String(draft.vac4?.liftSenseInstalled || ""));
     setOperatorPresenceInstalled(String(draft.vac4?.operatorPresenceInstalled || ""));
@@ -5529,6 +5538,7 @@ export function NewSubmissionForm() {
         vehicleVoltageOther: vac4VehicleVoltageOther,
         clientApproval: vac4ClientApproval,
         hourMeter: vac4HourMeter,
+      blaxtairHoursMiles,
         sensorHubInstalled,
         liftSenseInstalled,
         operatorPresenceInstalled,
@@ -6808,6 +6818,25 @@ export function NewSubmissionForm() {
                 {requiredHint("vac4-driveType")}
               </div>
             )}
+
+            {isBlaxtairFamily ? (
+              <div id="field-blaxtair-hoursMiles">
+                <label className={fieldLabelClass("blaxtair-hoursMiles")}>
+                  Hours / Miles
+                  <RequiredMark />
+                </label>
+                <input
+                  className={fieldInputClass("blaxtair-hoursMiles")}
+                  placeholder="exp: 1234"
+                  value={blaxtairHoursMiles}
+                  onChange={(e) => {
+                    setBlaxtairHoursMiles(e.target.value);
+                    clearFieldHighlight("blaxtair-hoursMiles");
+                  }}
+                />
+                {requiredHint("blaxtair-hoursMiles")}
+              </div>
+            ) : null}
 
             {!isLinxUpProfile && vac4DriveType === "Electric" && (
               <div className="space-y-5 md:col-span-2">

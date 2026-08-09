@@ -293,6 +293,9 @@ function buildLegacyDocument(
               ? `Other (${display(v.vehicleVoltageOther)})`
               : display(v.vehicleVoltage),
         },
+        ...(p.selectedSections.some((s) => s.startsWith("blaxtair_"))
+          ? [{ label: "Hours / Miles", value: display(v.blaxtairHoursMiles) }]
+          : []),
       ],
     },
     {

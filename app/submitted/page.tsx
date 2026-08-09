@@ -116,6 +116,7 @@ type SubmissionPayloadLite = {
     speedSensePulseCount?: string;
     loadSenseThresholds?: string;
     photoCounts?: Record<string, number>;
+    blaxtairHoursMiles?: string;
   };
   photoUploads?: Array<{
     group?: "vac4" | "vehicle" | "ppd" | "cp4" | "linxup";
@@ -133,6 +134,12 @@ type SubmissionPayloadLite = {
   };
   productFiles?: Array<{ fileKey?: string; originalFileName?: string }>;
 };
+
+/** Any Blaxtair product (AHD/MR130-MR260/Origin/3/SSC Speed), primary or additional. */
+function isBlaxtairFamilyPayload(payload: SubmissionPayloadLite): boolean {
+  if (payload.selectedSections?.some((s) => s.startsWith("blaxtair_"))) return true;
+  return !!payload.hardwareSelection?.primary?.startsWith("blaxtair_");
+}
 
 function isBlaxtairAhdPayload(payload: SubmissionPayloadLite): boolean {
   if (payload.selectedSections?.includes("blaxtair_ahd")) return true;
@@ -791,6 +798,9 @@ export default function SubmittedPage() {
                     <p><span className="font-semibold text-gray-600">Drive Type:</span> {renderDetailValue(row.payload.vac4?.driveType)}</p>
                     <p><span className="font-semibold text-gray-600">Vehicle Type:</span> {renderDetailValue(row.payload.vac4?.vehicleType)}</p>
                     <p><span className="font-semibold text-gray-600">Voltage:</span> {renderDetailValue(row.payload.vac4?.vehicleVoltage)}</p>
+                    {isBlaxtairFamilyPayload(row.payload) ? (
+                      <p><span className="font-semibold text-gray-600">Hours / Miles:</span> {renderDetailValue(row.payload.vac4?.blaxtairHoursMiles)}</p>
+                    ) : null}
                   </div>
                 </section>
 

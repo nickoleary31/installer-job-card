@@ -187,6 +187,8 @@ export type JobCardSubmissionPayload = {
     vehicleVoltageOther: string;
     clientApproval: string;
     hourMeter: string;
+    /** Blaxtair family (AHD/MR130-MR260/Origin/3/SSC Speed) vehicle hours/miles. */
+    blaxtairHoursMiles?: string;
     sensorHubInstalled: string;
     liftSenseInstalled: string;
     operatorPresenceInstalled?: string;
