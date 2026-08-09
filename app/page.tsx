@@ -9464,6 +9464,7 @@ export function NewSubmissionForm() {
                     fieldSelectClass={fieldSelectClass}
                     photoPickClass={photoPickClass}
                     requiredHint={requiredHint}
+                    clearFieldHighlight={clearFieldHighlight}
                   />
                 </section>
               ) : renderKey === "PPD" ? (

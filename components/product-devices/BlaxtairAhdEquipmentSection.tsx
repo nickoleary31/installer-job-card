@@ -209,6 +209,7 @@ function BlaxtairWireLeadField(props: {
   fieldInputClass: (key: string) => string;
   photoPickClass: (key: string, required: boolean, complete: boolean) => string;
   requiredHint: (key: string) => ReactNode;
+  clearFieldHighlight: (key: string) => void;
 }) {
   const { wireDef, wire } = props;
   const show = wireDef.required || wire.used;
@@ -240,7 +241,10 @@ function BlaxtairWireLeadField(props: {
               type="file"
               className="hidden"
               accept="image/png,image/jpeg,image/jpg"
-              onChange={props.photoSlot.onUpload}
+              onChange={(e) => {
+                props.photoSlot.onUpload(e);
+                props.clearFieldHighlight(props.highlightKey);
+              }}
             />
             <label
               htmlFor={`blaxtair-photo-${props.highlightKey}`}
@@ -711,7 +715,10 @@ export function BlaxtairAhdEquipmentSection(props: {
                       type="file"
                       className="hidden"
                       accept="image/png,image/jpeg,image/jpg"
-                      onChange={installPhotoSlot.onUpload}
+                      onChange={(e) => {
+                        installPhotoSlot.onUpload(e);
+                        props.clearFieldHighlight(`${highlightKey}-installPhoto`);
+                      }}
                     />
                     <label
                       htmlFor={`blaxtair-photo-${component.id}-install`}
@@ -872,7 +879,10 @@ export function BlaxtairAhdEquipmentSection(props: {
                       type="file"
                       className="hidden"
                       accept="image/png,image/jpeg,image/jpg"
-                      onChange={mountingPhotoSlot.onUpload}
+                      onChange={(e) => {
+                        mountingPhotoSlot.onUpload(e);
+                        props.clearFieldHighlight(`${highlightKey}-mountingPhoto`);
+                      }}
                     />
                     <label
                       htmlFor={`blaxtair-photo-${component.id}-mounting`}
@@ -913,6 +923,7 @@ export function BlaxtairAhdEquipmentSection(props: {
                         fieldInputClass={props.fieldInputClass}
                         photoPickClass={props.photoPickClass}
                         requiredHint={props.requiredHint}
+                        clearFieldHighlight={props.clearFieldHighlight}
                       />
                     );
                   })}
@@ -941,6 +952,7 @@ export function BlaxtairAhdEquipmentSection(props: {
         fieldSelectClass={props.fieldSelectClass}
         photoPickClass={props.photoPickClass}
         requiredHint={props.requiredHint}
+        clearFieldHighlight={props.clearFieldHighlight}
       />
 
       <BlaxtairWirePathSection
@@ -1009,6 +1021,7 @@ function BlaxtairExternalAlarmSection(props: {
   fieldSelectClass: (key: string) => string;
   photoPickClass: (key: string, required: boolean, complete: boolean) => string;
   requiredHint: (key: string) => ReactNode;
+  clearFieldHighlight: (key: string) => void;
 }) {
   const alarm = props.system.externalAlarm ?? { installed: false, triggerComponentIds: [] };
   const highlightKey = "blaxtair-alarm";
@@ -1053,7 +1066,10 @@ function BlaxtairExternalAlarmSection(props: {
               type="file"
               className="hidden"
               accept="image/png,image/jpeg,image/jpg"
-              onChange={props.photoSlot.onUpload}
+              onChange={(e) => {
+                props.photoSlot.onUpload(e);
+                props.clearFieldHighlight(`${highlightKey}-mountingPhoto`);
+              }}
             />
             <label
               htmlFor="blaxtair-photo-alarm-mounting"

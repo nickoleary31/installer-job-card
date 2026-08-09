@@ -48,6 +48,7 @@ function PhotoBlock(props: {
   photoPickClass: (key: string, required: boolean, complete: boolean) => string;
   fieldLabelClass: (key: string) => string;
   requiredHint: (key: string) => ReactNode;
+  clearFieldHighlight: (key: string) => void;
   /** Gallery field (e.g. wire path) — allows multiple photos instead of a single "replace" slot. */
   multi?: boolean;
 }) {
@@ -63,7 +64,10 @@ function PhotoBlock(props: {
         className="hidden"
         accept="image/png,image/jpeg,image/jpg"
         multiple={props.multi}
-        onChange={props.photoSlot.onUpload}
+        onChange={(e) => {
+          props.photoSlot.onUpload(e);
+          props.clearFieldHighlight(props.highlightKey);
+        }}
       />
       <label
         htmlFor={`ssc-photo-${props.highlightKey}`}
@@ -98,6 +102,7 @@ export function BlaxtairSscSpeedSection(props: {
   fieldSelectClass: (key: string) => string;
   photoPickClass: (key: string, required: boolean, complete: boolean) => string;
   requiredHint: (key: string) => ReactNode;
+  clearFieldHighlight: (key: string) => void;
 }) {
   const { value } = props;
 
@@ -111,6 +116,7 @@ export function BlaxtairSscSpeedSection(props: {
         photoPickClass={props.photoPickClass}
         fieldLabelClass={props.fieldLabelClass}
         requiredHint={props.requiredHint}
+        clearFieldHighlight={props.clearFieldHighlight}
       />
 
       {(
@@ -130,6 +136,7 @@ export function BlaxtairSscSpeedSection(props: {
             photoPickClass={props.photoPickClass}
             fieldLabelClass={props.fieldLabelClass}
             requiredHint={props.requiredHint}
+            clearFieldHighlight={props.clearFieldHighlight}
           />
           <div className="mt-3" id={`field-ssc-${conn.key}-description`}>
             <label className={props.fieldLabelClass(`ssc-${conn.key}-description`)}>
@@ -175,6 +182,7 @@ export function BlaxtairSscSpeedSection(props: {
               photoPickClass={props.photoPickClass}
               fieldLabelClass={props.fieldLabelClass}
               requiredHint={props.requiredHint}
+              clearFieldHighlight={props.clearFieldHighlight}
             />
           </div>
         ) : null}
@@ -189,6 +197,7 @@ export function BlaxtairSscSpeedSection(props: {
               photoPickClass={props.photoPickClass}
               fieldLabelClass={props.fieldLabelClass}
               requiredHint={props.requiredHint}
+              clearFieldHighlight={props.clearFieldHighlight}
             />
             <div id="field-ssc-speedSignal-description">
               <label className={props.fieldLabelClass("ssc-speedSignal-description")}>
@@ -222,6 +231,7 @@ export function BlaxtairSscSpeedSection(props: {
                   photoPickClass={props.photoPickClass}
                   fieldLabelClass={props.fieldLabelClass}
                   requiredHint={props.requiredHint}
+                  clearFieldHighlight={props.clearFieldHighlight}
                 />
                 <div id="field-ssc-direction-description">
                   <label className={props.fieldLabelClass("ssc-direction-description")}>
@@ -250,6 +260,7 @@ export function BlaxtairSscSpeedSection(props: {
         photoPickClass={props.photoPickClass}
         fieldLabelClass={props.fieldLabelClass}
         requiredHint={props.requiredHint}
+        clearFieldHighlight={props.clearFieldHighlight}
       />
 
       <PhotoBlock
@@ -261,6 +272,7 @@ export function BlaxtairSscSpeedSection(props: {
         photoPickClass={props.photoPickClass}
         fieldLabelClass={props.fieldLabelClass}
         requiredHint={props.requiredHint}
+        clearFieldHighlight={props.clearFieldHighlight}
       />
 
       {SSC_CONFIG_FILE_UPLOAD_ENABLED ? (
