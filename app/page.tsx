@@ -644,6 +644,41 @@ type LinxupLcUploadFieldName = { [K in LinxupLcPhotoKey]: `linxup_lc_${K}` }[Lin
 function ppdUploadFieldFor(key: PpdPhotoKey): PpdUploadFieldName {
   return `ppd_${key}` as PpdUploadFieldName;
 }
+
+/**
+ * Blaxtair/SSC single-photo ("replace") upload field names — everything under the
+ * blaxtair/ssc prefixes except the two multi-photo gallery fields. Scoped deliberately to
+ * just these newer fields, not the legacy PPD/CP4/VAC4/LinxUp fields sharing the same
+ * generic photo-merge helper, to avoid changing already-shipped behavior for other products.
+ */
+const BLAXTAIR_SSC_SINGLE_PHOTO_UPLOAD_FIELDS = new Set<string>(
+  PPD_PHOTO_KEYS.filter(
+    (k) => (k.startsWith("blaxtair") || k.startsWith("ssc")) && k !== "blaxtairWirePath" && k !== "sscWirePath",
+  ).map((k) => ppdUploadFieldFor(k)),
+);
+
+/**
+ * mergeDurablePhotoUploads unions cloud + memory photos by storage path — correct for
+ * multi-photo galleries, but a "replace" field's old (deleted) photo and its new
+ * replacement have different storage paths, so both survive the union as an apparent
+ * duplicate. For known single-photo Blaxtair/SSC fields, keep only the most recently
+ * uploaded entry per field.
+ */
+function dedupeSinglePhotoUploadFields(uploads: UploadedPhotoMetadata[]): UploadedPhotoMetadata[] {
+  const latestByField = new Map<string, UploadedPhotoMetadata>();
+  const passthrough: UploadedPhotoMetadata[] = [];
+  for (const u of uploads) {
+    if (!BLAXTAIR_SSC_SINGLE_PHOTO_UPLOAD_FIELDS.has(u.fieldName)) {
+      passthrough.push(u);
+      continue;
+    }
+    const existing = latestByField.get(u.fieldName);
+    if (!existing || Date.parse(u.uploadedAt || "") >= Date.parse(existing.uploadedAt || "")) {
+      latestByField.set(u.fieldName, u);
+    }
+  }
+  return [...passthrough, ...latestByField.values()];
+}
 function cp4UploadFieldFor(key: Cp4PhotoKey): Cp4UploadFieldName {
   return `cp4_${key}` as Cp4UploadFieldName;
 }
@@ -5794,9 +5829,13 @@ export function NewSubmissionForm() {
         });
       }
 
+      // Cloud+memory union can leave a replaced single-photo field's old (deleted) storage
+      // path alongside its replacement, since they never share a storage path to dedupe on.
+      const dedupedMerged = dedupeSinglePhotoUploadFields(mergeResult.merged);
+
       // Sync merged durable refs into in-memory metadata so later autosave/resume keep them.
       const restoredMetadataByField = emptyPhotoMetadataByField();
-      for (const photo of mergeResult.merged) {
+      for (const photo of dedupedMerged) {
         const key = photo.fieldName as UploadFieldName;
         if (key in restoredMetadataByField) {
           restoredMetadataByField[key].push(photo);
@@ -5812,7 +5851,7 @@ export function NewSubmissionForm() {
       const normalizedCoreJob = normalizeUppercaseCoreJob(coreJob);
       let draftDataForSave = applyMergedPhotoUploadsToPayload(
         buildCurrentDraftData(syncedSnapshot) as Record<string, unknown>,
-        mergeResult.merged,
+        dedupedMerged,
       ) as StoredJobCardDraft["data"];
 
       const memoryProductFiles = [
@@ -5975,7 +6014,7 @@ export function NewSubmissionForm() {
       // Re-assert merged photos after PPD mutations.
       draftDataForSave = applyMergedPhotoUploadsToPayload(
         draftDataForSave as Record<string, unknown>,
-        mergeResult.merged,
+        dedupedMerged,
       ) as StoredJobCardDraft["data"];
 
       const updatedAt = new Date().toISOString();
@@ -6012,7 +6051,7 @@ export function NewSubmissionForm() {
       if (verifyErr) {
         throw new Error(verifyErr.message || "Failed to verify saved draft.");
       }
-      const expectedPaths = mergeResult.merged.map((m) => m.storagePath);
+      const expectedPaths = dedupedMerged.map((m) => m.storagePath);
       const verification = verifyMergedStoragePathsPresent(verifiedRow?.payload, expectedPaths);
       if (!verification.ok) {
         logDraftPhotoSaveDiagnostic({

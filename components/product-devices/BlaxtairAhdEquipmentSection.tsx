@@ -384,11 +384,22 @@ export function BlaxtairAhdEquipmentSection(props: {
     return drafts[component.id] ?? draftFromIdentifiers(component.identifiers);
   }
 
+  /**
+   * Commits an identifier draft into the actual system state immediately (not just local
+   * `drafts`), so a draft-save before "Confirm" still persists what's been typed/scanned so
+   * far. Deliberately omits technicianConfirmed — that stays a separate, explicit action.
+   */
+  function commitDraftToSystem(componentId: string, draft: IdentifierDraft) {
+    if (!system) return;
+    setSystem(updateComponentFields(system, componentId, { identifiers: identifiersFromDraft(draft) }));
+  }
+
   function setDraftField(componentId: string, field: keyof IdentifierDraft, value: string) {
-    setDrafts((prev) => ({
-      ...prev,
-      [componentId]: { ...(prev[componentId] ?? draftFromIdentifiers({})), [field]: value },
-    }));
+    setDrafts((prev) => {
+      const next = { ...(prev[componentId] ?? draftFromIdentifiers({})), [field]: value };
+      commitDraftToSystem(componentId, next);
+      return { ...prev, [componentId]: next };
+    });
   }
 
   /** Part number field accepts a combined "partNumber|serialNumber" scan and fills both. */
@@ -396,10 +407,9 @@ export function BlaxtairAhdEquipmentSection(props: {
     const { partNumber, serialNumber } = splitScannedPartNumber(value);
     setDrafts((prev) => {
       const existing = prev[componentId] ?? draftFromIdentifiers({});
-      return {
-        ...prev,
-        [componentId]: { ...existing, partNumber, serialNumber: serialNumber ?? existing.serialNumber },
-      };
+      const next = { ...existing, partNumber, serialNumber: serialNumber ?? existing.serialNumber };
+      commitDraftToSystem(componentId, next);
+      return { ...prev, [componentId]: next };
     });
   }
 
@@ -408,7 +418,9 @@ export function BlaxtairAhdEquipmentSection(props: {
     setBusyId(component.id);
     try {
       const result = await runBlaxtairCameraScan(file);
-      setDrafts((prev) => ({ ...prev, [component.id]: draftFromIdentifiers(result.identifiers) }));
+      const nextDraft = draftFromIdentifiers(result.identifiers);
+      setDrafts((prev) => ({ ...prev, [component.id]: nextDraft }));
+      commitDraftToSystem(component.id, nextDraft);
       setScanMeta((prev) => ({
         ...prev,
         [component.id]: {
