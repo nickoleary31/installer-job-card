@@ -5078,6 +5078,82 @@ export function NewSubmissionForm() {
     );
   };
 
+  /**
+   * Editing an already-submitted job card reuses the draft-restore machinery above rather
+   * than duplicating ~300 lines of field-by-field restoration. JobCardSubmissionPayload and
+   * StoredJobCardDraft["data"] are structurally near-identical (both built from the same app
+   * state historically) — coreJobInfo/CoreJobFields are the same type, photoUploads is the
+   * same UploadedPhotoMetadata[] shape, and vac4 only needs its three non-string photo-summary
+   * fields stripped to fit the draft's loose Record<string, string|undefined>. photoSummary
+   * itself is never read by restoreFromDraftData except as a fallback when photoUploads is
+   * empty, so a structurally-valid empty stub is sufficient here.
+   */
+  function submissionPayloadToDraftData(payload: JobCardSubmissionPayload): StoredJobCardDraft["data"] {
+    const vac4Copy: { photoCounts?: unknown; photoFileNames?: unknown; photoUrls?: unknown } = { ...payload.vac4 };
+    delete vac4Copy.photoCounts;
+    delete vac4Copy.photoFileNames;
+    delete vac4Copy.photoUrls;
+    const vac4Strings = vac4Copy as Record<string, string | undefined>;
+    return {
+      coreJob: payload.coreJobInfo,
+      hardwareSelection: payload.hardwareSelection,
+      vac4: vac4Strings,
+      ppd: payload.ppd,
+      cp4: payload.cp4,
+      sscSpeed: payload.sscSpeed,
+      formId: payload.formId,
+      submissionType: payload.submissionType,
+      linxup: payload.linxup,
+      photoUploads: payload.photoUploads,
+      productFiles: payload.productFiles,
+      installedProductSystems: payload.installedProductSystems,
+      photoSummary: {
+        vac4PhotoFileNames: emptyVacPhotoFileNames(),
+        vac4PhotoUrls: emptyVacPhotoFileNames(),
+        vac4PhotoCounts: {},
+        vehiclePhotoFileNames: emptyVehiclePictureFileNames(),
+        vehiclePhotoUrls: emptyVehiclePictureFileNames(),
+        vehiclePhotoCounts: {},
+        photoUploads: payload.photoUploads,
+      },
+    };
+  }
+
+  const [editingSubmissionNotice, setEditingSubmissionNotice] = useState<string | null>(null);
+
+  // Editing an already-submitted job card: /new-submission?editSubmissionId=<id>. Loads the
+  // submitted payload into the form via the same restore path drafts use; submitting again
+  // updates the existing job_card_submissions row (persistSubmittedJobCard already
+  // updates-if-exists by submissionId) instead of creating a duplicate.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const editSubmissionId = new URLSearchParams(window.location.search).get("editSubmissionId")?.trim();
+    if (!editSubmissionId) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("job_card_submissions")
+        .select("payload")
+        .eq("submission_id", editSubmissionId)
+        .maybeSingle<{ payload: JobCardSubmissionPayload | null }>();
+      if (cancelled) return;
+      if (error || !data?.payload) {
+        setEditingSubmissionNotice(
+          `Could not load submission ${editSubmissionId} for editing${error ? `: ${error.message}` : "."}`,
+        );
+        return;
+      }
+      restoreFromDraftData(submissionPayloadToDraftData(data.payload), editSubmissionId);
+      setDraftNoticeMessage(null);
+      setEditingSubmissionNotice(
+        "Editing a previously submitted job card. Submitting again will update the original record and its email history — it will not create a new submission.",
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleResumeAutosave = () => {
     if (!autosaveRestorePayload) return;
     const p = autosaveRestorePayload;
@@ -6409,6 +6485,11 @@ export function NewSubmissionForm() {
             {draftNoticeMessage}
           </div>
         )}
+        {editingSubmissionNotice ? (
+          <div className="rounded-xl border border-purple-300 bg-purple-50 px-4 py-3 text-sm font-semibold text-purple-950" role="status">
+            {editingSubmissionNotice}
+          </div>
+        ) : null}
         {offlineProjectDetailsWarning ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950" role="status">
             {offlineProjectDetailsWarning}
