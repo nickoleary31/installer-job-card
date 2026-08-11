@@ -563,6 +563,13 @@ const PPD_PHOTO_KEYS = [
   "blaxtairAlarmMounting",
   // Blaxtair AHD wire path — system-level, multi-photo (mirrors legacy PPD/CP4/VAC4 wire path).
   "blaxtairWirePath",
+  // Blaxtair AHD combined wire-connection photos — one multi-photo gallery per component,
+  // replacing the earlier one-required-photo-per-wire design.
+  "blaxtairCamera1WirePhotos",
+  "blaxtairCamera2WirePhotos",
+  "blaxtairCamera3WirePhotos",
+  "blaxtairCamera4WirePhotos",
+  "blaxtairMonitorWirePhotos",
   // Blaxtair SSC Speed (secondary product, simple photo+manual-entry fields).
   "sscLabel",
   "sscPower",
@@ -1083,6 +1090,11 @@ const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
   blaxtairMonitorWireTrigger5: "Blaxtair — monitor wire: Yellow (Trigger 5)",
   blaxtairAlarmMounting: "Blaxtair — external alarm mounting",
   blaxtairWirePath: "Blaxtair — wire path",
+  blaxtairCamera1WirePhotos: "Blaxtair camera 1 — wire connection photos",
+  blaxtairCamera2WirePhotos: "Blaxtair camera 2 — wire connection photos",
+  blaxtairCamera3WirePhotos: "Blaxtair camera 3 — wire connection photos",
+  blaxtairCamera4WirePhotos: "Blaxtair camera 4 — wire connection photos",
+  blaxtairMonitorWirePhotos: "Blaxtair monitor — wire connection photos",
   sscLabel: "SSC Speed — label photo",
   sscPower: "SSC Speed — power connection",
   sscGround: "SSC Speed — ground connection",
@@ -1801,7 +1813,15 @@ export function NewSubmissionForm() {
   };
 
   /** Multi-photo Blaxtair slots (galleries, not single "replace" fields) — everything else stays single. */
-  const BLAXTAIR_MULTI_PHOTO_KEYS: PpdPhotoKey[] = ["blaxtairWirePath", "sscWirePath"];
+  const BLAXTAIR_MULTI_PHOTO_KEYS: PpdPhotoKey[] = [
+    "blaxtairWirePath",
+    "sscWirePath",
+    "blaxtairCamera1WirePhotos",
+    "blaxtairCamera2WirePhotos",
+    "blaxtairCamera3WirePhotos",
+    "blaxtairCamera4WirePhotos",
+    "blaxtairMonitorWirePhotos",
+  ];
 
   const getBlaxtairPhotoSlot = (key: BlaxtairPhotoSlotKey): BlaxtairPhotoSlot => {
     const ppdKey = key as PpdPhotoKey;
@@ -2872,16 +2892,19 @@ export function NewSubmissionForm() {
             if (!hasBlaxtairPhoto(`blaxtairCamera${cameraNum}Mounting` as PpdPhotoKey)) issues.push(`${key}-installPhoto`);
           }
           const wireKeys = isMonitor ? MONITOR_WIRE_KEYS : CAMERA_WIRE_KEYS.map((w) => ({ ...w, required: false }));
+          let anyWireUsed = false;
           for (const wireDef of wireKeys) {
             const lead = c.wireLeads?.[wireDef.key];
             const used = wireDef.required || lead?.used;
             if (!used) continue;
-            const wireField = isMonitor
-              ? (`blaxtairMonitorWire${wireDef.suffix}` as PpdPhotoKey)
-              : (`blaxtairCamera${cameraNum}Wire${wireDef.suffix}` as PpdPhotoKey);
-            if (!hasBlaxtairPhoto(wireField) || !lead?.description.trim()) {
+            anyWireUsed = true;
+            if (!lead?.description.trim()) {
               issues.push(`${key}-wire-${wireDef.key}`);
             }
+          }
+          if (anyWireUsed) {
+            const wirePhotosField = (isMonitor ? "blaxtairMonitorWirePhotos" : `blaxtairCamera${cameraNum}WirePhotos`) as PpdPhotoKey;
+            if (!hasBlaxtairPhoto(wirePhotosField)) issues.push(`${key}-wirePhotos`);
           }
         }
         const alarm = blaxtairSystem.externalAlarm;
@@ -6291,7 +6314,9 @@ export function NewSubmissionForm() {
       <p className="mt-1 text-sm font-medium text-red-600 dark:text-red-400">
         {key === "blaxtair-equipment"
           ? "Confirm every camera and the monitor, including their required photos, before continuing."
-          : key.includes("-wire-") && !key.endsWith("-description")
+          : key.endsWith("-wirePhotos")
+            ? "Add at least one photo covering the wire connections."
+            : key.includes("-wire-") && !key.endsWith("-description")
             ? "Add a clear photo of this wire connection."
             : key.endsWith("-description") && key.includes("-wire-")
               ? "Describe the connection point for this wire."
