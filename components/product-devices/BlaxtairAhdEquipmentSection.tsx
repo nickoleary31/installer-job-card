@@ -90,7 +90,12 @@ export type BlaxtairPhotoSlotKey =
   | "blaxtairMonitorWireTrigger4"
   | "blaxtairMonitorWireTrigger5"
   | "blaxtairAlarmMounting"
-  | "blaxtairWirePath";
+  | "blaxtairWirePath"
+  | "blaxtairCamera1WirePhotos"
+  | "blaxtairCamera2WirePhotos"
+  | "blaxtairCamera3WirePhotos"
+  | "blaxtairCamera4WirePhotos"
+  | "blaxtairMonitorWirePhotos";
 
 export type BlaxtairPhotoSlot = {
   files: File[];
@@ -161,55 +166,29 @@ const MONITOR_WIRE_DEFS: WireDef[] = [
   { key: "trigger5", label: "Yellow — Trigger 5", required: false },
 ];
 
-const CAMERA_WIRE_SLOT_SUFFIX: Record<string, string> = {
-  ground: "Ground",
-  out1: "Out1",
-  out2: "Out2",
-  out3: "Out3",
-  in1: "In1",
-};
-
-const MONITOR_WIRE_SLOT_SUFFIX: Record<string, string> = {
-  ground: "Ground",
-  power: "Power",
-  ignition: "Ignition",
-  trigger1: "Trigger1",
-  trigger2: "Trigger2",
-  trigger3: "Trigger3",
-  trigger4: "Trigger4",
-  trigger5: "Trigger5",
-};
-
 function cameraMountingPhotoSlotKey(cameraIndex: number): BlaxtairPhotoSlotKey {
   return `blaxtairCamera${cameraIndex}Mounting` as BlaxtairPhotoSlotKey;
-}
-
-function cameraWirePhotoSlotKey(cameraIndex: number, wireKey: string): BlaxtairPhotoSlotKey {
-  return `blaxtairCamera${cameraIndex}Wire${CAMERA_WIRE_SLOT_SUFFIX[wireKey]}` as BlaxtairPhotoSlotKey;
-}
-
-function monitorWirePhotoSlotKey(wireKey: string): BlaxtairPhotoSlotKey {
-  return `blaxtairMonitorWire${MONITOR_WIRE_SLOT_SUFFIX[wireKey]}` as BlaxtairPhotoSlotKey;
 }
 
 function emptyWireLead(): WireLeadState {
   return { used: false, description: "" };
 }
 
-/** One wire-lead row: optional "used" checkbox (required wires skip it), then required photo + connection-point text. */
+/**
+ * One wire-lead row: optional "used" checkbox (required wires skip it), then connection-point
+ * text. Photos for all of a component's wires are captured once, together, in the combined
+ * wire-connection-photos gallery below the wire list — not per wire.
+ */
 function BlaxtairWireLeadField(props: {
   wireDef: WireDef;
   wire: WireLeadState;
-  photoSlot: BlaxtairPhotoSlot;
   highlightKey: string;
   highlighted: boolean;
   onToggleUsed: (used: boolean) => void;
   onDescriptionChange: (value: string) => void;
   fieldLabelClass: (key: string) => string;
   fieldInputClass: (key: string) => string;
-  photoPickClass: (key: string, required: boolean, complete: boolean) => string;
   requiredHint: (key: string) => ReactNode;
-  clearFieldHighlight: (key: string) => void;
 }) {
   const { wireDef, wire } = props;
   const show = wireDef.required || wire.used;
@@ -234,35 +213,7 @@ function BlaxtairWireLeadField(props: {
         ) : null}
       </div>
       {show ? (
-        <div className="mt-3 space-y-3">
-          <div id={`field-photo-${props.highlightKey}`}>
-            <input
-              id={`blaxtair-photo-${props.highlightKey}`}
-              type="file"
-              className="hidden"
-              accept="image/png,image/jpeg,image/jpg"
-              onChange={(e) => {
-                props.photoSlot.onUpload(e);
-                props.clearFieldHighlight(props.highlightKey);
-              }}
-            />
-            <label
-              htmlFor={`blaxtair-photo-${props.highlightKey}`}
-              className={props.photoPickClass(props.highlightKey, true, (props.photoSlot.uploadedCount ?? 0) >= 1)}
-            >
-              {PHOTO_UPLOAD_LABEL_SINGLE}
-            </label>
-            <PhotoUploadFeedback count={props.photoSlot.uploadedCount} names={props.photoSlot.remoteThumbs.map((r) => r.filename)} />
-            <PhotoThumbnailGrid
-              files={props.photoSlot.files}
-              remotePhotos={props.photoSlot.remoteThumbs}
-              onRemoveLocal={props.photoSlot.onRemoveLocal}
-              onRemoveRemote={props.photoSlot.onRemoveRemote}
-            />
-            <PhotoUploadedBadge show={(props.photoSlot.uploadedCount ?? 0) >= 1} status={props.photoSlot.persistStatus} />
-            <PhotoFieldError message={props.photoSlot.error} />
-            {props.requiredHint(props.highlightKey)}
-          </div>
+        <div className="mt-3">
           <div id={`field-${props.highlightKey}-description`}>
             <label className={props.fieldLabelClass(`${props.highlightKey}-description`)}>
               Connection point
@@ -362,6 +313,7 @@ export function BlaxtairAhdEquipmentSection(props: {
     if (reviewHighlights.has(key)) return true;
     if (component.componentType === "monitor" && reviewHighlights.has(`${key}-mountingPhoto`)) return true;
     if (component.componentType === "camera" && reviewHighlights.has(`${key}-installPhoto`)) return true;
+    if (reviewHighlights.has(`${key}-wirePhotos`)) return true;
     for (const wireDef of componentWireDefs(component)) {
       if (reviewHighlights.has(`${key}-wire-${wireDef.key}`)) return true;
     }
@@ -519,12 +471,6 @@ export function BlaxtairAhdEquipmentSection(props: {
     setSystem(updateComponentFields(system, component.id, { wireLeads: nextWireLeads }));
   }
 
-  function wirePhotoSlotFor(component: InstalledProductComponent, wireKey: string): BlaxtairPhotoSlot {
-    const match = /^camera_([1-4])$/.exec(component.slotKey);
-    const key = match ? cameraWirePhotoSlotKey(Number(match[1]), wireKey) : monitorWirePhotoSlotKey(wireKey);
-    return props.getPhotoSlot(key);
-  }
-
   // Stage 1: no system yet — identify Camera 1 first (scan or manual), then choose camera count.
   if (!system) {
     return (
@@ -644,6 +590,14 @@ export function BlaxtairAhdEquipmentSection(props: {
         const installPhotoSlot = isCamera && cameraIndexMatch ? props.getPhotoSlot(cameraMountingPhotoSlotKey(Number(cameraIndexMatch[1]))) : null;
         const wireDefs = componentWireDefs(component);
         const highlighted = isComponentHighlighted(component);
+        const anyWireUsed = wireDefs.some((w) => w.required || component.wireLeads?.[w.key]?.used);
+        const wirePhotosSlotKey: BlaxtairPhotoSlotKey | null = isMonitor
+          ? "blaxtairMonitorWirePhotos"
+          : isCamera && cameraIndexMatch
+            ? (`blaxtairCamera${cameraIndexMatch[1]}WirePhotos` as BlaxtairPhotoSlotKey)
+            : null;
+        const wirePhotosSlot = wirePhotosSlotKey ? props.getPhotoSlot(wirePhotosSlotKey) : null;
+        const wirePhotosHighlightKey = `${highlightKey}-wirePhotos`;
 
         return (
           <div
@@ -926,20 +880,56 @@ export function BlaxtairAhdEquipmentSection(props: {
                         key={wireDef.key}
                         wireDef={wireDef}
                         wire={component.wireLeads?.[wireDef.key] ?? emptyWireLead()}
-                        photoSlot={wirePhotoSlotFor(component, wireDef.key)}
                         highlightKey={wireHighlightKey}
                         highlighted={reviewHighlights.has(wireHighlightKey)}
                         onToggleUsed={(used) => setWireLead(component, wireDef.key, { used })}
                         onDescriptionChange={(description) => setWireLead(component, wireDef.key, { description })}
                         fieldLabelClass={props.fieldLabelClass}
                         fieldInputClass={props.fieldInputClass}
-                        photoPickClass={props.photoPickClass}
                         requiredHint={props.requiredHint}
-                        clearFieldHighlight={props.clearFieldHighlight}
                       />
                     );
                   })}
                 </div>
+
+                {anyWireUsed && wirePhotosSlot ? (
+                  <div id={`field-photo-${wirePhotosHighlightKey}`}>
+                    <label className={props.fieldLabelClass(wirePhotosHighlightKey)}>
+                      Wire connection photos
+                      <RequiredMark />
+                    </label>
+                    <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                      One or more photos covering the wire connections above.
+                    </p>
+                    <input
+                      id={`blaxtair-photo-${wirePhotosHighlightKey}`}
+                      type="file"
+                      className="hidden"
+                      accept="image/png,image/jpeg,image/jpg"
+                      multiple
+                      onChange={(e) => {
+                        wirePhotosSlot.onUpload(e);
+                        props.clearFieldHighlight(wirePhotosHighlightKey);
+                      }}
+                    />
+                    <label
+                      htmlFor={`blaxtair-photo-${wirePhotosHighlightKey}`}
+                      className={props.photoPickClass(wirePhotosHighlightKey, true, (wirePhotosSlot.uploadedCount ?? 0) >= 1)}
+                    >
+                      Take or upload photos
+                    </label>
+                    <PhotoUploadFeedback count={wirePhotosSlot.uploadedCount} names={wirePhotosSlot.remoteThumbs.map((r) => r.filename)} />
+                    <PhotoThumbnailGrid
+                      files={wirePhotosSlot.files}
+                      remotePhotos={wirePhotosSlot.remoteThumbs}
+                      onRemoveLocal={wirePhotosSlot.onRemoveLocal}
+                      onRemoveRemote={wirePhotosSlot.onRemoveRemote}
+                    />
+                    <PhotoUploadedBadge show={(wirePhotosSlot.uploadedCount ?? 0) >= 1} status={wirePhotosSlot.persistStatus} />
+                    <PhotoFieldError message={wirePhotosSlot.error} />
+                    {props.requiredHint(wirePhotosHighlightKey)}
+                  </div>
+                ) : null}
 
                 <button
                   type="button"
@@ -1280,6 +1270,9 @@ export function BlaxtairAhdReviewSummary(props: {
         const installPhotoUploaded = cameraIndexMatch
           ? (props.getPhotoSlot(cameraMountingPhotoSlotKey(Number(cameraIndexMatch[1]))).uploadedCount ?? 0) >= 1
           : false;
+        const wirePhotosCount = cameraIndexMatch
+          ? props.getPhotoSlot(`blaxtairCamera${cameraIndexMatch[1]}WirePhotos` as BlaxtairPhotoSlotKey).uploadedCount ?? 0
+          : 0;
         return (
           <div key={c.id}>
             <SummaryRow label={`${c.componentLabel} — part number`} value={c.identifiers.partNumber ?? ""} />
@@ -1289,6 +1282,7 @@ export function BlaxtairAhdReviewSummary(props: {
             <SummaryRow label={`${c.componentLabel} — label photo`} value={photoUploaded ? "Uploaded" : ""} />
             <SummaryRow label={`${c.componentLabel} — mounted photo`} value={installPhotoUploaded ? "Uploaded" : ""} />
             <SummaryRow label={`${c.componentLabel} — wire leads`} value={wireLeadsSummaryValue(c, CAMERA_WIRE_DEFS)} />
+            <SummaryRow label={`${c.componentLabel} — wire connection photos`} value={wirePhotosCount > 0 ? `${wirePhotosCount} uploaded` : ""} />
             <SummaryRow label={`${c.componentLabel} — confirmed`} value={c.technicianConfirmed ? "Yes" : ""} />
           </div>
         );
@@ -1307,6 +1301,13 @@ export function BlaxtairAhdReviewSummary(props: {
             value={(props.getPhotoSlot("blaxtairMonitorMounting").uploadedCount ?? 0) >= 1 ? "Uploaded" : ""}
           />
           <SummaryRow label="Monitor — wire leads" value={wireLeadsSummaryValue(monitor, MONITOR_WIRE_DEFS)} />
+          <SummaryRow
+            label="Monitor — wire connection photos"
+            value={(() => {
+              const count = props.getPhotoSlot("blaxtairMonitorWirePhotos").uploadedCount ?? 0;
+              return count > 0 ? `${count} uploaded` : "";
+            })()}
+          />
           <SummaryRow label="Monitor — confirmed" value={monitor.technicianConfirmed ? "Yes" : ""} />
         </div>
       ) : null}
