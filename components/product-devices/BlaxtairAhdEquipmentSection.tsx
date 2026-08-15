@@ -32,11 +32,6 @@ import {
   type ViewDirectionId,
   type WireLeadState,
 } from "@/lib/product-devices";
-import {
-  BLAXTAIR_MONITOR_LABEL_OCR_SUPPORTED,
-  runBlaxtairCameraScan,
-  type BlaxtairCameraScanResult,
-} from "@/lib/prototype/label-scan/blaxtair-bridge";
 import { findDuplicateDeviceInSystem } from "@/lib/prototype/label-scan/blaxtair-draft";
 import {
   PhotoFieldError,
@@ -107,13 +102,6 @@ export type BlaxtairPhotoSlot = {
   onRemoveLocal: (file: File) => void;
   onRemoveRemote: (remote: RemoteThumb) => void;
 };
-
-function extractionSourceFor(candidates: BlaxtairCameraScanResult["candidates"]): "barcode" | "ocr" | "mixed" {
-  const sources = new Set(candidates.map((c) => c.source));
-  if (sources.size === 1 && sources.has("barcode")) return "barcode";
-  if (sources.size === 1 && sources.has("ocr")) return "ocr";
-  return "mixed";
-}
 
 function photoSlotKeyForComponent(component: InstalledProductComponent): BlaxtairPhotoSlotKey | null {
   if (component.componentType === "monitor") return "blaxtairMonitor";
@@ -296,13 +284,8 @@ export function BlaxtairAhdEquipmentSection(props: {
   const { system, onChangeSystem: setSystem, reviewHighlights } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, IdentifierDraft>>({});
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [scanError, setScanError] = useState<string | null>(null);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const [manualReasons, setManualReasons] = useState<Record<string, ManualFallbackReason>>({});
-  const [scanMeta, setScanMeta] = useState<
-    Record<string, { extractionSource: "barcode" | "ocr" | "mixed"; detectionConfidence: number | null }>
-  >({});
 
   function componentWireDefs(component: InstalledProductComponent): WireDef[] {
     return component.componentType === "monitor" ? MONITOR_WIRE_DEFS : CAMERA_WIRE_DEFS;
@@ -365,40 +348,16 @@ export function BlaxtairAhdEquipmentSection(props: {
     });
   }
 
-  async function runScanForComponent(component: InstalledProductComponent, file: File) {
-    setScanError(null);
-    setBusyId(component.id);
-    try {
-      const result = await runBlaxtairCameraScan(file);
-      const nextDraft = draftFromIdentifiers(result.identifiers);
-      setDrafts((prev) => ({ ...prev, [component.id]: nextDraft }));
-      commitDraftToSystem(component.id, nextDraft);
-      setScanMeta((prev) => ({
-        ...prev,
-        [component.id]: {
-          extractionSource: extractionSourceFor(result.candidates),
-          detectionConfidence: result.classification.top?.confidence ?? null,
-        },
-      }));
-      setManualReasons((prev) => {
-        const next = { ...prev };
-        delete next[component.id];
-        return next;
-      });
-    } catch (err) {
-      setScanError(err instanceof Error ? err.message : "Label scan failed. Enter the part number and serial manually.");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
+  /**
+   * Label photo is required documentation, not an OCR trigger — every field it used to try
+   * to fill has a reliable live QR/barcode Scan button (SerialInput, @zxing/browser) already
+   * on the field itself, plus manual entry. Device identification also already happens
+   * earlier via manual hardware selection, so there is no remaining case where running OCR
+   * here would tell us something we don't already know.
+   */
   function handlePhotoChange(component: InstalledProductComponent, e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0] ?? null;
     const slotKey = photoSlotKeyForComponent(component);
     if (slotKey) props.getPhotoSlot(slotKey).onUpload(e);
-    if (!file) return;
-    if (component.componentType === "monitor" && !BLAXTAIR_MONITOR_LABEL_OCR_SUPPORTED) return;
-    void runScanForComponent(component, file);
   }
 
   function confirmComponent(component: InstalledProductComponent) {
@@ -417,13 +376,11 @@ export function BlaxtairAhdEquipmentSection(props: {
       );
       return;
     }
-    const lastScan = scanMeta[component.id];
     const manualReason = manualReasons[component.id] ?? null;
     const nextSystem = updateComponentFields(system, component.id, {
       identifiers,
       technicianConfirmed: true,
-      extractionSource: manualReason ? "manual" : lastScan ? lastScan.extractionSource : component.extractionSource,
-      detectionConfidence: lastScan?.detectionConfidence ?? component.detectionConfidence,
+      extractionSource: manualReason ? "manual" : component.extractionSource,
       manualFallbackReason: manualReason,
     });
     setSystem(nextSystem);
@@ -471,63 +428,15 @@ export function BlaxtairAhdEquipmentSection(props: {
     setSystem(updateComponentFields(system, component.id, { wireLeads: nextWireLeads }));
   }
 
-  // Stage 1: no system yet — identify Camera 1 first (scan or manual), then choose camera count.
-  if (!system) {
-    return (
-      <div id="field-blaxtair-equipment">
-        <BlaxtairFirstCameraCapture
-          busy={busyId === "pending"}
-          scanError={scanError}
-          photoSlot={props.getPhotoSlot("blaxtairCamera1")}
-          fieldLabelClass={props.fieldLabelClass}
-          fieldInputClass={props.fieldInputClass}
-          fieldSelectClass={props.fieldSelectClass}
-          photoPickClass={props.photoPickClass}
-          requiredHint={props.requiredHint}
-          onScan={async (file, e) => {
-            setBusyId("pending");
-            setScanError(null);
-            props.getPhotoSlot("blaxtairCamera1").onUpload(e);
-            try {
-              const result = await runBlaxtairCameraScan(file);
-              const next = buildInstalledProductSystem({
-                definition: BLAXTAIR_AHD_PRODUCT_DEFINITION,
-                identifiers: result.identifiers,
-                detectedHardwareProfileId: "blaxtair_ahd_camera_label",
-                detectionConfidence: result.classification.top?.confidence ?? null,
-                extractionSource: extractionSourceFor(result.candidates),
-                technicianConfirmed: false,
-              });
-              setSystem(next);
-            } catch (err) {
-              setScanError(err instanceof Error ? err.message : "Label scan failed. Enter details manually.");
-            } finally {
-              setBusyId(null);
-            }
-          }}
-          onManual={(reason, id) => {
-            const next = buildInstalledProductSystem({
-              definition: BLAXTAIR_AHD_PRODUCT_DEFINITION,
-              identifiers: id,
-              detectedHardwareProfileId: "blaxtair_ahd_camera_label",
-              extractionSource: "manual",
-              technicianConfirmed: false,
-              manualFallbackReason: reason,
-            });
-            setSystem(next);
-          }}
-        />
-      </div>
-    );
-  }
-
-  // Stage 2: Camera 1 identified, camera count not chosen yet.
-  if (!system.plannedCameraCount) {
+  // Stage 1: no system yet — ask camera quantity directly. The technician already chose
+  // Blaxtair AHD as the primary hardware before reaching this section, so there is nothing
+  // left to identify here; a "scan the first camera to figure out what this is" step would
+  // be redundant. Creates all N cameras + monitor at once, empty and unconfirmed, then lands
+  // on the same per-camera editable form (Stage 2) used for every camera going forward.
+  if (!system || !system.plannedCameraCount) {
     return (
       <div id="field-blaxtair-equipment" className="space-y-4">
-        <p className="text-base font-semibold text-gray-900 dark:text-gray-100">
-          Camera 1 identifiers saved — how many cameras are being installed?
-        </p>
+        <p className="text-base font-semibold text-gray-900 dark:text-gray-100">How many cameras are being installed?</p>
         <div className="flex flex-wrap gap-3">
           {Array.from({ length: BLAXTAIR_AHD_CAMERA_MAX - BLAXTAIR_AHD_CAMERA_MIN + 1 }, (_, i) => i + BLAXTAIR_AHD_CAMERA_MIN).map(
             (count) => (
@@ -536,7 +445,15 @@ export function BlaxtairAhdEquipmentSection(props: {
                 type="button"
                 className="inline-flex min-h-[52px] min-w-[64px] items-center justify-center rounded-xl border-2 border-blue-600 bg-white px-5 text-lg font-bold text-blue-600 shadow-sm hover:bg-blue-50 dark:border-blue-500 dark:bg-gray-900 dark:text-blue-400 dark:hover:bg-gray-800"
                 onClick={() => {
-                  const next = applyBlaxtairCameraCount({ system, cameraCount: count });
+                  const base =
+                    system ??
+                    buildInstalledProductSystem({
+                      definition: BLAXTAIR_AHD_PRODUCT_DEFINITION,
+                      identifiers: {},
+                      extractionSource: "manual",
+                      technicianConfirmed: false,
+                    });
+                  const next = applyBlaxtairCameraCount({ system: base, cameraCount: count });
                   setSystem(next);
                   // Camera 1 is still incomplete (no mounting/view/confirm yet) — keep it open.
                   const firstCamera = orderComponents(next).find((c) => c.componentType === "camera");
@@ -584,7 +501,6 @@ export function BlaxtairAhdEquipmentSection(props: {
         const highlightKey = `blaxtair-${component.id}`;
         const isCamera = component.componentType === "camera";
         const isMonitor = component.componentType === "monitor";
-        const ocrAvailable = isCamera || BLAXTAIR_MONITOR_LABEL_OCR_SUPPORTED;
         const mountingPhotoSlot = isMonitor ? props.getPhotoSlot("blaxtairMonitorMounting") : null;
         const cameraIndexMatch = /^camera_([1-4])$/.exec(component.slotKey);
         const installPhotoSlot = isCamera && cameraIndexMatch ? props.getPhotoSlot(cameraMountingPhotoSlotKey(Number(cameraIndexMatch[1]))) : null;
@@ -630,12 +546,6 @@ export function BlaxtairAhdEquipmentSection(props: {
                     {component.componentLabel} label photo
                     <RequiredMark />
                   </label>
-                  {!ocrAvailable ? (
-                    <p className="mb-2 text-sm text-amber-800 dark:text-amber-200">
-                      Monitor label scanning is not available yet — enter the part number and serial manually below. A photo is
-                      still required for the record.
-                    </p>
-                  ) : null}
                   <input
                     id={`blaxtair-photo-${component.id}`}
                     type="file"
@@ -663,10 +573,6 @@ export function BlaxtairAhdEquipmentSection(props: {
                       <PhotoFieldError message={photoSlot.error} />
                     </>
                   ) : null}
-                  {busyId === component.id ? (
-                    <p className="mt-2 text-sm font-medium text-blue-700 dark:text-blue-300">Reading label…</p>
-                  ) : null}
-                  {scanError ? <PhotoFieldError message={scanError} /> : null}
                   {props.requiredHint(highlightKey)}
                 </div>
 
@@ -1121,122 +1027,6 @@ function BlaxtairExternalAlarmSection(props: {
           </div>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function BlaxtairFirstCameraCapture(props: {
-  busy: boolean;
-  scanError: string | null;
-  photoSlot: BlaxtairPhotoSlot;
-  fieldLabelClass: (key: string) => string;
-  fieldInputClass: (key: string) => string;
-  fieldSelectClass: (key: string) => string;
-  photoPickClass: (key: string, required: boolean, complete: boolean) => string;
-  requiredHint: (key: string) => ReactNode;
-  onScan: (file: File, e: ChangeEvent<HTMLInputElement>) => void;
-  onManual: (reason: ManualFallbackReason, identifiers: DeviceIdentifiers) => void;
-}) {
-  const [manual, setManual] = useState(false);
-  const [reason, setReason] = useState<ManualFallbackReason>("label_unreadable");
-  const [partNumber, setPartNumber] = useState("");
-  const [serialNumber, setSerialNumber] = useState("");
-  const [ipAddress, setIpAddress] = useState("");
-
-  function handlePartNumberInput(value: string) {
-    const split = splitScannedPartNumber(value);
-    setPartNumber(split.partNumber);
-    if (split.serialNumber) setSerialNumber(split.serialNumber);
-  }
-
-  if (manual) {
-    return (
-      <div className="space-y-4">
-        <p className="text-base font-semibold text-gray-900 dark:text-gray-100">Camera 1 — manual entry</p>
-        <div id="field-blaxtair-camera1-manualReason">
-          <label className={props.fieldLabelClass("blaxtair-camera1-manualReason")}>Reason</label>
-          <select
-            className={props.fieldSelectClass("blaxtair-camera1-manualReason")}
-            value={reason}
-            onChange={(e) => setReason(e.target.value as ManualFallbackReason)}
-          >
-            {Object.entries(MANUAL_FALLBACK_REASON_LABELS).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <SerialInput
-            label="Part number"
-            required
-            labelClassName={props.fieldLabelClass("blaxtair-camera1-partNumber")}
-            inputClassName={props.fieldInputClass("blaxtair-camera1-partNumber")}
-            value={partNumber}
-            placeholder="e.g. 210-110-001 (scan fills part number + serial together)"
-            onChange={handlePartNumberInput}
-          />
-          <SerialInput
-            label="Serial number"
-            required
-            labelClassName={props.fieldLabelClass("blaxtair-camera1-serialNumber")}
-            inputClassName={props.fieldInputClass("blaxtair-camera1-serialNumber")}
-            value={serialNumber}
-            placeholder="Scan or type serial"
-            onChange={setSerialNumber}
-          />
-          <SerialInput
-            label="IP address"
-            labelClassName={props.fieldLabelClass("blaxtair-camera1-ipAddress")}
-            inputClassName={props.fieldInputClass("blaxtair-camera1-ipAddress")}
-            value={ipAddress}
-            placeholder="e.g. 192.168.89.250"
-            onChange={setIpAddress}
-          />
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            className="inline-flex min-h-[48px] items-center justify-center rounded-xl bg-blue-600 px-5 text-base font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-40"
-            disabled={!serialNumber.trim()}
-            onClick={() => props.onManual(reason, { partNumber: partNumber.trim(), serialNumber: serialNumber.trim(), ipAddress: ipAddress.trim() })}
-          >
-            Confirm Camera 1
-          </button>
-          <button type="button" className="text-sm font-semibold text-blue-600 underline dark:text-blue-400" onClick={() => setManual(false)}>
-            Back to scan
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-base font-semibold text-gray-900 dark:text-gray-100">Camera 1 — scan the device label</p>
-      <p className="text-sm text-gray-600 dark:text-gray-400">Take a photo of the camera label, or upload one. OCR reads it automatically.</p>
-      <div id="field-photo-blaxtair-camera1">
-        <input
-          id="blaxtair-photo-camera1"
-          type="file"
-          className="hidden"
-          accept="image/png,image/jpeg,image/jpg"
-          onChange={(e) => {
-            const file = e.target.files?.[0] ?? null;
-            if (file) props.onScan(file, e);
-          }}
-        />
-        <label htmlFor="blaxtair-photo-camera1" className={props.photoPickClass("photo-blaxtair-camera1", true, false)}>
-          {PHOTO_UPLOAD_LABEL_SINGLE}
-        </label>
-        {props.busy ? <p className="mt-2 text-sm font-medium text-blue-700 dark:text-blue-300">Reading label…</p> : null}
-        {props.scanError ? <PhotoFieldError message={props.scanError} /> : null}
-        {props.requiredHint("photo-blaxtair-camera1")}
-      </div>
-      <button type="button" className="text-sm font-semibold text-blue-600 underline dark:text-blue-400" onClick={() => setManual(true)}>
-        Enter details manually instead
-      </button>
     </div>
   );
 }

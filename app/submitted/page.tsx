@@ -632,6 +632,12 @@ export default function SubmittedPage() {
               >
                 View Photos
               </Link>
+              <Link
+                href={`/new-submission?editSubmissionId=${encodeURIComponent(row.submissionId)}`}
+                className="rounded-lg border border-purple-300 bg-white px-4 py-2 text-sm font-semibold text-purple-700 hover:bg-purple-50"
+              >
+                Edit
+              </Link>
             </div>
             {resendStateBySubmissionId[row.submissionId] === "success" ? (
               <p className="mt-2 text-sm font-semibold text-emerald-800" role="status">
