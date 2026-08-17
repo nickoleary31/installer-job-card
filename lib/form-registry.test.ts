@@ -23,7 +23,7 @@ describe("form-registry Blaxtair association", () => {
     assert.equal(BLAXTAIR_COMPANY_ID, "b3d9abe4-e457-4bb4-935b-4bb01920df89");
   });
 
-  it("assigns five Blaxtair products with unique ids (SSC remains for secondary)", () => {
+  it("assigns six Blaxtair products with unique ids (SSC remains for secondary)", () => {
     const forms = getFormsForCompanySlug("blaxtair");
     assert.deepEqual(
       forms.map((f) => f.id),
@@ -33,6 +33,7 @@ describe("form-registry Blaxtair association", () => {
         "blaxtair_origin",
         "blaxtair_3",
         "blaxtair_ssc_speed",
+        "blaxtair_5",
       ],
     );
     assert.deepEqual(
@@ -43,16 +44,17 @@ describe("form-registry Blaxtair association", () => {
         "Blaxtair Origin",
         "Blaxtair 3",
         "SSC Speed",
+        "Blaxtair 5",
       ],
     );
     const sectionKeys = new Set(forms.map((f) => f.sectionKey));
-    assert.equal(sectionKeys.size, 5);
+    assert.equal(sectionKeys.size, 6);
   });
 
-  it("offers all five Blaxtair products as primary, including SSC Speed (standalone add-to-existing-system case)", () => {
+  it("offers all six Blaxtair products as primary, including SSC Speed (standalone add-to-existing-system case)", () => {
     assert.deepEqual(
       getAllowedPrimaryForms(BLAXTAIR_COMPANY_NAME).map((f) => f.id),
-      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed"],
+      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed", "blaxtair_5"],
     );
   });
 
@@ -61,6 +63,9 @@ describe("form-registry Blaxtair association", () => {
     assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ahd", ["blaxtair_ssc_speed"]), true);
     assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ssc_speed", ["blaxtair_ahd"]), true);
     assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ssc_speed", ["blaxtair_origin"]), true);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ahd", ["blaxtair_5"]), false);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_5", ["blaxtair_ssc_speed"]), true);
+    assert.equal(areAdditionalSectionKeysAllowed(BLAXTAIR_COMPANY_NAME, "blaxtair_ssc_speed", ["blaxtair_5"]), true);
   });
 
   it("maps Blaxtair products to Matrix PPD / Speed SSC bases", () => {

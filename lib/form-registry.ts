@@ -197,6 +197,17 @@ export const FORM_DEFINITIONS: readonly FormDefinition[] = [
     displayOrder: 240,
     active: true,
   },
+  {
+    id: "blaxtair_5",
+    label: "Blaxtair 5",
+    submissionType: "blaxtair_5",
+    profileId: "legacy_hardware",
+    draftKey: "blaxtair_5",
+    sectionKey: "blaxtair_5",
+    baseFormId: "ppd",
+    displayOrder: 250,
+    active: true,
+  },
 ] as const;
 
 /** Company display name → slug (compatibility helper only). */
@@ -217,6 +228,7 @@ export const COMPANY_FORM_ASSIGNMENTS: Record<CompanySlug, readonly string[]> = 
     "blaxtair_mr130_mr260",
     "blaxtair_origin",
     "blaxtair_3",
+    "blaxtair_5",
     "blaxtair_ssc_speed",
   ],
 };

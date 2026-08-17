@@ -10,3 +10,4 @@ export * from "./email-sections.ts";
 export * from "./normalize.ts";
 export * from "./ocr-contract.ts";
 export * from "./blaxtair-ahd.ts";
+export * from "./blaxtair-5.ts";

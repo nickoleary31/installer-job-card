@@ -4,6 +4,7 @@
  */
 
 import { BLAXTAIR_AHD_PRODUCT_DEFINITION } from "./blaxtair-ahd.ts";
+import { BLAXTAIR_5_PRODUCT_DEFINITION } from "./blaxtair-5.ts";
 import type {
   HardwareProfileId,
   ProductDeviceDefinition,
@@ -50,6 +51,18 @@ export const HARDWARE_PROFILES: Record<
     labelExtractionProfileId: "blaxtair_ahd_monitor_label_v1",
     legacyFormIdHint: "blaxtair_ahd",
     notes: "Blaxtair AHD monitor label — fixture only",
+  },
+  blaxtair_5_camera_label: {
+    id: "blaxtair_5_camera_label",
+    labelExtractionProfileId: "blaxtair_5_camera_label_v1",
+    legacyFormIdHint: "blaxtair_5",
+    notes: "Blaxtair 5 camera label (part / serial / IP) — fixture only",
+  },
+  blaxtair_5_monitor_label: {
+    id: "blaxtair_5_monitor_label",
+    labelExtractionProfileId: "blaxtair_5_monitor_label_v1",
+    legacyFormIdHint: "blaxtair_5",
+    notes: "Blaxtair 5 monitor label — fixture only",
   },
 };
 
@@ -132,7 +145,7 @@ export const DEMO_SHARED_HARDWARE_PRODUCT: ProductDeviceDefinition = {
 };
 
 /** Not in production pilot catalog — tests / local Blaxtair fixture only. */
-export { BLAXTAIR_AHD_PRODUCT_DEFINITION };
+export { BLAXTAIR_AHD_PRODUCT_DEFINITION, BLAXTAIR_5_PRODUCT_DEFINITION };
 
 export function classifierFamilyToHardwareProfile(
   family: string | null | undefined,
@@ -149,6 +162,11 @@ export function classifierFamilyToHardwareProfile(
       return "blaxtair_ahd_camera_label";
     case "blaxtair_ahd_monitor":
       return "blaxtair_ahd_monitor_label";
+    case "blaxtair_5":
+    case "blaxtair_5_camera":
+      return "blaxtair_5_camera_label";
+    case "blaxtair_5_monitor":
+      return "blaxtair_5_monitor_label";
     default:
       return null;
   }

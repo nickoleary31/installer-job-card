@@ -116,6 +116,11 @@ import {
   type BlaxtairPhotoSlotKey,
 } from "@/components/product-devices/BlaxtairAhdEquipmentSection";
 import {
+  Blaxtair5EquipmentSection,
+  Blaxtair5ReviewSummary,
+  type Blaxtair5PhotoSlotKey,
+} from "@/components/product-devices/Blaxtair5EquipmentSection";
+import {
   BlaxtairSscSpeedSection,
   type SscPhotoSlotKey,
   type SscSpeedFieldState,
@@ -570,6 +575,53 @@ const PPD_PHOTO_KEYS = [
   "blaxtairCamera3WirePhotos",
   "blaxtairCamera4WirePhotos",
   "blaxtairMonitorWirePhotos",
+  // Blaxtair 5 — standalone copy of the Blaxtair AHD fields above (own product, own component,
+  // own requirements — see components/product-devices/Blaxtair5EquipmentSection.tsx).
+  "blaxtair5Camera1",
+  "blaxtair5Camera2",
+  "blaxtair5Camera3",
+  "blaxtair5Camera4",
+  "blaxtair5Monitor",
+  "blaxtair5MonitorMounting",
+  "blaxtair5Camera1Mounting",
+  "blaxtair5Camera2Mounting",
+  "blaxtair5Camera3Mounting",
+  "blaxtair5Camera4Mounting",
+  "blaxtair5Camera1WireGround",
+  "blaxtair5Camera1WireOut1",
+  "blaxtair5Camera1WireOut2",
+  "blaxtair5Camera1WireOut3",
+  "blaxtair5Camera1WireIn1",
+  "blaxtair5Camera2WireGround",
+  "blaxtair5Camera2WireOut1",
+  "blaxtair5Camera2WireOut2",
+  "blaxtair5Camera2WireOut3",
+  "blaxtair5Camera2WireIn1",
+  "blaxtair5Camera3WireGround",
+  "blaxtair5Camera3WireOut1",
+  "blaxtair5Camera3WireOut2",
+  "blaxtair5Camera3WireOut3",
+  "blaxtair5Camera3WireIn1",
+  "blaxtair5Camera4WireGround",
+  "blaxtair5Camera4WireOut1",
+  "blaxtair5Camera4WireOut2",
+  "blaxtair5Camera4WireOut3",
+  "blaxtair5Camera4WireIn1",
+  "blaxtair5MonitorWireGround",
+  "blaxtair5MonitorWirePower",
+  "blaxtair5MonitorWireIgnition",
+  "blaxtair5MonitorWireTrigger1",
+  "blaxtair5MonitorWireTrigger2",
+  "blaxtair5MonitorWireTrigger3",
+  "blaxtair5MonitorWireTrigger4",
+  "blaxtair5MonitorWireTrigger5",
+  "blaxtair5AlarmMounting",
+  "blaxtair5WirePath",
+  "blaxtair5Camera1WirePhotos",
+  "blaxtair5Camera2WirePhotos",
+  "blaxtair5Camera3WirePhotos",
+  "blaxtair5Camera4WirePhotos",
+  "blaxtair5MonitorWirePhotos",
   // Blaxtair SSC Speed (secondary product, simple photo+manual-entry fields).
   "sscLabel",
   "sscPower",
@@ -660,7 +712,11 @@ function ppdUploadFieldFor(key: PpdPhotoKey): PpdUploadFieldName {
  */
 const BLAXTAIR_SSC_SINGLE_PHOTO_UPLOAD_FIELDS = new Set<string>(
   PPD_PHOTO_KEYS.filter(
-    (k) => (k.startsWith("blaxtair") || k.startsWith("ssc")) && k !== "blaxtairWirePath" && k !== "sscWirePath",
+    (k) =>
+      (k.startsWith("blaxtair") || k.startsWith("ssc")) &&
+      k !== "blaxtairWirePath" &&
+      k !== "blaxtair5WirePath" &&
+      k !== "sscWirePath",
   ).map((k) => ppdUploadFieldFor(k)),
 );
 
@@ -1095,6 +1151,51 @@ const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
   blaxtairCamera3WirePhotos: "Blaxtair camera 3 — wire connection photos",
   blaxtairCamera4WirePhotos: "Blaxtair camera 4 — wire connection photos",
   blaxtairMonitorWirePhotos: "Blaxtair monitor — wire connection photos",
+  blaxtair5Camera1: "Blaxtair 5 — camera 1 label",
+  blaxtair5Camera2: "Blaxtair 5 — camera 2 label",
+  blaxtair5Camera3: "Blaxtair 5 — camera 3 label",
+  blaxtair5Camera4: "Blaxtair 5 — camera 4 label",
+  blaxtair5Monitor: "Blaxtair 5 — monitor label",
+  blaxtair5MonitorMounting: "Blaxtair 5 — monitor mounting photo",
+  blaxtair5Camera1Mounting: "Blaxtair 5 — camera 1 mounted",
+  blaxtair5Camera2Mounting: "Blaxtair 5 — camera 2 mounted",
+  blaxtair5Camera3Mounting: "Blaxtair 5 — camera 3 mounted",
+  blaxtair5Camera4Mounting: "Blaxtair 5 — camera 4 mounted",
+  blaxtair5Camera1WireGround: "Blaxtair 5 — camera 1 wire: Black (Ground)",
+  blaxtair5Camera1WireOut1: "Blaxtair 5 — camera 1 wire: Red (Out 1)",
+  blaxtair5Camera1WireOut2: "Blaxtair 5 — camera 1 wire: Yellow (Out 2)",
+  blaxtair5Camera1WireOut3: "Blaxtair 5 — camera 1 wire: Green (Out 3)",
+  blaxtair5Camera1WireIn1: "Blaxtair 5 — camera 1 wire: White (In 1)",
+  blaxtair5Camera2WireGround: "Blaxtair 5 — camera 2 wire: Black (Ground)",
+  blaxtair5Camera2WireOut1: "Blaxtair 5 — camera 2 wire: Red (Out 1)",
+  blaxtair5Camera2WireOut2: "Blaxtair 5 — camera 2 wire: Yellow (Out 2)",
+  blaxtair5Camera2WireOut3: "Blaxtair 5 — camera 2 wire: Green (Out 3)",
+  blaxtair5Camera2WireIn1: "Blaxtair 5 — camera 2 wire: White (In 1)",
+  blaxtair5Camera3WireGround: "Blaxtair 5 — camera 3 wire: Black (Ground)",
+  blaxtair5Camera3WireOut1: "Blaxtair 5 — camera 3 wire: Red (Out 1)",
+  blaxtair5Camera3WireOut2: "Blaxtair 5 — camera 3 wire: Yellow (Out 2)",
+  blaxtair5Camera3WireOut3: "Blaxtair 5 — camera 3 wire: Green (Out 3)",
+  blaxtair5Camera3WireIn1: "Blaxtair 5 — camera 3 wire: White (In 1)",
+  blaxtair5Camera4WireGround: "Blaxtair 5 — camera 4 wire: Black (Ground)",
+  blaxtair5Camera4WireOut1: "Blaxtair 5 — camera 4 wire: Red (Out 1)",
+  blaxtair5Camera4WireOut2: "Blaxtair 5 — camera 4 wire: Yellow (Out 2)",
+  blaxtair5Camera4WireOut3: "Blaxtair 5 — camera 4 wire: Green (Out 3)",
+  blaxtair5Camera4WireIn1: "Blaxtair 5 — camera 4 wire: White (In 1)",
+  blaxtair5MonitorWireGround: "Blaxtair 5 — monitor wire: Black (Ground)",
+  blaxtair5MonitorWirePower: "Blaxtair 5 — monitor wire: Red (Constant Power)",
+  blaxtair5MonitorWireIgnition: "Blaxtair 5 — monitor wire: Orange (Ignition)",
+  blaxtair5MonitorWireTrigger1: "Blaxtair 5 — monitor wire: White (Trigger 1)",
+  blaxtair5MonitorWireTrigger2: "Blaxtair 5 — monitor wire: Blue (Trigger 2)",
+  blaxtair5MonitorWireTrigger3: "Blaxtair 5 — monitor wire: Green (Trigger 3)",
+  blaxtair5MonitorWireTrigger4: "Blaxtair 5 — monitor wire: Brown (Trigger 4)",
+  blaxtair5MonitorWireTrigger5: "Blaxtair 5 — monitor wire: Yellow (Trigger 5)",
+  blaxtair5AlarmMounting: "Blaxtair 5 — external alarm mounting",
+  blaxtair5WirePath: "Blaxtair 5 — wire path",
+  blaxtair5Camera1WirePhotos: "Blaxtair 5 camera 1 — wire connection photos",
+  blaxtair5Camera2WirePhotos: "Blaxtair 5 camera 2 — wire connection photos",
+  blaxtair5Camera3WirePhotos: "Blaxtair 5 camera 3 — wire connection photos",
+  blaxtair5Camera4WirePhotos: "Blaxtair 5 camera 4 — wire connection photos",
+  blaxtair5MonitorWirePhotos: "Blaxtair 5 monitor — wire connection photos",
   sscLabel: "SSC Speed — label photo",
   sscPower: "SSC Speed — power connection",
   sscGround: "SSC Speed — ground connection",
@@ -1670,6 +1771,7 @@ export function NewSubmissionForm() {
   );
   /** Blaxtair AHD equipment (camera(s) + monitor) — only populated when that product is selected. */
   const [blaxtairSystem, setBlaxtairSystem] = useState<InstalledProductSystem | null>(null);
+  const [blaxtair5System, setBlaxtair5System] = useState<InstalledProductSystem | null>(null);
   /** Blaxtair SSC Speed — simple photo + manual-entry fields, only populated when that product is selected. */
   const [sscFields, setSscFields] = useState<SscSpeedFieldState>({
     connectionType: "",
@@ -1821,6 +1923,12 @@ export function NewSubmissionForm() {
     "blaxtairCamera3WirePhotos",
     "blaxtairCamera4WirePhotos",
     "blaxtairMonitorWirePhotos",
+    "blaxtair5WirePath",
+    "blaxtair5Camera1WirePhotos",
+    "blaxtair5Camera2WirePhotos",
+    "blaxtair5Camera3WirePhotos",
+    "blaxtair5Camera4WirePhotos",
+    "blaxtair5MonitorWirePhotos",
   ];
 
   const getBlaxtairPhotoSlot = (key: BlaxtairPhotoSlotKey): BlaxtairPhotoSlot => {
@@ -1840,6 +1948,9 @@ export function NewSubmissionForm() {
   };
 
   const getSscPhotoSlot = (key: SscPhotoSlotKey): BlaxtairPhotoSlot => getBlaxtairPhotoSlot(key as unknown as BlaxtairPhotoSlotKey);
+
+  const getBlaxtair5PhotoSlot = (key: Blaxtair5PhotoSlotKey): BlaxtairPhotoSlot =>
+    getBlaxtairPhotoSlot(key as unknown as BlaxtairPhotoSlotKey);
 
   const handleSscConfigFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
@@ -2916,6 +3027,66 @@ export function NewSubmissionForm() {
       }
     }
 
+    if (selectedSections.includes("blaxtair_5")) {
+      const hasBlaxtair5Photo = (field: PpdPhotoKey) =>
+        photoMetadataByField[ppdUploadFieldFor(field)].some((p) => p.publicUrl?.trim());
+      if (!blaxtair5System || !blaxtair5System.plannedCameraCount) {
+        issues.push("blaxtair5-equipment");
+      } else {
+        const CAMERA_WIRE_KEYS: Array<{ key: string; suffix: string }> = [
+          { key: "ground", suffix: "Ground" },
+          { key: "out1", suffix: "Out1" },
+          { key: "out2", suffix: "Out2" },
+          { key: "out3", suffix: "Out3" },
+          { key: "in1", suffix: "In1" },
+        ];
+        const MONITOR_WIRE_KEYS: Array<{ key: string; suffix: string; required: boolean }> = [
+          { key: "ground", suffix: "Ground", required: true },
+          { key: "power", suffix: "Power", required: true },
+          { key: "ignition", suffix: "Ignition", required: true },
+          { key: "trigger1", suffix: "Trigger1", required: false },
+          { key: "trigger2", suffix: "Trigger2", required: false },
+          { key: "trigger3", suffix: "Trigger3", required: false },
+          { key: "trigger4", suffix: "Trigger4", required: false },
+          { key: "trigger5", suffix: "Trigger5", required: false },
+        ];
+        for (const c of blaxtair5System.components) {
+          const key = `blaxtair5-${c.id}`;
+          const isMonitor = c.componentType === "monitor";
+          const cameraNum = isMonitor ? null : c.slotKey.slice("camera_".length);
+          const photoField = isMonitor ? "blaxtair5Monitor" : (`blaxtair5Camera${cameraNum}` as PpdPhotoKey);
+          const hasPhoto = hasBlaxtair5Photo(photoField);
+          if (!c.technicianConfirmed || !hasPhoto) issues.push(key);
+          if (isMonitor) {
+            if (!hasBlaxtair5Photo("blaxtair5MonitorMounting")) issues.push(`${key}-mountingPhoto`);
+          } else {
+            if (!hasBlaxtair5Photo(`blaxtair5Camera${cameraNum}Mounting` as PpdPhotoKey)) issues.push(`${key}-installPhoto`);
+          }
+          const wireKeys = isMonitor ? MONITOR_WIRE_KEYS : CAMERA_WIRE_KEYS.map((w) => ({ ...w, required: false }));
+          let anyWireUsed = false;
+          for (const wireDef of wireKeys) {
+            const lead = c.wireLeads?.[wireDef.key];
+            const used = wireDef.required || lead?.used;
+            if (!used) continue;
+            anyWireUsed = true;
+            if (!lead?.description.trim()) {
+              issues.push(`${key}-wire-${wireDef.key}`);
+            }
+          }
+          if (anyWireUsed) {
+            const wirePhotosField = (isMonitor ? "blaxtair5MonitorWirePhotos" : `blaxtair5Camera${cameraNum}WirePhotos`) as PpdPhotoKey;
+            if (!hasBlaxtair5Photo(wirePhotosField)) issues.push(`${key}-wirePhotos`);
+          }
+        }
+        const alarm = blaxtair5System.externalAlarm;
+        if (alarm?.installed) {
+          if (!hasBlaxtair5Photo("blaxtair5AlarmMounting")) issues.push("blaxtair5-alarm-mountingPhoto");
+          if (alarm.triggerComponentIds.length === 0) issues.push("blaxtair5-alarm-cameras");
+        }
+        if (!hasBlaxtair5Photo("blaxtair5WirePath")) issues.push(ppdPhotoIssueKey("blaxtair5WirePath"));
+      }
+    }
+
     if (selectedSections.includes("blaxtair_ssc_speed")) {
       const hasSscPhoto = (field: PpdPhotoKey) => photoMetadataByField[ppdUploadFieldFor(field)].some((p) => p.publicUrl?.trim());
       if (!hasSscPhoto("sscLabel")) issues.push("ssc-label");
@@ -2944,7 +3115,11 @@ export function NewSubmissionForm() {
       // while the field is hidden, or the form becomes impossible to submit.
     }
 
-    if (selectedIncludeEffective(selectedSections, "PPD") && !selectedSections.includes("blaxtair_ahd")) {
+    if (
+      selectedIncludeEffective(selectedSections, "PPD") &&
+      !selectedSections.includes("blaxtair_ahd") &&
+      !selectedSections.includes("blaxtair_5")
+    ) {
       if (!ppdHubSerial.trim()) issues.push("ppd-hubSerial");
       for (const loc of ppdCameraLocations) {
         if (!ppdCameraSerialsByLocation[loc]?.trim()) {
@@ -4279,7 +4454,13 @@ export function NewSubmissionForm() {
       ...(cp4Payload ? { cp4: cp4Payload } : {}),
       ...(sscSpeedPayload ? { sscSpeed: sscSpeedPayload } : {}),
       ...(linxupPayload ? { linxup: linxupPayload } : {}),
-      ...(blaxtairSystem ? { installedProductSystems: [blaxtairSystem] } : {}),
+      ...([blaxtairSystem, blaxtair5System].filter((s): s is InstalledProductSystem => !!s).length > 0
+        ? {
+            installedProductSystems: [blaxtairSystem, blaxtair5System].filter(
+              (s): s is InstalledProductSystem => !!s,
+            ),
+          }
+        : {}),
       productFiles: [
         ...mergeLegacyPpdIntoProductFiles({
           productKey: PPD_PRODUCT_KEY,
@@ -4750,7 +4931,9 @@ export function NewSubmissionForm() {
     setHasAdditional(draft.hardwareSelection?.hasAdditional || "");
     // Keep stored IDs; selectedAdditional derives allowed extras once company context is ready.
     setAdditional(Array.isArray(draft.hardwareSelection?.additional) ? draft.hardwareSelection.additional : []);
-    setBlaxtairSystem(Array.isArray(draft.installedProductSystems) ? (draft.installedProductSystems[0] ?? null) : null);
+    const restoredInstalledSystems = Array.isArray(draft.installedProductSystems) ? draft.installedProductSystems : [];
+    setBlaxtairSystem(restoredInstalledSystems.find((s) => s.productKey === "blaxtair_ahd") ?? null);
+    setBlaxtair5System(restoredInstalledSystems.find((s) => s.productKey === "blaxtair_5") ?? null);
     setVac4VehicleType(String(draft.vac4?.vehicleType || ""));
     setVac4OtherVehicleType(String(draft.vac4?.otherVehicleType || ""));
     setVac4DriveType(String(draft.vac4?.driveType || ""));
@@ -5739,7 +5922,13 @@ export function NewSubmissionForm() {
         }),
         ...(sscConfigFile ? [sscConfigFile] : []),
       ],
-      ...(blaxtairSystem ? { installedProductSystems: [blaxtairSystem] } : {}),
+      ...([blaxtairSystem, blaxtair5System].filter((s): s is InstalledProductSystem => !!s).length > 0
+        ? {
+            installedProductSystems: [blaxtairSystem, blaxtair5System].filter(
+              (s): s is InstalledProductSystem => !!s,
+            ),
+          }
+        : {}),
       photoSummary: {
         vac4PhotoFileNames: vacPhotoFileNames,
         vac4PhotoUrls: photoSnapshot.vacPhotoUrls,
@@ -9615,7 +9804,20 @@ export function NewSubmissionForm() {
               ) : renderKey === "PPD" ? (
                 <section key={section} className={cardClassName}>
                   <FormSectionHeader title={ppdSectionTitle} tone="green" />
-                  {section === "blaxtair_ahd" ? (
+                  {section === "blaxtair_5" ? (
+                    <Blaxtair5EquipmentSection
+                      system={blaxtair5System}
+                      onChangeSystem={setBlaxtair5System}
+                      fieldLabelClass={fieldLabelClass}
+                      fieldInputClass={fieldInputClass}
+                      fieldSelectClass={fieldSelectClass}
+                      photoPickClass={photoPickClass}
+                      requiredHint={requiredHint}
+                      clearFieldHighlight={clearFieldHighlight}
+                      getPhotoSlot={getBlaxtair5PhotoSlot}
+                      reviewHighlights={reviewHighlights}
+                    />
+                  ) : section === "blaxtair_ahd" ? (
                     <BlaxtairAhdEquipmentSection
                       system={blaxtairSystem}
                       onChangeSystem={setBlaxtairSystem}
@@ -10874,7 +11076,9 @@ export function NewSubmissionForm() {
             ) : renderKey === "PPD" ? (
               <section key={`review-hw-${section}`} className={cardClassName}>
                 <FormSectionHeader title={ppdSectionTitle} tone="green" />
-                {section === "blaxtair_ahd" ? (
+                {section === "blaxtair_5" ? (
+                  <Blaxtair5ReviewSummary system={blaxtair5System} getPhotoSlot={getBlaxtair5PhotoSlot} />
+                ) : section === "blaxtair_ahd" ? (
                   <BlaxtairAhdReviewSummary system={blaxtairSystem} getPhotoSlot={getBlaxtairPhotoSlot} />
                 ) : (
                 <div>

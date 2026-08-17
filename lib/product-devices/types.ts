@@ -9,7 +9,9 @@ export type HardwareProfileId =
   | "linxup_vehicle_tracker_label"
   | "linxup_linxcam_label"
   | "blaxtair_ahd_camera_label"
-  | "blaxtair_ahd_monitor_label";
+  | "blaxtair_ahd_monitor_label"
+  | "blaxtair_5_camera_label"
+  | "blaxtair_5_monitor_label";
 
 export type InstallationVariantId = "obd_ii" | "jbus" | "standard";
 

@@ -14,6 +14,7 @@ import { getFormDefinitionById, getFormDefinitionBySectionKey, isLinxUpSectionKe
 import { normalizeInstalledProductSystems } from "@/lib/product-devices/normalize";
 import { buildInstalledSystemEmailSections, type SimpleEmailSection } from "@/lib/product-devices/email-sections";
 import { buildBlaxtairWireAndAlarmEmailSections } from "@/lib/product-devices/blaxtair-ahd-email";
+import { buildBlaxtair5WireAndAlarmEmailSections } from "@/lib/product-devices/blaxtair-5-email";
 import type { InstalledProductSystem } from "@/lib/product-devices/types";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
@@ -835,7 +836,11 @@ export default function SubmittedPage() {
                           });
                           return [
                             ...buildInstalledSystemEmailSections(systems),
-                            ...systems.flatMap((system) => buildBlaxtairWireAndAlarmEmailSections(system)),
+                            ...systems.flatMap((system) =>
+                              system.productKey === "blaxtair_5"
+                                ? buildBlaxtair5WireAndAlarmEmailSections(system)
+                                : buildBlaxtairWireAndAlarmEmailSections(system),
+                            ),
                           ];
                         })()}
                       />
