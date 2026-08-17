@@ -90,6 +90,20 @@ values
     true,
     240,
     '{}'::jsonb
+  ),
+  (
+    'b3d9abe4-e457-4bb4-935b-4bb01920df89',
+    'blaxtair_5',
+    'Blaxtair 5',
+    'ppd',
+    'blaxtair_5',
+    'blaxtair_5',
+    'blaxtair_5',
+    true,
+    false,
+    true,
+    250,
+    '{"allowedAdditionalProductKeys":["blaxtair_ssc_speed"],"maxAdditionalCount":1}'::jsonb
   )
 on conflict (company_id, product_key) do update set
   display_label = excluded.display_label,

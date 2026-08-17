@@ -338,7 +338,7 @@ describe("product-config hybrid resolver", () => {
     const products = resolveCompanyProductsFromRegistry(BLAXTAIR_COMPANY_NAME);
     assert.deepEqual(
       getAllowedPrimaryProducts(products).map((p) => p.productKey),
-      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed"],
+      ["blaxtair_ahd", "blaxtair_mr130_mr260", "blaxtair_origin", "blaxtair_3", "blaxtair_ssc_speed", "blaxtair_5"],
     );
     assert.deepEqual(
       getAllowedAdditionalProducts(products, "blaxtair_ahd").map((p) => p.productKey),
@@ -346,6 +346,8 @@ describe("product-config hybrid resolver", () => {
     );
     assert.equal(areAdditionalProductsAllowed(products, "blaxtair_origin", ["blaxtair_3"]), false);
     assert.equal(areAdditionalProductsAllowed(products, "blaxtair_ahd", ["blaxtair_ssc_speed"]), true);
+    assert.equal(areAdditionalProductsAllowed(products, "blaxtair_ahd", ["blaxtair_5"]), false);
+    assert.equal(areAdditionalProductsAllowed(products, "blaxtair_5", ["blaxtair_ssc_speed"]), true);
   });
 });
 

@@ -12,6 +12,7 @@ import {
 import { isLinxUpSectionKey } from "./linxup";
 import { buildInstalledSystemEmailSections } from "./product-devices/email-sections";
 import { buildBlaxtairWireAndAlarmEmailSections } from "./product-devices/blaxtair-ahd-email";
+import { buildBlaxtair5WireAndAlarmEmailSections } from "./product-devices/blaxtair-5-email";
 import { normalizeInstalledProductSystems } from "./product-devices/normalize";
 import {
   formatSectionKeysAsLabelsWithLookup,
@@ -326,11 +327,15 @@ function buildLegacyDocument(
     for (const section of buildInstalledSystemEmailSections(installedSystems)) {
       sections.push(section);
     }
-    if (p.selectedSections.includes("blaxtair_ahd") || p.hardwareSelection?.primary === "blaxtair_ahd") {
-      for (const system of installedSystems) {
-        for (const section of buildBlaxtairWireAndAlarmEmailSections(system)) {
-          sections.push(section);
-        }
+    for (const system of installedSystems) {
+      const wireAndAlarmSections =
+        system.productKey === "blaxtair_5"
+          ? buildBlaxtair5WireAndAlarmEmailSections(system)
+          : system.productKey === "blaxtair_ahd"
+            ? buildBlaxtairWireAndAlarmEmailSections(system)
+            : [];
+      for (const section of wireAndAlarmSections) {
+        sections.push(section);
       }
     }
   }
