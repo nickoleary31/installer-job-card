@@ -1037,6 +1037,7 @@ function Blaxtair5ExternalAlarmSection(props: {
                           ? [...alarm.triggerComponentIds, c.id]
                           : alarm.triggerComponentIds.filter((id) => id !== c.id);
                         props.onChangeSystem(setBlaxtair5SystemExternalAlarm(props.system, { installed: true, triggerComponentIds: next }));
+                        if (next.length > 0) props.clearFieldHighlight(`${highlightKey}-cameras`);
                       }}
                     />
                     {c.componentLabel}
