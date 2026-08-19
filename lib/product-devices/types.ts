@@ -278,8 +278,8 @@ export const MANUAL_FALLBACK_REASON_LABELS: Record<ManualFallbackReason, string>
 export const MOUNTING_LOCATION_LABELS: Record<MountingLocationId, string> = {
   front: "Front",
   rear: "Rear",
-  driver_side: "Driver side",
-  passenger_side: "Passenger side",
+  driver_side: "Left side",
+  passenger_side: "Right side",
   left_rear: "Left rear",
   right_rear: "Right rear",
   cab_interior: "Cab interior",
