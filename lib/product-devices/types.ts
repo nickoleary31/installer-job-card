@@ -11,7 +11,8 @@ export type HardwareProfileId =
   | "blaxtair_ahd_camera_label"
   | "blaxtair_ahd_monitor_label"
   | "blaxtair_5_camera_label"
-  | "blaxtair_5_monitor_label";
+  | "blaxtair_5_monitor_label"
+  | "blaxtair_5_hub_label";
 
 export type InstallationVariantId = "obd_ii" | "jbus" | "standard";
 

@@ -89,7 +89,10 @@ export type Blaxtair5PhotoSlotKey =
   | "blaxtair5Camera2WirePhotos"
   | "blaxtair5Camera3WirePhotos"
   | "blaxtair5Camera4WirePhotos"
-  | "blaxtair5MonitorWirePhotos";
+  | "blaxtair5MonitorWirePhotos"
+  | "blaxtair5Hub"
+  | "blaxtair5HubMounting"
+  | "blaxtair5HubWirePhotos";
 
 export type Blaxtair5PhotoSlot = {
   files: File[];
@@ -104,18 +107,21 @@ export type Blaxtair5PhotoSlot = {
 
 function photoSlotKeyForComponent(component: InstalledProductComponent): Blaxtair5PhotoSlotKey | null {
   if (component.componentType === "monitor") return "blaxtair5Monitor";
+  if (component.componentType === "hub") return "blaxtair5Hub";
   const match = /^camera_([1-4])$/.exec(component.slotKey);
   return match ? (`blaxtair5Camera${match[1]}` as Blaxtair5PhotoSlotKey) : null;
 }
 
-/** Cameras in slot order, then monitor last — the order the technician works through the list. */
+/** Cameras in slot order, then monitor, then the Camera Hub (2+ cameras only) last — the order
+ * the technician works through the list. */
 function orderComponents(system: InstalledProductSystem): InstalledProductComponent[] {
   const cameras = system.components
     .filter((c) => c.componentType === "camera")
     .slice()
     .sort((a, b) => (a.slotKey < b.slotKey ? -1 : 1));
   const monitor = system.components.find((c) => c.componentType === "monitor");
-  return [...cameras, ...(monitor ? [monitor] : [])];
+  const hub = system.components.find((c) => c.componentType === "hub");
+  return [...cameras, ...(monitor ? [monitor] : []), ...(hub ? [hub] : [])];
 }
 
 function locationLabel(id: MountingLocationId | null | undefined, other?: string): string {
@@ -132,25 +138,26 @@ function viewLabel(id: ViewDirectionId | null | undefined, other?: string): stri
 
 type WireDef = { key: string; label: string; required: boolean };
 
-/** Blaxtair 5 camera wire leads — none required by default, checkbox-gated. */
-const CAMERA_WIRE_DEFS: WireDef[] = [
-  { key: "ground", label: "Black — Ground", required: false },
-  { key: "out1", label: "Red — Out 1", required: false },
-  { key: "out2", label: "Yellow — Out 2", required: false },
-  { key: "out3", label: "Green — Out 3", required: false },
-  { key: "in1", label: "White — In 1", required: false },
+/** Cameras have no wire leads — connections are made at the Camera Hub instead. */
+const CAMERA_WIRE_DEFS: WireDef[] = [];
+
+/** Blaxtair 5 monitor wire leads — Ground/Power/Ignition always required; the rest are checkbox-gated. */
+const MONITOR_WIRE_DEFS: WireDef[] = [
+  { key: "ground", label: "Black — Constant Ground", required: true },
+  { key: "power", label: "Red — Constant Power", required: true },
+  { key: "ignition", label: "Green — Ignition Power", required: true },
+  { key: "input1", label: "Yellow — Input 1", required: false },
+  { key: "input2", label: "Purple — Input 2", required: false },
+  { key: "input3", label: "Brown — Input 3", required: false },
+  { key: "output1", label: "Blue — Output 1", required: false },
+  { key: "output2", label: "Pink — Output 2", required: false },
 ];
 
-/** Blaxtair 5 monitor wire leads — Ground/Power/Ignition always required; triggers checkbox-gated. */
-const MONITOR_WIRE_DEFS: WireDef[] = [
-  { key: "ground", label: "Black — Ground", required: true },
-  { key: "power", label: "Red — Constant Power", required: true },
-  { key: "ignition", label: "Orange — Ignition", required: true },
-  { key: "trigger1", label: "White — Trigger 1", required: false },
-  { key: "trigger2", label: "Blue — Trigger 2", required: false },
-  { key: "trigger3", label: "Green — Trigger 3", required: false },
-  { key: "trigger4", label: "Brown — Trigger 4", required: false },
-  { key: "trigger5", label: "Yellow — Trigger 5", required: false },
+/** Blaxtair 5 Camera Hub wire leads — Power/Ground/Ignition always required, no optional wires. */
+const HUB_WIRE_DEFS: WireDef[] = [
+  { key: "power", label: "Power", required: true },
+  { key: "ground", label: "Ground", required: true },
+  { key: "ignition", label: "Ignition", required: true },
 ];
 
 function cameraMountingPhotoSlotKey(cameraIndex: number): Blaxtair5PhotoSlotKey {
@@ -287,7 +294,9 @@ export function Blaxtair5EquipmentSection(props: {
   const [manualReasons, setManualReasons] = useState<Record<string, ManualFallbackReason>>({});
 
   function componentWireDefs(component: InstalledProductComponent): WireDef[] {
-    return component.componentType === "monitor" ? MONITOR_WIRE_DEFS : CAMERA_WIRE_DEFS;
+    if (component.componentType === "monitor") return MONITOR_WIRE_DEFS;
+    if (component.componentType === "hub") return HUB_WIRE_DEFS;
+    return CAMERA_WIRE_DEFS;
   }
 
   function isComponentHighlighted(component: InstalledProductComponent): boolean {
@@ -498,7 +507,12 @@ export function Blaxtair5EquipmentSection(props: {
         const highlightKey = `blaxtair5-${component.id}`;
         const isCamera = component.componentType === "camera";
         const isMonitor = component.componentType === "monitor";
-        const mountingPhotoSlot = isMonitor ? props.getPhotoSlot("blaxtair5MonitorMounting") : null;
+        const isHub = component.componentType === "hub";
+        const mountingPhotoSlot = isMonitor
+          ? props.getPhotoSlot("blaxtair5MonitorMounting")
+          : isHub
+            ? props.getPhotoSlot("blaxtair5HubMounting")
+            : null;
         const cameraIndexMatch = /^camera_([1-4])$/.exec(component.slotKey);
         const installPhotoSlot = isCamera && cameraIndexMatch ? props.getPhotoSlot(cameraMountingPhotoSlotKey(Number(cameraIndexMatch[1]))) : null;
         const wireDefs = componentWireDefs(component);
@@ -506,9 +520,11 @@ export function Blaxtair5EquipmentSection(props: {
         const anyWireUsed = wireDefs.some((w) => w.required || component.wireLeads?.[w.key]?.used);
         const wirePhotosSlotKey: Blaxtair5PhotoSlotKey | null = isMonitor
           ? "blaxtair5MonitorWirePhotos"
-          : isCamera && cameraIndexMatch
-            ? (`blaxtair5Camera${cameraIndexMatch[1]}WirePhotos` as Blaxtair5PhotoSlotKey)
-            : null;
+          : isHub
+            ? "blaxtair5HubWirePhotos"
+            : isCamera && cameraIndexMatch
+              ? (`blaxtair5Camera${cameraIndexMatch[1]}WirePhotos` as Blaxtair5PhotoSlotKey)
+              : null;
         const wirePhotosSlot = wirePhotosSlotKey ? props.getPhotoSlot(wirePhotosSlotKey) : null;
         const wirePhotosHighlightKey = `${highlightKey}-wirePhotos`;
 
@@ -530,7 +546,11 @@ export function Blaxtair5EquipmentSection(props: {
                 {component.technicianConfirmed ? "✓ " : "— "}
                 {component.componentLabel}
                 {component.identifiers.serialNumber ? ` · SN ${component.identifiers.serialNumber}` : ""}
-                {isCamera ? ` · ${locationLabel(component.mountingLocation, component.mountingLocationOther)}/${viewLabel(component.viewDirection, component.viewDirectionOther)}` : ` · ${locationLabel(component.mountingLocation, component.mountingLocationOther)}`}
+                {isCamera
+                  ? ` · ${locationLabel(component.mountingLocation, component.mountingLocationOther)}/${viewLabel(component.viewDirection, component.viewDirectionOther)}`
+                  : isMonitor
+                    ? ` · ${locationLabel(component.mountingLocation, component.mountingLocationOther)}`
+                    : ""}
                 {highlighted ? " · Incomplete" : ""}
               </span>
               <span className="text-sm text-blue-600 dark:text-blue-400">{expanded ? "Collapse" : "Expand"}</span>
@@ -612,7 +632,7 @@ export function Blaxtair5EquipmentSection(props: {
                   <div id={`field-${highlightKey}-partNumber`}>
                     <SerialInput
                       label="Part number"
-                      required={isCamera}
+                      required={isCamera || isHub}
                       labelClassName={props.fieldLabelClass(`${highlightKey}-partNumber`)}
                       inputClassName={props.fieldInputClass(`${highlightKey}-partNumber`)}
                       value={draft.partNumber}
@@ -667,6 +687,7 @@ export function Blaxtair5EquipmentSection(props: {
                   </div>
                 ) : null}
 
+                {!isHub ? (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div id={`field-${highlightKey}-mounting`}>
                     <label className={props.fieldLabelClass(`${highlightKey}-mounting`)}>
@@ -736,11 +757,12 @@ export function Blaxtair5EquipmentSection(props: {
                     </div>
                   ) : null}
                 </div>
+                ) : null}
 
-                {isMonitor && mountingPhotoSlot ? (
+                {(isMonitor || isHub) && mountingPhotoSlot ? (
                   <div id={`field-${highlightKey}-mountingPhoto`}>
                     <label className={props.fieldLabelClass(`${highlightKey}-mountingPhoto`)}>
-                      Monitor mounting location photo
+                      {component.componentLabel} mounting photo
                       <RequiredMark />
                     </label>
                     <input
@@ -772,9 +794,10 @@ export function Blaxtair5EquipmentSection(props: {
                   </div>
                 ) : null}
 
+                {wireDefs.length > 0 ? (
                 <div className="space-y-3">
                   <p className="text-sm font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                    Wire leads {isCamera ? "(if used)" : ""}
+                    {isHub ? "Wire leads" : "Wire leads (if used)"}
                   </p>
                   {wireDefs.map((wireDef) => {
                     const wireHighlightKey = `${highlightKey}-wire-${wireDef.key}`;
@@ -794,6 +817,7 @@ export function Blaxtair5EquipmentSection(props: {
                     );
                   })}
                 </div>
+                ) : null}
 
                 {anyWireUsed && wirePhotosSlot ? (
                   <div id={`field-photo-${wirePhotosHighlightKey}`}>
@@ -1045,6 +1069,7 @@ export function Blaxtair5ReviewSummary(props: {
   }
   const cameras = system.components.filter((c) => c.componentType === "camera").slice().sort((a, b) => (a.slotKey < b.slotKey ? -1 : 1));
   const monitor = system.components.find((c) => c.componentType === "monitor");
+  const hub = system.components.find((c) => c.componentType === "hub");
   const alarm = system.externalAlarm ?? { installed: false, triggerComponentIds: [] };
 
   return (
@@ -1057,9 +1082,6 @@ export function Blaxtair5ReviewSummary(props: {
         const installPhotoUploaded = cameraIndexMatch
           ? (props.getPhotoSlot(cameraMountingPhotoSlotKey(Number(cameraIndexMatch[1]))).uploadedCount ?? 0) >= 1
           : false;
-        const wirePhotosCount = cameraIndexMatch
-          ? props.getPhotoSlot(`blaxtair5Camera${cameraIndexMatch[1]}WirePhotos` as Blaxtair5PhotoSlotKey).uploadedCount ?? 0
-          : 0;
         return (
           <div key={c.id}>
             <SummaryRow label={`${c.componentLabel} — part number`} value={c.identifiers.partNumber ?? ""} />
@@ -1068,8 +1090,6 @@ export function Blaxtair5ReviewSummary(props: {
             <SummaryRow label={`${c.componentLabel} — view direction`} value={viewLabel(c.viewDirection, c.viewDirectionOther)} />
             <SummaryRow label={`${c.componentLabel} — label photo`} value={photoUploaded ? "Uploaded" : ""} />
             <SummaryRow label={`${c.componentLabel} — mounted photo`} value={installPhotoUploaded ? "Uploaded" : ""} />
-            <SummaryRow label={`${c.componentLabel} — wire leads`} value={wireLeadsSummaryValue(c, CAMERA_WIRE_DEFS)} />
-            <SummaryRow label={`${c.componentLabel} — wire connection photos`} value={wirePhotosCount > 0 ? `${wirePhotosCount} uploaded` : ""} />
             <SummaryRow label={`${c.componentLabel} — confirmed`} value={c.technicianConfirmed ? "Yes" : ""} />
           </div>
         );
@@ -1096,6 +1116,29 @@ export function Blaxtair5ReviewSummary(props: {
             })()}
           />
           <SummaryRow label="Monitor — confirmed" value={monitor.technicianConfirmed ? "Yes" : ""} />
+        </div>
+      ) : null}
+      {hub ? (
+        <div>
+          <SummaryRow label="Camera Hub — part number" value={hub.identifiers.partNumber ?? ""} />
+          <SummaryRow label="Camera Hub — serial number" value={hub.identifiers.serialNumber ?? ""} />
+          <SummaryRow
+            label="Camera Hub — label photo"
+            value={(props.getPhotoSlot("blaxtair5Hub").uploadedCount ?? 0) >= 1 ? "Uploaded" : ""}
+          />
+          <SummaryRow
+            label="Camera Hub — mounting photo"
+            value={(props.getPhotoSlot("blaxtair5HubMounting").uploadedCount ?? 0) >= 1 ? "Uploaded" : ""}
+          />
+          <SummaryRow label="Camera Hub — wire leads" value={wireLeadsSummaryValue(hub, HUB_WIRE_DEFS)} />
+          <SummaryRow
+            label="Camera Hub — wire connection photos"
+            value={(() => {
+              const count = props.getPhotoSlot("blaxtair5HubWirePhotos").uploadedCount ?? 0;
+              return count > 0 ? `${count} uploaded` : "";
+            })()}
+          />
+          <SummaryRow label="Camera Hub — confirmed" value={hub.technicianConfirmed ? "Yes" : ""} />
         </div>
       ) : null}
       <SummaryRow label="External alarm installed?" value={alarm.installed ? "Yes" : "No"} />
