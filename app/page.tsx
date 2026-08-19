@@ -622,6 +622,10 @@ const PPD_PHOTO_KEYS = [
   "blaxtair5Camera3WirePhotos",
   "blaxtair5Camera4WirePhotos",
   "blaxtair5MonitorWirePhotos",
+  // Blaxtair 5 Camera Hub — only present when 2+ cameras are planned.
+  "blaxtair5Hub",
+  "blaxtair5HubMounting",
+  "blaxtair5HubWirePhotos",
   // Blaxtair SSC Speed (secondary product, simple photo+manual-entry fields).
   "sscLabel",
   "sscPower",
@@ -1196,6 +1200,9 @@ const PPD_PHOTO_LABELS: Record<PpdPhotoKey, string> = {
   blaxtair5Camera3WirePhotos: "Blaxtair 5 camera 3 — wire connection photos",
   blaxtair5Camera4WirePhotos: "Blaxtair 5 camera 4 — wire connection photos",
   blaxtair5MonitorWirePhotos: "Blaxtair 5 monitor — wire connection photos",
+  blaxtair5Hub: "Blaxtair 5 — camera hub label (serial/PN)",
+  blaxtair5HubMounting: "Blaxtair 5 — camera hub mounting photo",
+  blaxtair5HubWirePhotos: "Blaxtair 5 camera hub — wire connection photos",
   sscLabel: "SSC Speed — label photo",
   sscPower: "SSC Speed — power connection",
   sscGround: "SSC Speed — ground connection",
@@ -1929,6 +1936,7 @@ export function NewSubmissionForm() {
     "blaxtair5Camera3WirePhotos",
     "blaxtair5Camera4WirePhotos",
     "blaxtair5MonitorWirePhotos",
+    "blaxtair5HubWirePhotos",
   ];
 
   const getBlaxtairPhotoSlot = (key: BlaxtairPhotoSlotKey): BlaxtairPhotoSlot => {
@@ -3033,36 +3041,42 @@ export function NewSubmissionForm() {
       if (!blaxtair5System || !blaxtair5System.plannedCameraCount) {
         issues.push("blaxtair5-equipment");
       } else {
-        const CAMERA_WIRE_KEYS: Array<{ key: string; suffix: string }> = [
-          { key: "ground", suffix: "Ground" },
-          { key: "out1", suffix: "Out1" },
-          { key: "out2", suffix: "Out2" },
-          { key: "out3", suffix: "Out3" },
-          { key: "in1", suffix: "In1" },
+        // Cameras have no wire leads — connections are made at the Camera Hub instead.
+        const MONITOR_WIRE_KEYS: Array<{ key: string; required: boolean }> = [
+          { key: "ground", required: true },
+          { key: "power", required: true },
+          { key: "ignition", required: true },
+          { key: "input1", required: false },
+          { key: "input2", required: false },
+          { key: "input3", required: false },
+          { key: "output1", required: false },
+          { key: "output2", required: false },
         ];
-        const MONITOR_WIRE_KEYS: Array<{ key: string; suffix: string; required: boolean }> = [
-          { key: "ground", suffix: "Ground", required: true },
-          { key: "power", suffix: "Power", required: true },
-          { key: "ignition", suffix: "Ignition", required: true },
-          { key: "trigger1", suffix: "Trigger1", required: false },
-          { key: "trigger2", suffix: "Trigger2", required: false },
-          { key: "trigger3", suffix: "Trigger3", required: false },
-          { key: "trigger4", suffix: "Trigger4", required: false },
-          { key: "trigger5", suffix: "Trigger5", required: false },
+        const HUB_WIRE_KEYS: Array<{ key: string; required: boolean }> = [
+          { key: "power", required: true },
+          { key: "ground", required: true },
+          { key: "ignition", required: true },
         ];
         for (const c of blaxtair5System.components) {
           const key = `blaxtair5-${c.id}`;
           const isMonitor = c.componentType === "monitor";
-          const cameraNum = isMonitor ? null : c.slotKey.slice("camera_".length);
-          const photoField = isMonitor ? "blaxtair5Monitor" : (`blaxtair5Camera${cameraNum}` as PpdPhotoKey);
+          const isHub = c.componentType === "hub";
+          const cameraNum = isMonitor || isHub ? null : c.slotKey.slice("camera_".length);
+          const photoField = isMonitor
+            ? "blaxtair5Monitor"
+            : isHub
+              ? "blaxtair5Hub"
+              : (`blaxtair5Camera${cameraNum}` as PpdPhotoKey);
           const hasPhoto = hasBlaxtair5Photo(photoField);
           if (!c.technicianConfirmed || !hasPhoto) issues.push(key);
           if (isMonitor) {
             if (!hasBlaxtair5Photo("blaxtair5MonitorMounting")) issues.push(`${key}-mountingPhoto`);
+          } else if (isHub) {
+            if (!hasBlaxtair5Photo("blaxtair5HubMounting")) issues.push(`${key}-mountingPhoto`);
           } else {
             if (!hasBlaxtair5Photo(`blaxtair5Camera${cameraNum}Mounting` as PpdPhotoKey)) issues.push(`${key}-installPhoto`);
           }
-          const wireKeys = isMonitor ? MONITOR_WIRE_KEYS : CAMERA_WIRE_KEYS.map((w) => ({ ...w, required: false }));
+          const wireKeys = isMonitor ? MONITOR_WIRE_KEYS : isHub ? HUB_WIRE_KEYS : [];
           let anyWireUsed = false;
           for (const wireDef of wireKeys) {
             const lead = c.wireLeads?.[wireDef.key];
@@ -3074,7 +3088,9 @@ export function NewSubmissionForm() {
             }
           }
           if (anyWireUsed) {
-            const wirePhotosField = (isMonitor ? "blaxtair5MonitorWirePhotos" : `blaxtair5Camera${cameraNum}WirePhotos`) as PpdPhotoKey;
+            const wirePhotosField = (
+              isMonitor ? "blaxtair5MonitorWirePhotos" : "blaxtair5HubWirePhotos"
+            ) as PpdPhotoKey;
             if (!hasBlaxtair5Photo(wirePhotosField)) issues.push(`${key}-wirePhotos`);
           }
         }

@@ -10,23 +10,24 @@ export type SimpleEmailSection = { id: string; title: string; fields: SimpleEmai
 
 type WireDef = { key: string; label: string; required: boolean };
 
-export const BLAXTAIR_5_CAMERA_WIRE_DEFS: WireDef[] = [
-  { key: "ground", label: "Black — Ground", required: false },
-  { key: "out1", label: "Red — Out 1", required: false },
-  { key: "out2", label: "Yellow — Out 2", required: false },
-  { key: "out3", label: "Green — Out 3", required: false },
-  { key: "in1", label: "White — In 1", required: false },
-];
+/** Cameras have no wire leads — connections are made at the Camera Hub instead. */
+export const BLAXTAIR_5_CAMERA_WIRE_DEFS: WireDef[] = [];
 
 export const BLAXTAIR_5_MONITOR_WIRE_DEFS: WireDef[] = [
-  { key: "ground", label: "Black — Ground", required: true },
+  { key: "ground", label: "Black — Constant Ground", required: true },
   { key: "power", label: "Red — Constant Power", required: true },
-  { key: "ignition", label: "Orange — Ignition", required: true },
-  { key: "trigger1", label: "White — Trigger 1", required: false },
-  { key: "trigger2", label: "Blue — Trigger 2", required: false },
-  { key: "trigger3", label: "Green — Trigger 3", required: false },
-  { key: "trigger4", label: "Brown — Trigger 4", required: false },
-  { key: "trigger5", label: "Yellow — Trigger 5", required: false },
+  { key: "ignition", label: "Green — Ignition Power", required: true },
+  { key: "input1", label: "Yellow — Input 1", required: false },
+  { key: "input2", label: "Purple — Input 2", required: false },
+  { key: "input3", label: "Brown — Input 3", required: false },
+  { key: "output1", label: "Blue — Output 1", required: false },
+  { key: "output2", label: "Pink — Output 2", required: false },
+];
+
+export const BLAXTAIR_5_HUB_WIRE_DEFS: WireDef[] = [
+  { key: "power", label: "Power", required: true },
+  { key: "ground", label: "Ground", required: true },
+  { key: "ignition", label: "Ignition", required: true },
 ];
 
 function dash(v: string | null | undefined): string {
@@ -51,15 +52,14 @@ export function buildBlaxtair5WireAndAlarmEmailSections(
   system: InstalledProductSystem,
 ): SimpleEmailSection[] {
   const sections: SimpleEmailSection[] = [];
-  const cameras = system.components
-    .filter((c) => c.componentType === "camera")
-    .slice()
-    .sort((a, b) => (a.slotKey < b.slotKey ? -1 : 1));
   const monitor = system.components.find((c) => c.componentType === "monitor");
+  const hub = system.components.find((c) => c.componentType === "hub");
 
+  // Cameras have no wire leads (BLAXTAIR_5_CAMERA_WIRE_DEFS is empty) — connections are made
+  // at the Camera Hub instead, so cameras are deliberately omitted from wireFields.
   const wireFields: SimpleEmailField[] = [];
-  for (const c of cameras) wireFields.push(wireLeadsField(c, BLAXTAIR_5_CAMERA_WIRE_DEFS));
   if (monitor) wireFields.push(wireLeadsField(monitor, BLAXTAIR_5_MONITOR_WIRE_DEFS));
+  if (hub) wireFields.push(wireLeadsField(hub, BLAXTAIR_5_HUB_WIRE_DEFS));
   if (wireFields.length > 0) {
     sections.push({ id: "blaxtair5-wire-leads", title: "Blaxtair 5 — Wire Leads", fields: wireFields });
   }

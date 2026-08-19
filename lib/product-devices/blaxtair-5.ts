@@ -71,6 +71,25 @@ export const BLAXTAIR_5_PRODUCT_DEFINITION: ProductDeviceDefinition = {
         { fieldName: "installed", label: "Monitor installed", minCount: 1 },
       ],
     },
+    {
+      // Only present when the technician's camera count is 2 or more — see
+      // applyBlaxtair5CameraCount, which is the actual gate (minCount here is metadata only).
+      componentType: "hub",
+      role: "hub",
+      displayLabel: "Camera Hub",
+      hardwareProfileId: "blaxtair_5_hub_label",
+      expectedIdentifiers: ["serialNumber", "partNumber"],
+      requiredIdentifierKeys: ["serialNumber", "partNumber"],
+      minCount: 0,
+      maxCount: 1,
+      requiresMountingLocation: false,
+      requiresViewDirection: false,
+      requiredPhotoDefinitions: [
+        { fieldName: "label", label: "Hub label (serial / PN)", minCount: 1 },
+        { fieldName: "mounting", label: "Hub mounting", minCount: 1 },
+        { fieldName: "connectionPhotos", label: "Hub wire connection photos", minCount: 1 },
+      ],
+    },
   ],
   active: true,
 };
@@ -81,6 +100,10 @@ export function blaxtair5CameraSlotKey(index1Based: number): string {
 
 export function blaxtair5MonitorSlotKey(): string {
   return "monitor";
+}
+
+export function blaxtair5HubSlotKey(): string {
+  return "hub";
 }
 
 export function buildEmptyBlaxtair5CameraComponent(args: {
@@ -154,6 +177,36 @@ export function buildEmptyBlaxtair5MonitorComponent(args: {
   };
 }
 
+export function buildEmptyBlaxtair5HubComponent(args: {
+  systemId: string;
+  nowIso?: string;
+}): InstalledProductComponent {
+  const now = args.nowIso ?? new Date().toISOString();
+  const id = createInstalledComponentId();
+  return {
+    id,
+    componentType: "hub",
+    componentLabel: "Camera Hub",
+    slotKey: blaxtair5HubSlotKey(),
+    hardwareProfileId: "blaxtair_5_hub_label",
+    detectedHardwareProfileId: "blaxtair_5_hub_label",
+    identifiers: {},
+    labelPhoto: null,
+    mountingLocation: null,
+    viewDirection: null,
+    installPhotos: [],
+    extractionSource: null,
+    detectionConfidence: null,
+    technicianConfirmed: false,
+    detectionOverridden: false,
+    identifierEdits: [],
+    manualFallbackReason: null,
+    installDetails: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /**
  * After the technician chooses a camera count: keep any existing camera data, allocate
  * remaining empty camera slots + monitor. Never reuses removed slot UUIDs.
@@ -206,10 +259,23 @@ export function applyBlaxtair5CameraCount(args: {
     args.system.components.find((c) => c.componentType === "monitor") ||
     buildEmptyBlaxtair5MonitorComponent({ systemId: args.system.id, nowIso: now });
 
+  // Camera Hub only exists once 2+ cameras are planned — dropped (not just hidden) when the
+  // technician reduces the count back to 1, mirroring how excess camera slots are dropped above.
+  const hub =
+    count >= 2
+      ? existingBySlot.get(blaxtair5HubSlotKey()) ||
+        args.system.components.find((c) => c.componentType === "hub") ||
+        buildEmptyBlaxtair5HubComponent({ systemId: args.system.id, nowIso: now })
+      : null;
+
   return {
     ...args.system,
     plannedCameraCount: count,
-    components: sortComponentsDeterministically([...cameras, { ...monitor, slotKey: blaxtair5MonitorSlotKey() }]),
+    components: sortComponentsDeterministically([
+      ...cameras,
+      { ...monitor, slotKey: blaxtair5MonitorSlotKey() },
+      ...(hub ? [{ ...hub, slotKey: blaxtair5HubSlotKey() }] : []),
+    ]),
     updatedAt: now,
   };
 }

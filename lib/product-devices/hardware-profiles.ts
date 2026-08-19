@@ -64,6 +64,12 @@ export const HARDWARE_PROFILES: Record<
     legacyFormIdHint: "blaxtair_5",
     notes: "Blaxtair 5 monitor label — fixture only",
   },
+  blaxtair_5_hub_label: {
+    id: "blaxtair_5_hub_label",
+    labelExtractionProfileId: "blaxtair_5_hub_label_v1",
+    legacyFormIdHint: "blaxtair_5",
+    notes: "Blaxtair 5 camera hub label (part / serial) — fixture only",
+  },
 };
 
 /**
@@ -167,6 +173,8 @@ export function classifierFamilyToHardwareProfile(
       return "blaxtair_5_camera_label";
     case "blaxtair_5_monitor":
       return "blaxtair_5_monitor_label";
+    case "blaxtair_5_hub":
+      return "blaxtair_5_hub_label";
     default:
       return null;
   }
