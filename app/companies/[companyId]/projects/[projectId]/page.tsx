@@ -173,6 +173,11 @@ export default function ProjectDashboardPage() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [lostReceiptInput, setLostReceiptInput] = useState(false);
   const [receiptValidationError, setReceiptValidationError] = useState<string | null>(null);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [editingExpenseReceiptUrl, setEditingExpenseReceiptUrl] = useState<string | null>(null);
+  const [deleteConfirmExpenseId, setDeleteConfirmExpenseId] = useState<string | null>(null);
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
+  const [deleteExpenseError, setDeleteExpenseError] = useState<string | null>(null);
   const takePhotoInputRef = useRef<HTMLInputElement | null>(null);
   const uploadReceiptInputRef = useRef<HTMLInputElement | null>(null);
   const receiptPreviewUrl = useMemo(() => (receiptFile ? URL.createObjectURL(receiptFile) : null), [receiptFile]);
@@ -383,6 +388,25 @@ export default function ProjectDashboardPage() {
     [expenses],
   );
   const canReviewExpenses = isGlobalAdmin || companyRole === "admin";
+  const canModifyExpense = (expense: ExpenseRow) =>
+    canReviewExpenses || (!!userContext.userId && expense.created_by === userContext.userId);
+
+  const receiptStoragePathFromUrl = (url: string): string | null => {
+    const marker = `/object/public/${PHOTO_BUCKET}/`;
+    const idx = url.indexOf(marker);
+    return idx === -1 ? null : url.slice(idx + marker.length);
+  };
+
+  const removeReceiptStorageObject = async (url: string) => {
+    const path = receiptStoragePathFromUrl(url);
+    if (!path) return;
+    try {
+      const { error } = await supabase.storage.from(PHOTO_BUCKET).remove([path]);
+      if (error) throw error;
+    } catch (error) {
+      console.warn("Failed to remove old receipt file:", error);
+    }
+  };
 
   const handleReceiptFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -409,6 +433,24 @@ export default function ProjectDashboardPage() {
     setLostReceiptInput(false);
     setReceiptValidationError(null);
     setSaveExpenseError(null);
+    setEditingExpenseId(null);
+    setEditingExpenseReceiptUrl(null);
+    if (takePhotoInputRef.current) takePhotoInputRef.current.value = "";
+    if (uploadReceiptInputRef.current) uploadReceiptInputRef.current.value = "";
+  };
+
+  const startEditExpense = (expense: ExpenseRow) => {
+    const amountValue = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
+    setEditingExpenseId(expense.id);
+    setEditingExpenseReceiptUrl(expense.receipt_url);
+    setAmountInput(Number.isFinite(amountValue) && amountValue > 0 ? String(amountValue) : "");
+    setCategoryInput(expense.category || "");
+    setNotesInput(expense.notes || "");
+    setReceiptFile(null);
+    setLostReceiptInput(!!expense.lost_receipt);
+    setReceiptValidationError(null);
+    setSaveExpenseError(null);
+    setDeleteConfirmExpenseId(null);
     if (takePhotoInputRef.current) takePhotoInputRef.current.value = "";
     if (uploadReceiptInputRef.current) uploadReceiptInputRef.current.value = "";
   };
@@ -533,6 +575,120 @@ export default function ProjectDashboardPage() {
       setSaveExpenseError(error instanceof Error ? error.message : "Failed to save expense.");
     } finally {
       setSavingExpense(false);
+    }
+  };
+
+  const handleUpdateExpense = async () => {
+    if (!editingExpenseId) return;
+    if (!userContext.userId) {
+      setSaveExpenseError("Sign in to edit an expense.");
+      return;
+    }
+
+    const amount = Number(amountInput);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setSaveExpenseError("Enter a valid expense amount greater than zero.");
+      return;
+    }
+
+    const category = categoryInput.trim();
+    if (!category) {
+      setSaveExpenseError("Select an expense category.");
+      return;
+    }
+
+    const receiptError = getReceiptValidationError(receiptFile);
+    if (receiptError) {
+      setReceiptValidationError(receiptError);
+      setSaveExpenseError(receiptError);
+      return;
+    }
+
+    const notes = notesInput.trim();
+    const willKeepExistingReceipt = !receiptFile && !lostReceiptInput && !!editingExpenseReceiptUrl;
+    const willHaveReceipt = !!receiptFile || willKeepExistingReceipt;
+    if (!willHaveReceipt && !lostReceiptInput) {
+      setSaveExpenseError("Attach a receipt photo or mark this as a lost receipt.");
+      return;
+    }
+    if (!willHaveReceipt && lostReceiptInput && !notes) {
+      setSaveExpenseError("Add a note when marking an expense as a lost receipt.");
+      return;
+    }
+
+    setSavingExpense(true);
+    setSaveExpenseError(null);
+    try {
+      let nextReceiptUrl = editingExpenseReceiptUrl;
+      let nextLostReceipt = false;
+      const oldReceiptUrl = editingExpenseReceiptUrl;
+
+      if (receiptFile) {
+        const safeName = receiptFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const objectPath = `expenses/${projectId}/${editingExpenseId}/${Date.now()}-${safeName}`;
+        const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, receiptFile, {
+          upsert: true,
+          contentType: receiptFile.type || undefined,
+        });
+        if (uploadError) throw uploadError;
+        const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(objectPath);
+        nextReceiptUrl = data?.publicUrl || null;
+      } else if (lostReceiptInput) {
+        // Technician switched to "lost receipt" — drop whatever was previously attached.
+        nextReceiptUrl = null;
+        nextLostReceipt = true;
+      }
+      // else: no new file, lost-receipt unchecked — keep the existing receipt_url untouched.
+
+      const needsReview = !nextReceiptUrl && nextLostReceipt;
+      const { data: updatedExpense, error: updateError } = await supabase
+        .from("expenses")
+        .update({
+          amount,
+          category,
+          notes: notes || null,
+          receipt_url: nextReceiptUrl,
+          lost_receipt: nextLostReceipt,
+          // Any edit invalidates a prior review — force it back through review rather than
+          // silently keeping a stale approval on now-different data.
+          needs_review: needsReview,
+          review_reason: needsReview ? "Lost receipt" : null,
+          review_status: "pending",
+          reviewed_by: null,
+          reviewed_at: null,
+        })
+        .eq("id", editingExpenseId)
+        .select("id, project_id, amount, category, notes, created_by, created_at, receipt_url, lost_receipt, needs_review, review_reason, review_status")
+        .single<ExpenseRow>();
+      if (updateError) throw updateError;
+
+      if (oldReceiptUrl && oldReceiptUrl !== nextReceiptUrl) {
+        void removeReceiptStorageObject(oldReceiptUrl);
+      }
+
+      setExpenses((prev) => prev.map((expense) => (expense.id === editingExpenseId ? updatedExpense : expense)));
+      resetExpenseForm();
+    } catch (error) {
+      setSaveExpenseError(error instanceof Error ? error.message : "Failed to update expense.");
+    } finally {
+      setSavingExpense(false);
+    }
+  };
+
+  const handleDeleteExpense = async (expense: ExpenseRow) => {
+    setDeletingExpenseId(expense.id);
+    setDeleteExpenseError(null);
+    try {
+      const { error } = await supabase.from("expenses").delete().eq("id", expense.id);
+      if (error) throw error;
+      if (expense.receipt_url) void removeReceiptStorageObject(expense.receipt_url);
+      setExpenses((prev) => prev.filter((row) => row.id !== expense.id));
+      setDeleteConfirmExpenseId(null);
+      if (editingExpenseId === expense.id) resetExpenseForm();
+    } catch (error) {
+      setDeleteExpenseError(error instanceof Error ? error.message : "Failed to delete expense.");
+    } finally {
+      setDeletingExpenseId(null);
     }
   };
 
@@ -756,7 +912,18 @@ export default function ProjectDashboardPage() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-800">Receipt photo (optional)</label>
+                  <label className="mb-1 block text-sm font-semibold text-gray-800">
+                    {editingExpenseId ? "Receipt photo" : "Receipt photo (optional)"}
+                  </label>
+                  {editingExpenseId && editingExpenseReceiptUrl && !receiptFile ? (
+                    <p className="mb-2 text-xs text-gray-600">
+                      Current receipt:{" "}
+                      <a href={editingExpenseReceiptUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">
+                        View
+                      </a>
+                      . Select a new file to replace it, or check &quot;lost receipt&quot; to remove it.
+                    </p>
+                  ) : null}
                   <input
                     ref={takePhotoInputRef}
                     type="file"
@@ -831,17 +998,22 @@ export default function ProjectDashboardPage() {
                 </div>
               </div>
 
+              {editingExpenseId ? (
+                <p className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-900">
+                  Editing an existing expense.
+                </p>
+              ) : null}
               {saveExpenseError ? <p className="mt-3 text-sm font-semibold text-amber-700">{saveExpenseError}</p> : null}
               {reviewToast ? <p className="mt-3 text-sm font-semibold text-emerald-700">{reviewToast}</p> : null}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={handleCreateExpense}
+                  onClick={() => void (editingExpenseId ? handleUpdateExpense() : handleCreateExpense())}
                   disabled={savingExpense}
                   className="inline-flex min-h-[48px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-5 py-3 text-base font-semibold text-blue-600 shadow-sm hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {savingExpense ? "Saving..." : "Add Expense"}
+                  {savingExpense ? "Saving..." : editingExpenseId ? "Save Changes" : "Add Expense"}
                 </button>
                 <button
                   type="button"
@@ -849,7 +1021,7 @@ export default function ProjectDashboardPage() {
                   disabled={savingExpense}
                   className="inline-flex min-h-[48px] items-center justify-center rounded-lg border border-gray-300 bg-white px-5 py-3 text-base font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Clear
+                  {editingExpenseId ? "Cancel Edit" : "Clear"}
                 </button>
               </div>
 
@@ -924,6 +1096,49 @@ export default function ProjectDashboardPage() {
                             >
                               View receipt
                             </a>
+                          ) : null}
+                          {canModifyExpense(expense) ? (
+                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+                              <button
+                                type="button"
+                                onClick={() => startEditExpense(expense)}
+                                className="inline-flex min-h-[36px] items-center justify-center rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                              >
+                                Edit
+                              </button>
+                              {deleteConfirmExpenseId === expense.id ? (
+                                <>
+                                  <span className="text-xs font-semibold text-rose-700">Delete this expense?</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteExpense(expense)}
+                                    disabled={deletingExpenseId === expense.id}
+                                    className="inline-flex min-h-[36px] items-center justify-center rounded-lg border border-rose-400 bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {deletingExpenseId === expense.id ? "Deleting…" : "Confirm delete"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeleteConfirmExpenseId(null)}
+                                    disabled={deletingExpenseId === expense.id}
+                                    className="inline-flex min-h-[36px] items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteConfirmExpenseId(expense.id)}
+                                  className="inline-flex min-h-[36px] items-center justify-center rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          ) : null}
+                          {deleteExpenseError && deleteConfirmExpenseId === expense.id ? (
+                            <p className="mt-2 text-xs font-semibold text-rose-700">{deleteExpenseError}</p>
                           ) : null}
                         </article>
                       );
