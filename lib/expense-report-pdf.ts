@@ -265,17 +265,19 @@ export async function buildExpenseReportPdf(args: {
     cursor.drawDivider();
   }
 
-  // PDF receipts — appended as their own real pages, not rasterized into the grid.
+  // PDF receipts — appended directly as their own real pages, no divider/caption page in front
+  // of them (that page was nearly blank and just added whitespace before the actual receipt).
   const pdfReceipts = args.receipts.filter((r) => r.contentType === "application/pdf");
   for (const receipt of pdfReceipts) {
-    cursor.newPage();
-    cursor.drawLine("RECEIPT (PDF)", { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 6 });
-    cursor.drawWrapped(receipt.captionLabel, { size: FIELD_SIZE });
     try {
       const sourceDoc = await PDFDocument.load(receipt.bytes);
       const copiedPages = await pdf.copyPages(sourceDoc, sourceDoc.getPageIndices());
       for (const page of copiedPages) pdf.addPage(page);
     } catch {
+      // Rare path (unreadable receipt) — still worth a page so the skip isn't silent.
+      cursor.newPage();
+      cursor.drawLine("RECEIPT (PDF)", { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 6 });
+      cursor.drawWrapped(receipt.captionLabel, { size: FIELD_SIZE });
       cursor.drawWrapped("(This receipt PDF could not be read and was skipped.)", {
         size: FIELD_SIZE,
         color: rgb(0.7, 0.25, 0.25),

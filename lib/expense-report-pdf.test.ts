@@ -74,9 +74,9 @@ describe("expense-report-pdf", () => {
       receipts: [imageReceipt, pdfReceipt],
     });
     const combinedDoc = await PDFDocument.load(withPdfReceipt);
-    // The 2-page receipt PDF must show up as 2 additional real pages (plus the divider page
-    // introducing it), not be flattened/rasterized into the image grid.
-    assert.ok(combinedDoc.getPageCount() >= baselinePageCount + 2);
+    // The 2-page receipt PDF must show up as exactly 2 additional real pages — no divider/
+    // caption page in front of them (that page was nearly blank and just added whitespace).
+    assert.equal(combinedDoc.getPageCount(), baselinePageCount + 2);
   });
 
   it("skips a receipt with unreadable bytes instead of throwing", async () => {
