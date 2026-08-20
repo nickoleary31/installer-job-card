@@ -19,6 +19,12 @@ import {
 import type { JobCardLinxupPayload } from "@/lib/linxup";
 import { readUploadedProductFiles } from "@/lib/product-files";
 
+// Blaxtair AHD/5 job cards can require a dozen+ photos (per-camera label + mounting, monitor,
+// Camera Hub, external alarm, wire path) — downloading, optimizing, and attaching all of them
+// plus the Resend API call can exceed the platform's default function timeout. Raise it so a
+// photo-heavy send has room to finish instead of dying mid-request with an unhandled 500.
+export const maxDuration = 60;
+
 const DEFAULT_RESEND_FROM = "onboarding@resend.dev";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
