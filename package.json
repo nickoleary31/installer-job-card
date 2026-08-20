@@ -12,7 +12,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test lib/draft-photo-persistence.test.ts lib/email-recipients.test.ts lib/email-layout.test.ts lib/email-photo-optimize.test.ts lib/email-photo-messaging.test.ts lib/form-registry.test.ts lib/blaxtair-email-labels.test.ts lib/product-config/resolve-company-products.test.ts lib/product-files/product-files.test.ts lib/auth/onboarding.test.ts lib/product-devices/product-devices.test.ts lib/prototype/label-scan/blaxtair.test.ts lib/prototype/label-scan/blaxtair-bridge.test.ts lib/prototype/label-scan/blaxtair-install-registry.test.ts lib/prototype/photo-fingerprint.test.ts lib/prototype/photo-dedup-registry.test.ts lib/prototype/blaxtair-job-card.test.ts lib/prototype/blaxtair-draft-store.test.ts lib/prototype/blaxtair-submission-store.test.ts lib/prototype/blaxtair-validation-mode.test.ts",
+    "test": "node --experimental-strip-types --test lib/draft-photo-persistence.test.ts lib/email-recipients.test.ts lib/email-layout.test.ts lib/email-photo-optimize.test.ts lib/email-photo-messaging.test.ts lib/email-pdf.test.ts lib/form-registry.test.ts lib/blaxtair-email-labels.test.ts lib/product-config/resolve-company-products.test.ts lib/product-files/product-files.test.ts lib/auth/onboarding.test.ts lib/product-devices/product-devices.test.ts lib/prototype/label-scan/blaxtair.test.ts lib/prototype/label-scan/blaxtair-bridge.test.ts lib/prototype/label-scan/blaxtair-install-registry.test.ts lib/prototype/photo-fingerprint.test.ts lib/prototype/photo-dedup-registry.test.ts lib/prototype/blaxtair-job-card.test.ts lib/prototype/blaxtair-draft-store.test.ts lib/prototype/blaxtair-submission-store.test.ts lib/prototype/blaxtair-validation-mode.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,6 +22,7 @@
     "@zxing/library": "^0.22.0",
     "browser-image-compression": "^2.0.2",
     "next": "16.2.4",
+    "pdf-lib": "^1.17.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "resend": "^6.12.2",
