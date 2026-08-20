@@ -80,13 +80,19 @@ class PdfCursor {
     if (this.y - height < MARGIN) this.newPage();
   }
 
-  drawLine(text: string, opts: { size: number; bold?: boolean; color?: ReturnType<typeof rgb>; gapAfter?: number }) {
+  drawLine(
+    text: string,
+    opts: { size: number; bold?: boolean; color?: ReturnType<typeof rgb>; gapAfter?: number; align?: "left" | "center" },
+  ) {
     this.ensureSpace(opts.size + LINE_GAP);
+    const font = opts.bold ? this.boldFont : this.regularFont;
+    const x =
+      opts.align === "center" ? (PAGE_WIDTH - font.widthOfTextAtSize(text, opts.size)) / 2 : MARGIN;
     this.page.drawText(text, {
-      x: MARGIN,
+      x,
       y: this.y - opts.size,
       size: opts.size,
-      font: opts.bold ? this.boldFont : this.regularFont,
+      font,
       color: opts.color ?? rgb(0.1, 0.1, 0.12),
     });
     this.y -= opts.size + (opts.gapAfter ?? LINE_GAP);
@@ -159,8 +165,14 @@ export async function buildJobCardPdf(
   const firstPage = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const cursor = new PdfCursor(pdf, firstPage, regularFont, boldFont);
 
-  cursor.drawLine("INSTALLER JOB CARD", { size: TITLE_SIZE, bold: true, gapAfter: 4 });
-  cursor.drawLine(document.header.productName, { size: HEADER_SIZE + 2, bold: true, color: rgb(0.15, 0.35, 0.75), gapAfter: 10 });
+  cursor.drawLine("INSTALLER JOB CARD", { size: TITLE_SIZE, bold: true, gapAfter: 4, align: "center" });
+  cursor.drawLine(document.header.productName, {
+    size: HEADER_SIZE + 2,
+    bold: true,
+    color: rgb(0.15, 0.35, 0.75),
+    gapAfter: 10,
+    align: "center",
+  });
   fieldLine(cursor, "Customer", document.header.customer);
   fieldLine(cursor, "Asset #", document.header.assetNumber);
   fieldLine(cursor, "Submitted", document.header.submittedAt);
@@ -169,7 +181,9 @@ export async function buildJobCardPdf(
   cursor.drawDivider();
 
   for (const section of document.sections) {
-    cursor.ensureSpace(SECTION_TITLE_SIZE + 14);
+    // Reserve room for the heading *and* its first line of content, not just the heading —
+    // otherwise a heading can land as the last line on a page with its content orphaned below.
+    cursor.ensureSpace(SECTION_TITLE_SIZE + 14 + FIELD_SIZE + LINE_GAP);
     cursor.drawLine(section.title.toUpperCase(), { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 6 });
     if (section.fields.length === 0) {
       cursor.drawWrapped("None", { size: FIELD_SIZE, color: rgb(0.45, 0.45, 0.48) });
@@ -181,59 +195,74 @@ export async function buildJobCardPdf(
     cursor.drawDivider();
   }
 
-  for (const section of photoSections) {
-    const fieldsWithPhotos = section.fields.filter((f) => f.photos.length > 0);
-    if (fieldsWithPhotos.length === 0) continue;
+  const CAPTION_SIZE = 7.5;
+  const CAPTION_LINE_HEIGHT = 9;
+  const CAPTION_MAX_LINES = 2;
+  const CELL_GAP_Y = 20;
 
-    cursor.ensureSpace(SECTION_TITLE_SIZE + 14);
+  for (const section of photoSections) {
+    // Flatten every field's photos into one list so the 2-column grid packs continuously across
+    // the whole section — grouping cells per field (as before) left a stranded empty column
+    // whenever a field had an odd photo count (the common case: most fields have exactly 1).
+    const cells: Array<{ label: string; photo: (typeof section.fields)[number]["photos"][number] }> = [];
+    for (const field of section.fields) {
+      field.photos.forEach((photo, i) => {
+        const label = field.photos.length > 1 ? `${field.label} (${i + 1}/${field.photos.length})` : field.label;
+        cells.push({ label, photo });
+      });
+    }
+    if (cells.length === 0) continue;
+
+    // Reserve room for the heading *and* a full first row of photos — a heading with no room
+    // left for its pictures below it is the exact "orphaned header" bug this guards against.
+    const firstRowHeight = PHOTO_MAX_HEIGHT + 4 + CAPTION_MAX_LINES * CAPTION_LINE_HEIGHT;
+    cursor.ensureSpace(SECTION_TITLE_SIZE + 14 + firstRowHeight + CELL_GAP_Y);
     cursor.drawLine(section.heading.toUpperCase(), { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 8 });
 
-    for (const field of fieldsWithPhotos) {
-      cursor.drawWrapped(field.label, { size: FIELD_SIZE, bold: true });
-      cursor.y -= 2;
+    let col = 0;
+    let rowMaxHeight = 0;
+    let rowStartY = cursor.y;
 
-      let col = 0;
-      let rowMaxHeight = 0;
-      let rowStartY = cursor.y;
+    for (const cell of cells) {
+      const source = imagesByStoragePath.get(cell.photo.storagePath);
+      if (!source) continue;
+      const embedded = await embedForPdf(pdf, source);
+      if (!embedded) continue;
 
-      for (const photo of field.photos) {
-        const source = imagesByStoragePath.get(photo.storagePath);
-        if (!source) continue;
-        const embedded = await embedForPdf(pdf, source);
-        if (!embedded) continue;
+      const box = fitWithin(embedded.width, embedded.height, PHOTO_MAX_WIDTH, PHOTO_MAX_HEIGHT);
+      const captionLines = wrapText(cell.label, regularFont, CAPTION_SIZE, PHOTO_MAX_WIDTH).slice(0, CAPTION_MAX_LINES);
+      const cellHeight = box.height + 4 + captionLines.length * CAPTION_LINE_HEIGHT;
 
-        const box = fitWithin(embedded.width, embedded.height, PHOTO_MAX_WIDTH, PHOTO_MAX_HEIGHT);
+      if (col === 0) {
+        cursor.ensureSpace(cellHeight + CELL_GAP_Y);
+        rowStartY = cursor.y;
+        rowMaxHeight = 0;
+      }
 
-        if (col === 0) {
-          cursor.ensureSpace(box.height + 24);
-          rowStartY = cursor.y;
-          rowMaxHeight = 0;
-        }
-
-        const x = MARGIN + col * (PHOTO_MAX_WIDTH + PHOTO_GUTTER);
-        const y = rowStartY - box.height;
-        cursor.page.drawImage(embedded.image, { x, y, width: box.width, height: box.height });
-        const caption = photo.attachmentDisplayName || photo.filename || "photo";
-        cursor.page.drawText(caption.length > 40 ? `${caption.slice(0, 37)}...` : caption, {
+      const x = MARGIN + col * (PHOTO_MAX_WIDTH + PHOTO_GUTTER);
+      const y = rowStartY - box.height;
+      cursor.page.drawImage(embedded.image, { x, y, width: box.width, height: box.height });
+      captionLines.forEach((line, i) => {
+        cursor.page.drawText(line, {
           x,
-          y: y - 10,
-          size: 7.5,
+          y: y - 10 - i * CAPTION_LINE_HEIGHT,
+          size: CAPTION_SIZE,
           font: regularFont,
           color: rgb(0.4, 0.4, 0.43),
         });
+      });
 
-        rowMaxHeight = Math.max(rowMaxHeight, box.height);
-        col += 1;
-        if (col >= PHOTOS_PER_ROW) {
-          col = 0;
-          cursor.y = rowStartY - rowMaxHeight - 22;
-        }
+      rowMaxHeight = Math.max(rowMaxHeight, cellHeight);
+      col += 1;
+      if (col >= PHOTOS_PER_ROW) {
+        col = 0;
+        cursor.y = rowStartY - rowMaxHeight - CELL_GAP_Y;
       }
-      if (col !== 0) {
-        cursor.y = rowStartY - rowMaxHeight - 22;
-      }
-      cursor.y -= 4;
     }
+    if (col !== 0) {
+      cursor.y = rowStartY - rowMaxHeight - CELL_GAP_Y;
+    }
+    cursor.y -= 6;
     cursor.drawDivider();
   }
 
