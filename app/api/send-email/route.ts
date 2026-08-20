@@ -5,6 +5,8 @@ import { buildCidPhotoAttachments } from "@/lib/email-cid-attachments";
 import { buildProductFileEmailAttachments } from "@/lib/email-product-file-attachments";
 import { buildEmailPhotoSections } from "@/lib/email-photo-sections";
 import { buildOutboundEmailBodies } from "@/lib/email-view-model";
+import { buildJobCardPdf, type PdfImageSource } from "@/lib/email-pdf";
+import { sanitizeFilenamePart } from "@/lib/email-attachment-filenames";
 import {
   resolveJobCardEmailRecipients,
   type EmailSendMode,
@@ -432,6 +434,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Email HTML missing CID photo references. Send aborted." }, { status: 500 });
   }
 
+  // Best-effort: a PDF-generation bug must never block the email itself, so any failure here
+  // just omits the attachment rather than failing the send (see lib/email-pdf.ts for why).
+  let pdfAttachment: { content: Buffer; filename: string; contentType: string } | null = null;
+  const pdfPhaseStartedAt = Date.now();
+  try {
+    const imagesByStoragePath = new Map<string, PdfImageSource>(
+      photoAttachments.attachments.map((a) => [
+        a.storagePath,
+        { storagePath: a.storagePath, buffer: a.content, contentType: a.contentType as "image/jpeg" | "image/png" },
+      ]),
+    );
+    const pdfBuffer = await buildJobCardPdf(outbound.layoutDocument, outbound.photoSections, imagesByStoragePath);
+    const pdfFilename = `${[sanitizeFilenamePart(filenameContext.customer, 32), sanitizeFilenamePart(filenameContext.assetNumber, 24), "JobCard"]
+      .filter(Boolean)
+      .join("_")}.pdf`;
+    pdfAttachment = { content: pdfBuffer, filename: pdfFilename, contentType: "application/pdf" };
+    console.info("[send-email] timing", { phase: "buildJobCardPdf", ms: Date.now() - pdfPhaseStartedAt, bytes: pdfBuffer.byteLength });
+  } catch (err: unknown) {
+    console.info("[send-email] timing", { phase: "buildJobCardPdf", ms: Date.now() - pdfPhaseStartedAt, threw: true });
+    console.warn("[send-email] PDF attachment unavailable — sending without it", err);
+  }
+
   const resend = new Resend(apiKey);
   let resendId: string | null = null;
 
@@ -465,6 +489,7 @@ export async function POST(req: Request) {
             filename: a.filename,
             contentType: a.contentType,
           })),
+          ...(pdfAttachment ? [pdfAttachment] : []),
         ],
       },
       { idempotencyKey },
@@ -528,6 +553,7 @@ export async function POST(req: Request) {
     resendId,
     sendMode,
     recipients: recipients.to,
+    pdfAttached: !!pdfAttachment,
     photoAttachments: {
       expectedCount: photoAttachments.expectedCount,
       attachedCount: photoAttachments.attachedCount,
