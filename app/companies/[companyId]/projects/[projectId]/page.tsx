@@ -930,6 +930,15 @@ export default function ProjectDashboardPage() {
                     })
                   : null}
               </div>
+
+              <div className="mt-6 border-t border-gray-200 pt-4">
+                <Link
+                  href={`/companies/${companyId}/projects/${projectId}/expenses/report`}
+                  className="inline-flex min-h-[48px] items-center justify-center rounded-lg border-2 border-emerald-600 bg-white px-5 py-3 text-base font-semibold text-emerald-700 shadow-sm hover:bg-emerald-50"
+                >
+                  Expense Report
+                </Link>
+              </div>
             </section>
 
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
