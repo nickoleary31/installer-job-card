@@ -181,7 +181,9 @@ export async function buildJobCardPdf(
   cursor.drawDivider();
 
   for (const section of document.sections) {
-    cursor.ensureSpace(SECTION_TITLE_SIZE + 14);
+    // Reserve room for the heading *and* its first line of content, not just the heading —
+    // otherwise a heading can land as the last line on a page with its content orphaned below.
+    cursor.ensureSpace(SECTION_TITLE_SIZE + 14 + FIELD_SIZE + LINE_GAP);
     cursor.drawLine(section.title.toUpperCase(), { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 6 });
     if (section.fields.length === 0) {
       cursor.drawWrapped("None", { size: FIELD_SIZE, color: rgb(0.45, 0.45, 0.48) });
@@ -211,7 +213,10 @@ export async function buildJobCardPdf(
     }
     if (cells.length === 0) continue;
 
-    cursor.ensureSpace(SECTION_TITLE_SIZE + 14);
+    // Reserve room for the heading *and* a full first row of photos — a heading with no room
+    // left for its pictures below it is the exact "orphaned header" bug this guards against.
+    const firstRowHeight = PHOTO_MAX_HEIGHT + 4 + CAPTION_MAX_LINES * CAPTION_LINE_HEIGHT;
+    cursor.ensureSpace(SECTION_TITLE_SIZE + 14 + firstRowHeight + CELL_GAP_Y);
     cursor.drawLine(section.heading.toUpperCase(), { size: SECTION_TITLE_SIZE, bold: true, gapAfter: 8 });
 
     let col = 0;
