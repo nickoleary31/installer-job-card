@@ -459,14 +459,36 @@ export async function POST(req: Request) {
   const resend = new Resend(apiKey);
   let resendId: string | null = null;
 
-  // Stable per submission+mode+recipients (not per HTTP request): if a flaky network path
-  // between us and Resend causes a client-visible failure after Resend already queued the
-  // send, retrying with the same key lets Resend return the original result instead of
-  // sending the customer a duplicate email. Deliberately excludes body/attachments so it
-  // stays valid across our own retries of "the same" logical send.
-  const idempotencyKey = createHash("sha256")
-    .update(`${payload.submissionId}:${sendMode}:${to.join(",")}`)
-    .digest("hex");
+  const attachments = [
+    ...photoAttachments.attachments.map((a) => ({
+      content: a.content,
+      filename: a.filename,
+      contentId: a.contentId,
+      contentType: a.contentType,
+    })),
+    ...productFileAttachments.attachments.map((a) => ({
+      content: a.content,
+      filename: a.filename,
+      contentType: a.contentType,
+    })),
+    ...(pdfAttachment ? [pdfAttachment] : []),
+  ];
+
+  // Derived from the actual outbound content (not just submission+mode+recipients): a flaky
+  // network path that causes a client-visible failure after Resend already queued the send can
+  // still retry with the same key and get the original result back instead of a duplicate email
+  // — but only when the retried request is byte-for-byte the same. A submission+mode+recipients-
+  // only key looked stable "across retries of the same logical send" but actually collided with
+  // any *legitimate* resend of genuinely different content for the same submission within 24h
+  // (e.g. this PDF attachment shipping after an earlier send, or a fixed photo) — Resend's API
+  // correctly rejects that as a body mismatch under a key it's already seen. Hashing the real
+  // content makes identical retries dedupe and different content always get a fresh key.
+  const idempotencyHash = createHash("sha256").update(`${payload.submissionId}:${sendMode}:${to.join(",")}`);
+  idempotencyHash.update(outbound.subject).update(outbound.textBody).update(outbound.htmlBody);
+  for (const a of attachments) {
+    idempotencyHash.update(a.filename).update(a.contentType).update(a.content);
+  }
+  const idempotencyKey = idempotencyHash.digest("hex");
 
   const resendCallStartedAt = Date.now();
   try {
@@ -477,20 +499,7 @@ export async function POST(req: Request) {
         subject: outbound.subject,
         text: outbound.textBody,
         html: outbound.htmlBody,
-        attachments: [
-          ...photoAttachments.attachments.map((a) => ({
-            content: a.content,
-            filename: a.filename,
-            contentId: a.contentId,
-            contentType: a.contentType,
-          })),
-          ...productFileAttachments.attachments.map((a) => ({
-            content: a.content,
-            filename: a.filename,
-            contentType: a.contentType,
-          })),
-          ...(pdfAttachment ? [pdfAttachment] : []),
-        ],
+        attachments,
       },
       { idempotencyKey },
     );
