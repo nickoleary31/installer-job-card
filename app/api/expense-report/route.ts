@@ -169,6 +169,29 @@ export async function POST(req: Request) {
   );
   for (const r of receiptResults) if (r) receipts.push(r);
 
+  // Lost-receipt expenses get the standard "missing receipt" stand-in image (a static asset,
+  // not generated per report) so they still occupy a slot in the receipts grid — the caption
+  // carries the specifics (amount/category/date/filed by) since the image itself is generic.
+  const lostReceiptExpenses = expenses.filter((e) => !e.receipt_url && e.lost_receipt);
+  if (lostReceiptExpenses.length > 0) {
+    try {
+      const placeholderUrl = new URL("/expense-report/missing-receipt.png", req.url).toString();
+      const placeholderResponse = await fetch(placeholderUrl);
+      if (!placeholderResponse.ok) throw new Error(`Placeholder fetch failed (${placeholderResponse.status})`);
+      const placeholderBytes = new Uint8Array(await placeholderResponse.arrayBuffer());
+      for (const expense of lostReceiptExpenses) {
+        const amount = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
+        const date = expense.created_at ? new Date(expense.created_at).toLocaleDateString() : "—";
+        const amountLabel = Number.isFinite(amount) ? amount.toFixed(2) : "0.00";
+        const filedBy = expense.created_by ? creatorLabels[expense.created_by] || "Unknown user" : "Unknown user";
+        const captionLabel = `$${amountLabel} — ${expense.category?.trim() || "Uncategorized"} — ${date} — Filed by ${filedBy}`;
+        receipts.push({ captionLabel, contentType: "image/png", bytes: placeholderBytes });
+      }
+    } catch (error) {
+      console.warn("[expense-report] missing-receipt placeholder unavailable", error);
+    }
+  }
+
   const pdfBytes = await buildExpenseReportPdf({
     header: {
       companyName: companyRow?.name?.trim() || "—",
