@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { extractBearerToken, getSupabaseServerEnv } from "@/lib/company-users/admin-api";
 import { authorizeProjectAccess } from "@/lib/project-access";
@@ -175,10 +177,14 @@ export async function POST(req: Request) {
   const lostReceiptExpenses = expenses.filter((e) => !e.receipt_url && e.lost_receipt);
   if (lostReceiptExpenses.length > 0) {
     try {
-      const placeholderUrl = new URL("/expense-report/missing-receipt.png", req.url).toString();
-      const placeholderResponse = await fetch(placeholderUrl);
-      if (!placeholderResponse.ok) throw new Error(`Placeholder fetch failed (${placeholderResponse.status})`);
-      const placeholderBytes = new Uint8Array(await placeholderResponse.arrayBuffer());
+      // A self-fetch to our own /public URL looked simpler but silently breaks on protected
+      // preview deployments: the request has no browser session, so Vercel's deployment
+      // protection returns its HTML interstitial (still 200 OK) instead of the file, and
+      // pdf-lib then fails to embed it. public/ is always fully present in the deployed
+      // function's filesystem, so read it directly instead of going back out over HTTP.
+      const placeholderBytes = new Uint8Array(
+        await readFile(path.join(process.cwd(), "public", "expense-report", "missing-receipt.png")),
+      );
       for (const expense of lostReceiptExpenses) {
         const amount = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
         const date = expense.created_at ? new Date(expense.created_at).toLocaleDateString() : "—";

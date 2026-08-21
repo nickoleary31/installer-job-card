@@ -226,7 +226,16 @@ export async function buildExpenseReportPdf(args: {
           receipt.contentType === "image/png"
             ? await pdf.embedPng(receipt.bytes)
             : await pdf.embedJpg(receipt.bytes);
-      } catch {
+      } catch (error) {
+        // Was silently skipping a bad receipt with zero trace — cost real debugging time
+        // tracking down a self-fetch that returned a 200 OK auth interstitial instead of a
+        // PNG. Log it so a future "receipt just doesn't show up" report is diagnosable.
+        console.warn("[expense-report-pdf] failed to embed receipt image, skipping", {
+          caption: receipt.captionLabel,
+          contentType: receipt.contentType,
+          bytes: receipt.bytes.byteLength,
+          error,
+        });
         continue;
       }
 
