@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { extractBearerToken, getSupabaseServerEnv } from "@/lib/company-users/admin-api";
 import { authorizeProjectAccess } from "@/lib/project-access";
@@ -168,6 +170,33 @@ export async function POST(req: Request) {
     }),
   );
   for (const r of receiptResults) if (r) receipts.push(r);
+
+  // Lost-receipt expenses get the standard "missing receipt" stand-in image (a static asset,
+  // not generated per report) so they still occupy a slot in the receipts grid — the caption
+  // carries the specifics (amount/category/date/filed by) since the image itself is generic.
+  const lostReceiptExpenses = expenses.filter((e) => !e.receipt_url && e.lost_receipt);
+  if (lostReceiptExpenses.length > 0) {
+    try {
+      // A self-fetch to our own /public URL looked simpler but silently breaks on protected
+      // preview deployments: the request has no browser session, so Vercel's deployment
+      // protection returns its HTML interstitial (still 200 OK) instead of the file, and
+      // pdf-lib then fails to embed it. public/ is always fully present in the deployed
+      // function's filesystem, so read it directly instead of going back out over HTTP.
+      const placeholderBytes = new Uint8Array(
+        await readFile(path.join(process.cwd(), "public", "expense-report", "missing-receipt.png")),
+      );
+      for (const expense of lostReceiptExpenses) {
+        const amount = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
+        const date = expense.created_at ? new Date(expense.created_at).toLocaleDateString() : "—";
+        const amountLabel = Number.isFinite(amount) ? amount.toFixed(2) : "0.00";
+        const filedBy = expense.created_by ? creatorLabels[expense.created_by] || "Unknown user" : "Unknown user";
+        const captionLabel = `$${amountLabel} — ${expense.category?.trim() || "Uncategorized"} — ${date} — Filed by ${filedBy}`;
+        receipts.push({ captionLabel, contentType: "image/png", bytes: placeholderBytes });
+      }
+    } catch (error) {
+      console.warn("[expense-report] missing-receipt placeholder unavailable", error);
+    }
+  }
 
   const pdfBytes = await buildExpenseReportPdf({
     header: {

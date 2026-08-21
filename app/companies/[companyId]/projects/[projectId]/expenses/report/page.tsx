@@ -187,7 +187,7 @@ export default function ExpenseReportPage() {
     [categoryTotals],
   );
 
-  const receiptExpenses = useMemo(() => expenses.filter((e) => e.receipt_url), [expenses]);
+  const receiptExpenses = useMemo(() => expenses.filter((e) => e.receipt_url || e.lost_receipt), [expenses]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -351,9 +351,18 @@ export default function ExpenseReportPage() {
           ) : (
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
               {receiptExpenses.map((expense) => {
-                const url = expense.receipt_url as string;
+                const url = expense.receipt_url;
                 const amountValue = typeof expense.amount === "number" ? expense.amount : Number(expense.amount || 0);
                 const caption = `${Number.isFinite(amountValue) ? formatCurrency(amountValue) : "—"} — ${expense.category?.trim() || "Uncategorized"}`;
+                if (!url) {
+                  return (
+                    <div key={expense.id} className="block overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src="/expense-report/missing-receipt.png" alt="Missing receipt" className="h-28 w-full object-cover" />
+                      <p className="truncate px-2 py-2 text-xs font-medium text-gray-700">{caption}</p>
+                    </div>
+                  );
+                }
                 return (
                   <a
                     key={expense.id}
