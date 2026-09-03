@@ -13,6 +13,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { urlLooksLikeInviteAuthCallback } from "@/lib/auth/onboarding";
+import { compressPhotoForUpload } from "@/lib/client-photo-optimize";
 import {
   type CoreJobFields,
   type Vac4DescriptionKey,
@@ -3428,6 +3429,11 @@ export function NewSubmissionForm() {
     notifyPendingPhotoUploadsChanged();
   };
 
+  const UPLOAD_MAX_ATTEMPTS = 3;
+  const UPLOAD_RETRY_DELAY_MS = [800, 2000];
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
   const uploadPhotosToStorage = async (group: PhotoStorageGroup, fieldName: UploadFieldName, files: File[]) => {
     beginPhotoUploadTracking(fieldName);
     const uploadedUrls: string[] = [];
@@ -3435,20 +3441,36 @@ export function NewSubmissionForm() {
     const failures: UploadFailureLog[] = [];
     let ok = true;
     try {
-      for (const file of files) {
-        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      for (const originalFile of files) {
+        // Phone cameras routinely produce 5-15MB HEIC/JPEG files; uploading those raw over
+        // job-site cellular/wifi is what made uploads slow and prone to failure. Compress
+        // client-side first (falls back to the original file if compression fails).
+        const file = await compressPhotoForUpload(originalFile);
+        const safeName = originalFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         // eslint-disable-next-line react-hooks/purity -- unique storage object names (not render)
         const stampedName = `${Date.now()}-${safeName}`;
         const objectPath = `${submissionId}/${group}/${fieldName}/${stampedName}`;
-        const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
-          upsert: true,
-          contentType: file.type || undefined,
-        });
-        if (uploadError) {
+
+        let lastError: unknown = null;
+        let uploaded = false;
+        for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+          const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(objectPath, file, {
+            upsert: true,
+            contentType: file.type || undefined,
+          });
+          if (!uploadError) {
+            uploaded = true;
+            break;
+          }
+          lastError = uploadError;
+          if (attempt < UPLOAD_MAX_ATTEMPTS) await sleep(UPLOAD_RETRY_DELAY_MS[attempt - 1]);
+        }
+
+        if (!uploaded) {
           failures.push({
-            error: uploadError,
+            error: lastError,
             storagePath: objectPath,
-            filename: file.name,
+            filename: originalFile.name,
             submissionId,
             group,
             fieldName,
@@ -3464,7 +3486,7 @@ export function NewSubmissionForm() {
             fieldName,
             group,
             label: PHOTO_FIELD_LABELS[fieldName],
-            filename: file.name,
+            filename: originalFile.name,
             storagePath: objectPath,
             publicUrl,
             uploadedAt: new Date().toISOString(),
