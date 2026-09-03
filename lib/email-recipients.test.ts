@@ -4,6 +4,7 @@ import { buildEmailAttachmentFilename, sanitizeFilenamePart } from "./email-atta
 import {
   INTERNAL_ALWAYS_EMAIL,
   INTERNAL_ONLY_EMAIL,
+  INTERNAL_ONLY_EMAILS,
   mergeRecipientsByEmail,
   resolveJobCardEmailRecipients,
 } from "./email-recipients.ts";
@@ -50,15 +51,17 @@ describe("email-recipients", () => {
     assert.ok(emails.includes("rcharles@linxup.com"));
   });
 
-  it("internal only sends only nick@tkptelematics.com", () => {
+  it("internal only sends only the fixed internal-only address list", () => {
     const r = resolveJobCardEmailRecipients({
       sendMode: "internal_only",
       payload: { projectRecipientEmails: ["janet@lowcountryconcrete.net", "Nick@tkptelematics.com"] },
       jobCardEmailToEnv: "customerservice@tkpautomotive.com",
     });
-    assert.deepEqual(r.toAddresses, [INTERNAL_ONLY_EMAIL]);
-    assert.equal(r.to.length, 1);
-    assert.equal(r.to[0]?.source, "internal_only_mode");
+    assert.deepEqual(r.toAddresses.sort(), [...INTERNAL_ONLY_EMAILS].sort());
+    assert.equal(r.to.length, INTERNAL_ONLY_EMAILS.length);
+    assert.ok(r.to.every((x) => x.source === "internal_only_mode"));
+    assert.ok(r.toAddresses.includes(INTERNAL_ONLY_EMAIL));
+    assert.ok(r.toAddresses.includes("tanner@evergreenservicestx.com"));
   });
 
   it("dedupes nick case-insensitively to a single final send address", () => {
