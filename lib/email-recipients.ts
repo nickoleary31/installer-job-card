@@ -7,6 +7,7 @@ const DEFAULT_JOB_CARD_EMAIL_TO = "install-submissions@example.com";
 
 export const INTERNAL_ALWAYS_EMAIL = "installs@tkpautomotive.com";
 export const INTERNAL_ONLY_EMAIL = "nick@tkptelematics.com";
+export const INTERNAL_ONLY_EMAILS = [INTERNAL_ONLY_EMAIL, "tanner@evergreenservicestx.com"];
 
 export type EmailSendMode = "client_and_internal" | "internal_only";
 
@@ -155,9 +156,9 @@ export function resolveJobCardEmailRecipients(args: {
   const envFallback = (args.jobCardEmailToEnv || process.env.JOB_CARD_EMAIL_TO || DEFAULT_JOB_CARD_EMAIL_TO).trim();
 
   if (args.sendMode === "internal_only") {
-    const to = mergeRecipientsByEmail([
-      makeRecipient(INTERNAL_ONLY_EMAIL, "internal_only_mode", "Internal only recipient"),
-    ]);
+    const to = mergeRecipientsByEmail(
+      INTERNAL_ONLY_EMAILS.map((email) => makeRecipient(email, "internal_only_mode", "Internal only recipient")),
+    );
     return { sendMode: args.sendMode, to, cc: [], bcc: [], toAddresses: to.map((r) => r.email) };
   }
 
