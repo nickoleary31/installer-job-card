@@ -573,6 +573,10 @@ export default function SubmittedPage() {
                   {row.additionalHardware.join(", ")}
                 </p>
               ) : null}
+              <p>
+                <span className="font-semibold text-gray-600">Submitted by:</span>{" "}
+                {row.payload.coreJobInfo?.installerName?.trim() || "—"}
+              </p>
               <p className="sm:col-span-2">
                 <span className="font-semibold text-gray-600">Submitted:</span>{" "}
                 {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
