@@ -3,6 +3,8 @@
 // logic in resolve.ts never has to know the shape of Zoho's API responses, and so this mapping
 // can be unit tested against fixture JSON without any network access.
 
+import { digitsOnly, formatPhoneNumber } from "../phone.ts";
+
 export type ZohoWorkOrderRecord = {
   id: string;
   Name?: string | null;
@@ -107,6 +109,26 @@ export function buildServiceAddressLine(address: ZohoWorkOrderRecord["Service_Ad
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
+/**
+ * Formats a Zoho-sourced phone number using the SAME shared formatter (lib/phone.ts) V1's
+ * existing manual customer/site entry form applies as a technician types (that form imports the
+ * same helper — see app/companies/[companyId]/customers/_lib/customerForm.ts and its onChange
+ * wiring in CustomerEditorForm.tsx) — reused here rather than reimplemented, so a Zoho-imported
+ * number displays exactly like the same number entered manually (e.g. "6787809723" ->
+ * "(678) 780-9723"). V1 stores this formatted string directly in customers.contact_number (no
+ * separate raw/presentation split), so the Zoho path must format before storing too.
+ *
+ * Only applied when the value resolves to exactly 10 digits — a plausible US number, the only
+ * shape formatPhoneNumber is designed for. Anything else (an extension, an international number,
+ * a value already digit-count-mismatched) is returned unchanged rather than being destructively
+ * run through a formatter that would silently mangle it into a misleading fake US number.
+ */
+export function formatZohoPhoneForV1Display(value: string | null | undefined): string | null {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return null;
+  return digitsOnly(trimmed).length === 10 ? formatPhoneNumber(trimmed) : trimmed;
+}
+
 export type InboundServiceAppointmentInput = {
   zohoWorkOrderId: string;
   zohoServiceAppointmentId: string;
@@ -160,8 +182,9 @@ export function mapZohoRecordsToInboundInput(args: {
     siteAddressLine: buildServiceAddressLine(workOrder.Service_Address),
     siteContactName: workOrder.Contact?.name?.trim() || null,
     // Phone ("Phone Primary" in this account's UI) preferred, Mobile ("Phone Secondary") as
-    // fallback — never concatenated (only one contact_number column).
-    siteContactPhone: workOrder.Phone?.trim() || workOrder.Mobile?.trim() || null,
+    // fallback — never concatenated (only one contact_number column). The chosen value is then
+    // formatted to match V1's existing manual-entry convention (see formatZohoPhoneForV1Display).
+    siteContactPhone: formatZohoPhoneForV1Display(workOrder.Phone?.trim() || workOrder.Mobile?.trim() || null),
     siteContactEmail: workOrder.Email?.trim() || null,
     summary: workOrder.Summary?.trim() || null,
     raw: { workOrder, serviceAppointment },

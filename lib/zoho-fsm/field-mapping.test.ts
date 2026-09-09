@@ -4,6 +4,7 @@ import {
   buildServiceAddressLine,
   extractWorkOrderCustomFieldValue,
   extractWorkOrderIdFromServiceAppointment,
+  formatZohoPhoneForV1Display,
   mapZohoRecordsToInboundInput,
   type ZohoServiceAppointmentRecord,
   type ZohoWorkOrderRecord,
@@ -141,6 +142,8 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.dealerName, "Shoppas");
     assert.equal(input.siteAddressLine, "1 Plant Rd\nRoanoke, VA");
     assert.equal(input.siteContactName, "Jane Doe");
+    // "555-1234" is only 7 digits (not a full 10-digit US number), so it is left unchanged
+    // rather than run through the V1 formatter — see formatZohoPhoneForV1Display tests below.
     assert.equal(input.siteContactPhone, "555-1234");
     assert.equal(input.siteContactEmail, "jane@example.com");
     assert.equal(input.summary, "Install 3 systems");
@@ -216,23 +219,23 @@ describe("zoho-fsm field mapping", () => {
         siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
       });
 
-    it("(1) maps Contact.name / Email / Phone straight off the Work Order when all are populated", () => {
+    it("(1) maps Contact.name / Email / Phone straight off the Work Order when all are populated, formatted to match V1's manual-entry convention", () => {
       const input = map({ Email: "nick@example.com", Phone: "6787809723", Mobile: null });
       assert.equal(input.siteContactName, "Nick NDJO");
       assert.equal(input.siteContactEmail, "nick@example.com");
-      assert.equal(input.siteContactPhone, "6787809723");
+      assert.equal(input.siteContactPhone, "(678) 780-9723");
     });
 
     it("(2) prefers Phone [\"Phone Primary\"] when Phone and Mobile are both populated", () => {
       const input = map({ Phone: "770-555-1111", Mobile: "678-555-2222" });
-      assert.equal(input.siteContactPhone, "770-555-1111");
+      assert.equal(input.siteContactPhone, "(770) 555-1111");
       // Never concatenated.
-      assert.doesNotMatch(input.siteContactPhone ?? "", /678-555-2222/);
+      assert.doesNotMatch(input.siteContactPhone ?? "", /678.?555.?2222/);
     });
 
     it("(3) falls back to Mobile [\"Phone Secondary\"] when Phone is blank", () => {
       const input = map({ Phone: null, Mobile: "678-555-2222" });
-      assert.equal(input.siteContactPhone, "678-555-2222");
+      assert.equal(input.siteContactPhone, "(678) 555-2222");
     });
 
     it("(4) maps to null when both Phone and Mobile are blank", () => {
@@ -250,7 +253,7 @@ describe("zoho-fsm field mapping", () => {
       const second = map({ Phone: "770-555-9999", Email: "nick.new@example.com" });
       assert.notEqual(first.siteContactPhone, second.siteContactPhone);
       assert.notEqual(first.siteContactEmail, second.siteContactEmail);
-      assert.equal(second.siteContactPhone, "770-555-9999");
+      assert.equal(second.siteContactPhone, "(770) 555-9999");
       assert.equal(second.siteContactEmail, "nick.new@example.com");
 
       // A later delivery with blank WO Phone/Email maps to null at this layer — propagating
@@ -268,15 +271,49 @@ describe("zoho-fsm field mapping", () => {
       const input = map({ Contact: null, Email: "nick@example.com", Phone: "6787809723" });
       assert.equal(input.siteContactName, null);
       assert.equal(input.siteContactEmail, "nick@example.com");
-      assert.equal(input.siteContactPhone, "6787809723");
+      assert.equal(input.siteContactPhone, "(678) 780-9723");
     });
 
     it("retains the Work Order (with its Email/Phone/Mobile) in raw_snapshot — no separate Contact entry needed", () => {
       const input = map({ Email: "nick@example.com", Phone: "6787809723" });
+      // raw.workOrder is the untouched Zoho payload — it keeps the exact original digits, never
+      // the V1-formatted siteContactPhone ("(678) 780-9723") derived from it below.
       assert.equal(input.raw.workOrder.Email, "nick@example.com");
       assert.equal(input.raw.workOrder.Phone, "6787809723");
+      assert.equal(input.siteContactPhone, "(678) 780-9723");
       assert.equal(input.raw.serviceAppointment.id, "sa-1");
       assert.equal(Object.prototype.hasOwnProperty.call(input.raw, "contact"), false);
+    });
+  });
+
+  describe("formatZohoPhoneForV1Display", () => {
+    it("formats a raw 10-digit US number to match V1's manual-entry convention", () => {
+      assert.equal(formatZohoPhoneForV1Display("6787809723"), "(678) 780-9723");
+    });
+
+    it("normalizes an already-punctuated 10-digit number to the same canonical form (idempotent)", () => {
+      assert.equal(formatZohoPhoneForV1Display("678-780-9723"), "(678) 780-9723");
+      assert.equal(formatZohoPhoneForV1Display("(678) 780-9723"), "(678) 780-9723");
+      assert.equal(formatZohoPhoneForV1Display("678.780.9723"), "(678) 780-9723");
+    });
+
+    it("returns null for blank/null/undefined input", () => {
+      assert.equal(formatZohoPhoneForV1Display(""), null);
+      assert.equal(formatZohoPhoneForV1Display("   "), null);
+      assert.equal(formatZohoPhoneForV1Display(null), null);
+      assert.equal(formatZohoPhoneForV1Display(undefined), null);
+    });
+
+    it("does not destructively reinterpret a value that is not a plausible 10-digit US number", () => {
+      // 11 digits (e.g. a leading country code) — left exactly as Zoho sent it rather than
+      // silently truncated into a wrong-looking fake US number.
+      assert.equal(formatZohoPhoneForV1Display("+1 678-780-9723"), "+1 678-780-9723");
+      // An extension appended after a valid US number is no longer a plain 10-digit value.
+      assert.equal(formatZohoPhoneForV1Display("678-780-9723 ext 202"), "678-780-9723 ext 202");
+      // A short/partial number (matches the "555-1234" case already covered above).
+      assert.equal(formatZohoPhoneForV1Display("555-1234"), "555-1234");
+      // A non-numeric or garbage value is returned unchanged, trimmed only.
+      assert.equal(formatZohoPhoneForV1Display("  Call front desk  "), "Call front desk");
     });
   });
 });
