@@ -7,7 +7,8 @@ export type InboundOutcome =
   | "error_missing_zoho_company_id"
   | "error_work_order_unresolvable"
   | "created"
-  | "reused_existing";
+  | "reused_existing"
+  | "identity_mismatch_on_reuse";
 
 export type InboundResolutionResult = {
   outcome: InboundOutcome;
@@ -23,13 +24,38 @@ export type InboundResolutionResult = {
  */
 export interface ZohoFsmRepo {
   findActiveCompanyMapping(zohoValue: string): Promise<{ companyId: string } | null>;
-  findExistingLink(zohoServiceAppointmentId: string): Promise<{ id: string; projectId: string } | null>;
+  /**
+   * Returns the recorded identity (companyId, the site's zoho_site_code) alongside the link
+   * itself, so a repeat delivery can detect whether the incoming Company/Site Code still
+   * matches what this SA was originally linked under before refreshing anything.
+   */
+  findExistingLink(zohoServiceAppointmentId: string): Promise<{
+    id: string;
+    projectId: string;
+    companyId: string;
+    zohoSiteCode: string | null;
+  } | null>;
   refreshLinkSnapshot(
     linkId: string,
     args: {
       rawSnapshot: unknown;
       zohoWorkOrderNumber: string | null;
       zohoServiceAppointmentNumber: string | null;
+    },
+  ): Promise<void>;
+  /**
+   * Non-destructive: implementations must only overwrite a field when its candidate value is
+   * non-null/non-blank. A null/blank candidate means "Zoho didn't supply this this time" and
+   * must leave the existing stored value untouched, never erase it.
+   */
+  refreshSiteAndProjectDisplayFields(
+    projectId: string,
+    args: {
+      fullAddress: string | null;
+      siteContactName: string | null;
+      contactNumber: string | null;
+      contactEmail: string | null;
+      location: string | null;
     },
   ): Promise<void>;
   findCustomerAccountByZohoCompanyId(companyId: string, zohoCompanyId: string): Promise<{ id: string } | null>;
@@ -43,6 +69,7 @@ export interface ZohoFsmRepo {
     fullAddress: string | null;
     siteContactName: string | null;
     contactNumber: string | null;
+    contactEmail: string | null;
     endCustomerName: string | null;
   }): Promise<{ id: string }>;
   createProject(args: {
@@ -91,8 +118,16 @@ function projectNameFor(input: InboundServiceAppointmentInput): string {
  *   - Company recognized + Site Code matches an existing Site -> reuse it.
  *   - Company recognized + Site Code is new -> resolve/create customer_account by stable
  *     Zoho Company.id, auto-create the Site, create the project.
- *   - Repeated delivery for an already-linked zoho_service_appointment_id -> reuse the existing
- *     project/site/customer_account; only refresh non-authoritative snapshot/diagnostic fields.
+ *   - Repeated delivery for an already-linked zoho_service_appointment_id with matching Company/
+ *     Site Code -> reuse the existing project/site/customer_account; refresh the link snapshot
+ *     plus non-destructively refresh Zoho-owned descriptive fields (full_address,
+ *     site_contact_name, contact_number, contact_email, project.location) from any non-blank
+ *     incoming values. Identity/linkage (company, site code, customer_account, project id, the
+ *     SA->project relationship) is never touched.
+ *   - Repeated delivery whose Company/Site Code no longer matches what this SA was originally
+ *     linked under -> identity_mismatch_on_reuse. The link snapshot still refreshes, but no
+ *     descriptive fields are touched and nothing is reassigned; the existing project id is
+ *     still returned so the caller can log/alert without entering a retry loop.
  * Every branch is logged to zoho_fsm_inbound_events, including ones that never produce a
  * project, so failures are actionable rather than silently swallowed.
  */
@@ -116,10 +151,43 @@ export async function resolveInboundServiceAppointment(
   // would otherwise decide.
   const existingLink = await repo.findExistingLink(input.zohoServiceAppointmentId);
   if (existingLink) {
+    // Always safe: this just records the latest raw Zoho state for this SA, independent of
+    // whether our downstream Company/Site resolution below still matches.
     await repo.refreshLinkSnapshot(existingLink.id, {
       rawSnapshot: input.raw,
       zohoWorkOrderNumber: input.zohoWorkOrderNumber,
       zohoServiceAppointmentNumber: input.zohoServiceAppointmentNumber,
+    });
+
+    const incomingCompanyValue = (input.installerSheetzCompanyValue || "").trim();
+    const incomingMapping = incomingCompanyValue ? await repo.findActiveCompanyMapping(incomingCompanyValue) : null;
+    const incomingSiteCode = (input.zohoSiteCode || "").trim() || null;
+
+    // Blank/unmapped incoming company counts as a mismatch too — the recorded link always has a
+    // real company, so "no company this time" is itself a divergence from what was recorded.
+    const companyMismatch = !incomingMapping || incomingMapping.companyId !== existingLink.companyId;
+    const siteCodeMismatch = incomingSiteCode !== existingLink.zohoSiteCode;
+
+    if (companyMismatch || siteCodeMismatch) {
+      const detail =
+        `Identity mismatch on reuse for SA ${input.zohoServiceAppointmentId}: ` +
+        `recorded company_id="${existingLink.companyId}", site_code="${existingLink.zohoSiteCode ?? "(none)"}" ` +
+        `vs incoming Installer Sheetz Company="${incomingCompanyValue || "(blank)"}"` +
+        `${incomingMapping ? ` (resolved company_id="${incomingMapping.companyId}")` : incomingCompanyValue ? " (unmapped)" : ""}, ` +
+        `Site Code="${incomingSiteCode ?? "(blank)"}". Not reassigning or refreshing descriptive fields.`;
+      await log("identity_mismatch_on_reuse", detail, existingLink.projectId);
+      return { outcome: "identity_mismatch_on_reuse", detail, projectId: existingLink.projectId };
+    }
+
+    // Identity confirmed unchanged — safe to non-destructively refresh Zoho-owned descriptive
+    // fields. Identity/linkage fields (company, site code, customer_account, project id, the
+    // SA->project relationship itself) are never touched here.
+    await repo.refreshSiteAndProjectDisplayFields(existingLink.projectId, {
+      fullAddress: input.siteAddressLine,
+      siteContactName: input.siteContactName,
+      contactNumber: input.siteContactPhone,
+      contactEmail: input.siteContactEmail,
+      location: input.siteAddressLine,
     });
     await log("reused_existing", null, existingLink.projectId);
     return { outcome: "reused_existing", detail: null, projectId: existingLink.projectId };
@@ -179,6 +247,7 @@ export async function resolveInboundServiceAppointment(
         fullAddress: input.siteAddressLine,
         siteContactName: input.siteContactName,
         contactNumber: input.siteContactPhone,
+        contactEmail: input.siteContactEmail,
         endCustomerName: input.siteAddressName,
       })
     ).id;

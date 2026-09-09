@@ -18,11 +18,22 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
     async findExistingLink(zohoServiceAppointmentId) {
       const { data, error } = await serviceClient
         .from("zoho_fsm_service_appointments")
-        .select("id, project_id")
+        .select("id, project_id, company_id, projects:project_id(customer_id, customers:customer_id(zoho_site_code))")
         .eq("zoho_service_appointment_id", zohoServiceAppointmentId)
-        .maybeSingle<{ id: string; project_id: string }>();
+        .maybeSingle<{
+          id: string;
+          project_id: string;
+          company_id: string;
+          projects: { customer_id: string | null; customers: { zoho_site_code: string | null } | null } | null;
+        }>();
       if (error) throw error;
-      return data ? { id: data.id, projectId: data.project_id } : null;
+      if (!data) return null;
+      return {
+        id: data.id,
+        projectId: data.project_id,
+        companyId: data.company_id,
+        zohoSiteCode: data.projects?.customers?.zoho_site_code ?? null,
+      };
     },
 
     async refreshLinkSnapshot(linkId, args) {
@@ -38,6 +49,51 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
         })
         .eq("id", linkId);
       if (error) throw error;
+    },
+
+    async refreshSiteAndProjectDisplayFields(projectId, args) {
+      // Independently blank-safe — treats whitespace-only candidates as absent rather than
+      // relying solely on callers to have already trimmed their input.
+      const nonBlank = (value: string | null): string | null => {
+        if (typeof value !== "string") return null;
+        const trimmed = value.trim();
+        return trimmed ? trimmed : null;
+      };
+
+      const { data: project, error: projectLookupError } = await serviceClient
+        .from("projects")
+        .select("customer_id")
+        .eq("id", projectId)
+        .maybeSingle<{ customer_id: string | null }>();
+      if (projectLookupError) throw projectLookupError;
+
+      if (project?.customer_id) {
+        const customerUpdate: Record<string, string> = {};
+        const fullAddress = nonBlank(args.fullAddress);
+        const siteContactName = nonBlank(args.siteContactName);
+        const contactNumber = nonBlank(args.contactNumber);
+        const contactEmail = nonBlank(args.contactEmail);
+        if (fullAddress) customerUpdate.full_address = fullAddress;
+        if (siteContactName) customerUpdate.site_contact_name = siteContactName;
+        if (contactNumber) customerUpdate.contact_number = contactNumber;
+        if (contactEmail) customerUpdate.contact_email = contactEmail;
+        if (Object.keys(customerUpdate).length > 0) {
+          const { error: customerError } = await serviceClient
+            .from("customers")
+            .update(customerUpdate)
+            .eq("id", project.customer_id);
+          if (customerError) throw customerError;
+        }
+      }
+
+      const location = nonBlank(args.location);
+      if (location) {
+        const { error: projectUpdateError } = await serviceClient
+          .from("projects")
+          .update({ location })
+          .eq("id", projectId);
+        if (projectUpdateError) throw projectUpdateError;
+      }
     },
 
     async findCustomerAccountByZohoCompanyId(companyId, zohoCompanyId) {
@@ -87,6 +143,7 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
           full_address: args.fullAddress,
           site_contact_name: args.siteContactName,
           contact_number: args.contactNumber,
+          contact_email: args.contactEmail,
           end_customer_name: args.endCustomerName,
         })
         .select("id")

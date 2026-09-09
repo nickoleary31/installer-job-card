@@ -13,6 +13,7 @@ type FakeSite = {
   fullAddress: string | null;
   siteContactName: string | null;
   contactNumber: string | null;
+  contactEmail: string | null;
   endCustomerName: string | null;
 };
 type FakeProject = { id: string; companyId: string; customerId: string; projectName: string; customerName: string; location: string };
@@ -54,7 +55,15 @@ function createFakeRepo(seed?: { companyMappings?: Record<string, string> }) {
     },
     async findExistingLink(zohoServiceAppointmentId) {
       const link = state.links.find((l) => l.zohoServiceAppointmentId === zohoServiceAppointmentId);
-      return link ? { id: link.id, projectId: link.projectId } : null;
+      if (!link) return null;
+      const project = state.projects.find((p) => p.id === link.projectId);
+      const site = project ? state.sites.find((s) => s.id === project.customerId) : undefined;
+      return {
+        id: link.id,
+        projectId: link.projectId,
+        companyId: link.companyId,
+        zohoSiteCode: site?.zohoSiteCode ?? null,
+      };
     },
     async refreshLinkSnapshot(linkId, args) {
       const link = state.links.find((l) => l.id === linkId);
@@ -62,6 +71,30 @@ function createFakeRepo(seed?: { companyMappings?: Record<string, string> }) {
       link.rawSnapshot = args.rawSnapshot;
       link.zohoWorkOrderNumber = args.zohoWorkOrderNumber;
       link.zohoServiceAppointmentNumber = args.zohoServiceAppointmentNumber;
+    },
+    async refreshSiteAndProjectDisplayFields(projectId, args) {
+      // Mirrors repo-supabase.ts's own blank-safety: whitespace-only candidates count as absent
+      // regardless of whether the caller already trimmed them.
+      const nonBlank = (value: string | null): string | null => {
+        if (typeof value !== "string") return null;
+        const trimmed = value.trim();
+        return trimmed ? trimmed : null;
+      };
+      const project = state.projects.find((p) => p.id === projectId);
+      if (!project) return;
+      const site = state.sites.find((s) => s.id === project.customerId);
+      if (site) {
+        const fullAddress = nonBlank(args.fullAddress);
+        const siteContactName = nonBlank(args.siteContactName);
+        const contactNumber = nonBlank(args.contactNumber);
+        const contactEmail = nonBlank(args.contactEmail);
+        if (fullAddress) site.fullAddress = fullAddress;
+        if (siteContactName) site.siteContactName = siteContactName;
+        if (contactNumber) site.contactNumber = contactNumber;
+        if (contactEmail) site.contactEmail = contactEmail;
+      }
+      const location = nonBlank(args.location);
+      if (location) project.location = location;
     },
     async findCustomerAccountByZohoCompanyId(companyId, zohoCompanyId) {
       const account = state.customerAccounts.find(
@@ -246,27 +279,173 @@ describe("resolveInboundServiceAppointment", () => {
     assert.equal(state.links.length, 1);
   });
 
-  it("does not overwrite technician/project-owned data on a later redelivery for the same SA", async () => {
+  it("protects true identity/project-owned fields on a matching redelivery, while Zoho-owned descriptive fields refresh", async () => {
     const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
     const firstRaw = { workOrder: { id: "wo-1", Summary: "first delivery" } as never, serviceAppointment: {} as never };
     await resolveInboundServiceAppointment(repo, baseInput({ raw: firstRaw }));
 
-    // Simulate a technician correcting the site contact after intake.
-    state.sites[0].siteContactName = "Corrected By Technician";
+    // Simulate an admin renaming project/customer_account identity-ish records after intake —
+    // these are never Zoho-derived and must never be touched by a redelivery.
     state.projects[0].projectName = "Renamed by admin";
+    state.customerAccounts[0].name = "Renamed by admin";
 
-    // Zoho redelivers the same SA with different-looking contact info and an updated snapshot.
+    // Zoho redelivers the same SA (same Company/Site Code — identity unchanged) with
+    // different-looking contact info and an updated snapshot.
     const secondRaw = { workOrder: { id: "wo-1", Summary: "second delivery" } as never, serviceAppointment: {} as never };
     await resolveInboundServiceAppointment(
       repo,
-      baseInput({ siteContactName: "Different Name From Zoho", dealerName: "Different Dealer Name", raw: secondRaw }),
+      baseInput({ siteContactName: "Different Name From Zoho", raw: secondRaw }),
     );
 
-    assert.equal(state.sites[0].siteContactName, "Corrected By Technician");
+    // True identity/project-owned fields: untouched.
     assert.equal(state.projects[0].projectName, "Renamed by admin");
-    assert.equal(state.customerAccounts[0].name, "Shoppas", "customer_account name must not be rewritten either");
+    assert.equal(state.customerAccounts[0].name, "Renamed by admin");
+    assert.equal(state.projects.length, 1);
+    assert.equal(state.sites.length, 1);
+    assert.equal(state.customerAccounts.length, 1);
+    // Zoho-owned descriptive field: refreshes, per the approved metadata source-of-truth policy.
+    assert.equal(state.sites[0].siteContactName, "Different Name From Zoho");
     // The link's own snapshot/diagnostic fields are allowed to refresh on redelivery.
     assert.deepEqual(state.links[0].rawSnapshot, secondRaw);
+  });
+
+  it("(A) non-destructively refreshes Zoho-owned descriptive fields on a matching repeat delivery with changed address/contact", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    const first = await resolveInboundServiceAppointment(repo, baseInput());
+    assert.equal(first.outcome, "created");
+    const originalProjectId = first.projectId;
+    const originalSiteId = state.sites[0].id;
+    const originalCustomerAccountId = state.customerAccounts[0].id;
+
+    const second = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({
+        siteAddressLine: "5811 Priest Rd\nAcworth, GA 30102",
+        siteContactName: "New Contact",
+        siteContactPhone: "555-9999",
+        siteContactEmail: "new@example.com",
+      }),
+    );
+
+    assert.equal(second.outcome, "reused_existing");
+    assert.equal(second.projectId, originalProjectId);
+    // Identity unchanged: same site/customer_account/project rows, none duplicated.
+    assert.equal(state.sites.length, 1);
+    assert.equal(state.sites[0].id, originalSiteId);
+    assert.equal(state.customerAccounts.length, 1);
+    assert.equal(state.customerAccounts[0].id, originalCustomerAccountId);
+    assert.equal(state.projects.length, 1);
+    // Descriptive fields refreshed from the new delivery.
+    assert.equal(state.sites[0].fullAddress, "5811 Priest Rd\nAcworth, GA 30102");
+    assert.equal(state.sites[0].siteContactName, "New Contact");
+    assert.equal(state.sites[0].contactNumber, "555-9999");
+    assert.equal(state.sites[0].contactEmail, "new@example.com");
+    assert.equal(state.projects[0].location, "5811 Priest Rd\nAcworth, GA 30102");
+  });
+
+  it("(B) does not erase existing descriptive values when the incoming Zoho value is null/blank", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    await resolveInboundServiceAppointment(repo, baseInput());
+    assert.equal(state.sites[0].fullAddress, "1 Plant Rd, Roanoke, VA");
+    assert.equal(state.sites[0].contactEmail, "jane@example.com");
+
+    await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ siteAddressLine: null, siteContactName: null, siteContactPhone: null, siteContactEmail: null }),
+    );
+
+    assert.equal(state.sites[0].fullAddress, "1 Plant Rd, Roanoke, VA");
+    assert.equal(state.sites[0].siteContactName, "Jane Doe");
+    assert.equal(state.sites[0].contactNumber, "555-1234");
+    assert.equal(state.sites[0].contactEmail, "jane@example.com");
+    assert.equal(state.projects[0].location, "1 Plant Rd, Roanoke, VA");
+  });
+
+  it("(B-extra) treats whitespace-only incoming values as blank, independent of upstream trimming", async () => {
+    // field-mapping.ts always trims before this point, so inject whitespace-only strings
+    // directly here to prove the refresh boundary itself is blank-safe, not just its one
+    // current caller.
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    await resolveInboundServiceAppointment(repo, baseInput());
+    const originalAddress = state.sites[0].fullAddress;
+    const originalContactName = state.sites[0].siteContactName;
+    const originalLocation = state.projects[0].location;
+
+    await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ siteAddressLine: "   ", siteContactName: "\t", siteContactPhone: "  ", siteContactEmail: " " }),
+    );
+
+    assert.equal(state.sites[0].fullAddress, originalAddress);
+    assert.equal(state.sites[0].siteContactName, originalContactName);
+    assert.equal(state.projects[0].location, originalLocation);
+  });
+
+  it("(C) withholds descriptive refresh and logs identity_mismatch_on_reuse when the incoming Site Code no longer matches", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    const first = await resolveInboundServiceAppointment(repo, baseInput());
+    const originalProjectId = first.projectId;
+    const originalAddress = state.sites[0].fullAddress;
+
+    const second = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ zohoSiteCode: "SOME-OTHER-CODE", siteAddressLine: "999 Different St, Nowhere, XX 00000" }),
+    );
+
+    assert.equal(second.outcome, "identity_mismatch_on_reuse");
+    assert.equal(second.projectId, originalProjectId);
+    assert.match(second.detail || "", /Identity mismatch/);
+    assert.match(second.detail || "", /SOME-OTHER-CODE/);
+    // Identity and descriptive fields both unchanged — the mismatched payload is not applied.
+    assert.equal(state.sites.length, 1);
+    assert.equal(state.sites[0].fullAddress, originalAddress);
+    assert.equal(state.projects.length, 1);
+    assert.equal(state.projects[0].location, originalAddress);
+    assert.equal(state.inboundEvents.at(-1)?.outcome, "identity_mismatch_on_reuse");
+  });
+
+  it("(D) withholds descriptive refresh and logs identity_mismatch_on_reuse when the incoming Company differs or is blank/unmapped", async () => {
+    const { repo, state } = createFakeRepo({
+      companyMappings: { Blaxtair: "company-blaxtair", Litum: "company-litum" },
+    });
+    const first = await resolveInboundServiceAppointment(repo, baseInput());
+    const originalProjectId = first.projectId;
+
+    const differentCompany = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ installerSheetzCompanyValue: "Litum" }),
+    );
+    assert.equal(differentCompany.outcome, "identity_mismatch_on_reuse");
+    assert.equal(differentCompany.projectId, originalProjectId);
+
+    const blankCompany = await resolveInboundServiceAppointment(repo, baseInput({ installerSheetzCompanyValue: null }));
+    assert.equal(blankCompany.outcome, "identity_mismatch_on_reuse");
+    assert.equal(blankCompany.projectId, originalProjectId);
+
+    const unmappedCompany = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ installerSheetzCompanyValue: "Totally Unknown Co" }),
+    );
+    assert.equal(unmappedCompany.outcome, "identity_mismatch_on_reuse");
+    assert.equal(unmappedCompany.projectId, originalProjectId);
+
+    assert.equal(state.projects.length, 1, "no new project ever created across all three mismatch attempts");
+  });
+
+  it("(E) populates contact_email on creation and safely refreshes it on repeat delivery, without erasing it on a blank input", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    await resolveInboundServiceAppointment(repo, baseInput({ siteContactEmail: "first@example.com" }));
+    assert.equal(state.sites[0].contactEmail, "first@example.com");
+
+    await resolveInboundServiceAppointment(repo, baseInput({ siteContactEmail: "second@example.com" }));
+    assert.equal(state.sites[0].contactEmail, "second@example.com");
+
+    await resolveInboundServiceAppointment(repo, baseInput({ siteContactEmail: null }));
+    assert.equal(
+      state.sites[0].contactEmail,
+      "second@example.com",
+      "blank incoming email must not erase the existing one",
+    );
   });
 
   it("produces an actionable error when the Work Order has no Zoho Company reference, without creating a throwaway customer_account", async () => {
