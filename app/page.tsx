@@ -1439,7 +1439,7 @@ export function SummaryRow({ label, value }: { label: string; value: string }) {
   const valueClass =
     shown === "Not Installed"
       ? "text-base font-semibold text-red-600 dark:text-red-400 sm:col-span-2"
-      : "text-base text-gray-900 dark:text-gray-100 sm:col-span-2";
+      : "whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100 sm:col-span-2";
   return (
     <div className="grid gap-1 border-b border-gray-100 py-3 last:border-b-0 dark:border-gray-700 sm:grid-cols-3 sm:gap-4">
       <div className="text-sm font-semibold text-gray-600 dark:text-gray-300">{label}</div>
@@ -6957,8 +6957,9 @@ export function NewSubmissionForm() {
                 Location
                 <RequiredMark />
               </label>
-              <input
-                className={fieldInputClass("core-location")}
+              <textarea
+                className={`${fieldInputClass("core-location")} resize-y`}
+                rows={2}
                 placeholder="exp: Atlanta, GA"
                 value={coreJob.location}
                 onChange={(e) => setCoreField("location", e.target.value)}

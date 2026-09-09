@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
+import { AddressActionMenu } from "@/components/AddressActionMenu";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -33,6 +34,7 @@ type CustomerContextRow = {
   full_address: string | null;
   site_contact_name: string | null;
   contact_number: string | null;
+  contact_email: string | null;
   license_key_1: string | null;
   license_key_2: string | null;
   server_port_type: string | null;
@@ -51,6 +53,7 @@ type SiteInfo = {
   full_address: string;
   site_contact_name: string;
   contact_number: string;
+  contact_email: string;
   license_key_1: string;
   license_key_2: string;
   server_port_type: string;
@@ -90,6 +93,7 @@ const emptySiteInfo: SiteInfo = {
   full_address: "—",
   site_contact_name: "—",
   contact_number: "—",
+  contact_email: "—",
   license_key_1: "—",
   license_key_2: "—",
   server_port_type: "—",
@@ -256,7 +260,7 @@ export default function ProjectDashboardPage() {
           supabase
             .from("projects")
             .select(
-              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, zoho_site_code, end_customer_name)",
+              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, contact_email, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, zoho_site_code, end_customer_name)",
             )
             .eq("id", projectId)
             .eq("company_id", companyId)
@@ -292,6 +296,7 @@ export default function ProjectDashboardPage() {
             full_address: displayCell(customerLookup?.full_address),
             site_contact_name: displayCell(customerLookup?.site_contact_name),
             contact_number: displayCell(customerLookup?.contact_number),
+            contact_email: displayCell(customerLookup?.contact_email),
             license_key_1: displayCell(customerLookup?.license_key_1),
             license_key_2: displayCell(customerLookup?.license_key_2),
             server_port_type: displayCell(customerLookup?.server_port_type),
@@ -838,9 +843,10 @@ export default function ProjectDashboardPage() {
                 <p>
                   <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
                 </p>
-                <p>
-                  <span className="font-semibold text-gray-600">Location:</span> {projectContext.location}
-                </p>
+                <div className="sm:col-span-2">
+                  <span className="font-semibold text-gray-600">Location:</span>
+                  <AddressActionMenu address={projectContext.location} className="mt-0.5 whitespace-pre-wrap text-sm text-gray-800" />
+                </div>
               </div>
               {zohoInfo.linked ? (
                 <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
@@ -876,9 +882,22 @@ export default function ProjectDashboardPage() {
                     {siteInfo.zoho_site_code !== "—" ? (
                       <p><span className="font-semibold text-gray-600">Zoho site code:</span> {siteInfo.zoho_site_code}</p>
                     ) : null}
-                    <p><span className="font-semibold text-gray-600">Full address:</span> {siteInfo.full_address}</p>
+                    <div className="sm:col-span-2">
+                      <p className="font-semibold text-gray-600">Full address:</p>
+                      <AddressActionMenu address={siteInfo.full_address} className="mt-1 whitespace-pre-wrap text-sm text-gray-900" />
+                    </div>
                     <p><span className="font-semibold text-gray-600">Site contact:</span> {siteInfo.site_contact_name}</p>
                     <p><span className="font-semibold text-gray-600">Contact number:</span> {siteInfo.contact_number}</p>
+                    <p>
+                      <span className="font-semibold text-gray-600">Contact email:</span>{" "}
+                      {siteInfo.contact_email !== "—" ? (
+                        <a href={`mailto:${siteInfo.contact_email}`} className="text-blue-700 hover:underline">
+                          {siteInfo.contact_email}
+                        </a>
+                      ) : (
+                        siteInfo.contact_email
+                      )}
+                    </p>
                     <p><span className="font-semibold text-gray-600">License key 1:</span> {siteInfo.license_key_1}</p>
                     <p><span className="font-semibold text-gray-600">License key 2:</span> {siteInfo.license_key_2}</p>
                     <p><span className="font-semibold text-gray-600">Server port type:</span> {siteInfo.server_port_type}</p>
