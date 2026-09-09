@@ -104,9 +104,25 @@ function fallbackSiteName(input: InboundServiceAppointmentInput): string {
   return input.siteAddressName || input.zohoSiteCode || "Zoho site";
 }
 
+/**
+ * "<Site> — <Work Order Summary> — <Service Appointment Number>", e.g.
+ * "TEST-ROANOKE — Blaxtair 2 camera install - 3 systems — AP-4". Site is the resolved
+ * Installer Sheetz Site display name (fallbackSiteName — matches what a newly-created site's
+ * own customer_name is set to), never the Customer Account or OE/Company name, which already
+ * exist as separate hierarchy levels. The Service Appointment number is what guarantees
+ * uniqueness within a company (projects_company_project_name_key) even when the same Site has
+ * repeated visits or multiple Work Orders share a similar Summary — never a synthetic (2)/(3)
+ * suffix. Applied at project creation only; resolveInboundServiceAppointment's reused_existing
+ * branch never touches project_name on redelivery.
+ */
 function projectNameFor(input: InboundServiceAppointmentInput): string {
-  const label = input.zohoServiceAppointmentNumber || input.zohoServiceAppointmentId;
-  return `Zoho SA ${label}`;
+  const serviceAppointmentNumber = input.zohoServiceAppointmentNumber || input.zohoServiceAppointmentId;
+  // Defensive fallback only: Work Order Summary is required in the normal Zoho workflow, but a
+  // blank/malformed one is simply omitted rather than producing a name with a stray separator.
+  const parts = [fallbackSiteName(input), input.summary, serviceAppointmentNumber].filter(
+    (part): part is string => Boolean(part),
+  );
+  return parts.join(" — ");
 }
 
 /**
