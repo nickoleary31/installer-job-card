@@ -9,14 +9,19 @@ export type ZohoWorkOrderRecord = {
   Summary?: string | null;
   Company?: { id: string; name?: string | null } | null;
   Contact?: { id: string; name?: string | null; Phone?: string | null; Email?: string | null } | null;
+  // Confirmed against a real Work Order payload (Zoho FSM, live test org). The granular address
+  // fields are prefixed "Service_"; `name` is Zoho's own internal address-record label (e.g.
+  // "AD-26"), not a human-meaningful site name — do not use it as one (see siteAddressName
+  // below).
   Service_Address?: {
-    Address_Name?: string | null;
-    Street_1?: string | null;
-    Street_2?: string | null;
-    City?: string | null;
-    State?: string | null;
-    Zip_Code?: string | null;
-    Country?: string | null;
+    id?: string;
+    name?: string | null;
+    Service_Street_1?: string | null;
+    Service_Street_2?: string | null;
+    Service_City?: string | null;
+    Service_State?: string | null;
+    Service_Zip_Code?: string | null;
+    Service_Country?: string | null;
   } | null;
   [customFieldApiName: string]: unknown;
 };
@@ -62,12 +67,32 @@ export function extractWorkOrderCustomFieldValue(
   return readTextField(workOrder as Record<string, unknown>, fieldApiName);
 }
 
+function trimmedOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Formats a human-readable multiline US address from Zoho's structured Service_ prefixed
+ * fields, for storage in the existing V1 `customers.full_address` / `projects.location` text
+ * columns. V1 intentionally keeps address storage as one text field rather than adding
+ * structured address columns — that structured model is a V2 concern. Layout:
+ *   Street 1
+ *   Street 2 (only if present)
+ *   City, State Zip
+ * Service_Country is recognized (typed above) so the structured source data is understood
+ * correctly, but is deliberately not rendered — not needed for a normal US address.
+ */
 export function buildServiceAddressLine(address: ZohoWorkOrderRecord["Service_Address"]): string | null {
   if (!address) return null;
-  const parts = [address.Street_1, address.Street_2, address.City, address.State, address.Zip_Code]
-    .map((part) => (typeof part === "string" ? part.trim() : ""))
-    .filter(Boolean);
-  return parts.length > 0 ? parts.join(", ") : null;
+  const street1 = trimmedOrEmpty(address.Service_Street_1);
+  const street2 = trimmedOrEmpty(address.Service_Street_2);
+  const city = trimmedOrEmpty(address.Service_City);
+  const stateZip = [trimmedOrEmpty(address.Service_State), trimmedOrEmpty(address.Service_Zip_Code)]
+    .filter(Boolean)
+    .join(" ");
+  const cityStateZip = [city, stateZip].filter(Boolean).join(", ");
+  const lines = [street1, street2, cityStateZip].filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 export type InboundServiceAppointmentInput = {
@@ -109,7 +134,12 @@ export function mapZohoRecordsToInboundInput(args: {
     zohoSiteCode: extractWorkOrderCustomFieldValue(workOrder, siteCodeFieldApiName),
     zohoCompanyId: workOrder.Company?.id || null,
     dealerName: workOrder.Company?.name?.trim() || null,
-    siteAddressName: workOrder.Service_Address?.Address_Name?.trim() || null,
+    // No confirmed Zoho field currently supplies a genuinely descriptive human site name.
+    // Service_Address.name is Zoho's own internal address-record label (e.g. "AD-26"), not a
+    // site name, so it is deliberately not used here. siteAddressName stays null for V1;
+    // resolve.ts's fallbackSiteName() already falls back to the explicit Zoho Site Code in
+    // that case, which is the correct V1 behavior. Revisit if/when a real source is found.
+    siteAddressName: null,
     siteAddressLine: buildServiceAddressLine(workOrder.Service_Address),
     siteContactName: workOrder.Contact?.name?.trim() || null,
     siteContactPhone: workOrder.Contact?.Phone?.trim() || null,
