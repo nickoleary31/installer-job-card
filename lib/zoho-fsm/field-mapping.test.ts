@@ -110,7 +110,12 @@ describe("zoho-fsm field mapping", () => {
         Name: "WO21",
         Summary: "Install 3 systems",
         Company: { id: "zc-1", name: "Shoppas" },
-        Contact: { id: "zct-1", name: "Jane Doe", Phone: "555-1234", Email: "jane@example.com" },
+        // Work_Order.Contact is a reference object only — id + label, confirmed no inline
+        // Phone/Email/Mobile against a real payload. Descriptive contact info lives directly on
+        // the Work Order instead (Email/Phone/Mobile below).
+        Contact: { id: "zct-1", name: "Jane Doe" },
+        Email: "jane@example.com",
+        Phone: "555-1234",
         Service_Address: {
           id: "addr-1",
           name: "AD-26",
@@ -137,6 +142,7 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.siteAddressLine, "1 Plant Rd\nRoanoke, VA");
     assert.equal(input.siteContactName, "Jane Doe");
     assert.equal(input.siteContactPhone, "555-1234");
+    assert.equal(input.siteContactEmail, "jane@example.com");
     assert.equal(input.summary, "Install 3 systems");
   });
 
@@ -189,5 +195,88 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.zohoSiteCode, null);
     assert.equal(input.zohoCompanyId, null);
     assert.equal(input.dealerName, null);
+    assert.equal(input.siteContactName, null);
+    assert.equal(input.siteContactPhone, null);
+    assert.equal(input.siteContactEmail, null);
+  });
+
+  describe("Work Order-direct contact mapping (Email/Phone/Mobile live on the Work Order, not the Contact record)", () => {
+    const baseWorkOrder: ZohoWorkOrderRecord = {
+      id: "wo-1",
+      Company: { id: "zc-1", name: "Shoppas" },
+      Contact: { id: "zct-1", name: "Nick NDJO" },
+      Installer_Sheetz_Company__C: "Blaxtair",
+      Installer_Sheetz_Site_Code__C: "TEST-ROANOKE",
+    };
+    const map = (workOrderOverrides: Partial<ZohoWorkOrderRecord>) =>
+      mapZohoRecordsToInboundInput({
+        workOrder: { ...baseWorkOrder, ...workOrderOverrides },
+        serviceAppointment: { id: "sa-1" },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+        siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
+      });
+
+    it("(1) maps Contact.name / Email / Phone straight off the Work Order when all are populated", () => {
+      const input = map({ Email: "nick@example.com", Phone: "6787809723", Mobile: null });
+      assert.equal(input.siteContactName, "Nick NDJO");
+      assert.equal(input.siteContactEmail, "nick@example.com");
+      assert.equal(input.siteContactPhone, "6787809723");
+    });
+
+    it("(2) prefers Phone [\"Phone Primary\"] when Phone and Mobile are both populated", () => {
+      const input = map({ Phone: "770-555-1111", Mobile: "678-555-2222" });
+      assert.equal(input.siteContactPhone, "770-555-1111");
+      // Never concatenated.
+      assert.doesNotMatch(input.siteContactPhone ?? "", /678-555-2222/);
+    });
+
+    it("(3) falls back to Mobile [\"Phone Secondary\"] when Phone is blank", () => {
+      const input = map({ Phone: null, Mobile: "678-555-2222" });
+      assert.equal(input.siteContactPhone, "678-555-2222");
+    });
+
+    it("(4) maps to null when both Phone and Mobile are blank", () => {
+      const input = map({ Phone: null, Mobile: "   " });
+      assert.equal(input.siteContactPhone, null);
+    });
+
+    it("(5) maps Email to null when blank", () => {
+      const input = map({ Email: "" });
+      assert.equal(input.siteContactEmail, null);
+    });
+
+    it("(6/7) a later delivery's fresh non-blank WO Phone/Email maps to different values than an earlier one (feeds resolve.ts's already-tested non-destructive refresh)", () => {
+      const first = map({ Phone: "770-555-1111", Email: "nick@example.com" });
+      const second = map({ Phone: "770-555-9999", Email: "nick.new@example.com" });
+      assert.notEqual(first.siteContactPhone, second.siteContactPhone);
+      assert.notEqual(first.siteContactEmail, second.siteContactEmail);
+      assert.equal(second.siteContactPhone, "770-555-9999");
+      assert.equal(second.siteContactEmail, "nick.new@example.com");
+
+      // A later delivery with blank WO Phone/Email maps to null at this layer — propagating
+      // that non-destructively (never erasing the previously-stored value) is resolve.ts's job,
+      // already covered by resolve.test.ts's "(A) non-destructively refreshes...",
+      // "(B) does not erase existing descriptive values..." and "(E) populates contact_email..."
+      // tests, which don't care whether the value originated from a Contact fetch or the WO
+      // directly.
+      const blank = map({ Phone: null, Mobile: null, Email: null });
+      assert.equal(blank.siteContactPhone, null);
+      assert.equal(blank.siteContactEmail, null);
+    });
+
+    it("(8) Contact.name may be null while Email/Phone mapping from the Work Order still works independently", () => {
+      const input = map({ Contact: null, Email: "nick@example.com", Phone: "6787809723" });
+      assert.equal(input.siteContactName, null);
+      assert.equal(input.siteContactEmail, "nick@example.com");
+      assert.equal(input.siteContactPhone, "6787809723");
+    });
+
+    it("retains the Work Order (with its Email/Phone/Mobile) in raw_snapshot — no separate Contact entry needed", () => {
+      const input = map({ Email: "nick@example.com", Phone: "6787809723" });
+      assert.equal(input.raw.workOrder.Email, "nick@example.com");
+      assert.equal(input.raw.workOrder.Phone, "6787809723");
+      assert.equal(input.raw.serviceAppointment.id, "sa-1");
+      assert.equal(Object.prototype.hasOwnProperty.call(input.raw, "contact"), false);
+    });
   });
 });

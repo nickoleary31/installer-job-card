@@ -8,7 +8,19 @@ export type ZohoWorkOrderRecord = {
   Name?: string | null;
   Summary?: string | null;
   Company?: { id: string; name?: string | null } | null;
-  Contact?: { id: string; name?: string | null; Phone?: string | null; Email?: string | null } | null;
+  // Contact is a reference object only (id + display name) — it does not carry Phone/Mobile/
+  // Email inline. Confirmed against the real stored AP-4 Work Order that the descriptive contact
+  // info for a job instead lives directly on the Work Order itself (Email/Phone/Mobile below),
+  // not on the Contact record, so no separate Contacts GET is needed for V1.
+  Contact?: { id: string; name?: string | null } | null;
+  // Confirmed against the real stored AP-4 Work Order payload. Phone is displayed as
+  // "Phone Primary" and Mobile as "Phone Secondary" in this account's Zoho UI — display labels
+  // only, the underlying API field names are still Phone/Mobile. Installer Sheetz only has one
+  // customers.contact_number column (a V2 candidate: separate primary/secondary phone columns),
+  // so callers pick Phone first, Mobile as fallback, never concatenating both.
+  Email?: string | null;
+  Phone?: string | null;
+  Mobile?: string | null;
   // Confirmed against a real Work Order payload (Zoho FSM, live test org). The granular address
   // fields are prefixed "Service_"; `name` is Zoho's own internal address-record label (e.g.
   // "AD-26"), not a human-meaningful site name — do not use it as one (see siteAddressName
@@ -117,6 +129,11 @@ export type InboundServiceAppointmentInput = {
  * Normalizes raw Zoho Work Order + Service Appointment records into the shape
  * resolveInboundServiceAppointment() consumes. This is the only place that knows Zoho's
  * response shape; resolve.ts works entirely in terms of this normalized input.
+ *
+ * Descriptive contact info (name/phone/email) is read directly off the Work Order — confirmed
+ * against a real stored Work Order that Email/Phone/Mobile live there, not on the Contact
+ * record, so no separate Contacts GET is needed for V1. Work_Order.Contact.id/name remain the
+ * authoritative relationship reference and are used only for siteContactName.
  */
 export function mapZohoRecordsToInboundInput(args: {
   workOrder: ZohoWorkOrderRecord;
@@ -142,8 +159,10 @@ export function mapZohoRecordsToInboundInput(args: {
     siteAddressName: null,
     siteAddressLine: buildServiceAddressLine(workOrder.Service_Address),
     siteContactName: workOrder.Contact?.name?.trim() || null,
-    siteContactPhone: workOrder.Contact?.Phone?.trim() || null,
-    siteContactEmail: workOrder.Contact?.Email?.trim() || null,
+    // Phone ("Phone Primary" in this account's UI) preferred, Mobile ("Phone Secondary") as
+    // fallback — never concatenated (only one contact_number column).
+    siteContactPhone: workOrder.Phone?.trim() || workOrder.Mobile?.trim() || null,
+    siteContactEmail: workOrder.Email?.trim() || null,
     summary: workOrder.Summary?.trim() || null,
     raw: { workOrder, serviceAppointment },
   };
