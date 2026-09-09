@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
+import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -40,6 +41,9 @@ type CustomerContextRow = {
   wifi_ssid: string | null;
   wifi_password: string | null;
   notes: string | null;
+  customer_account_id: string | null;
+  zoho_site_code: string | null;
+  end_customer_name: string | null;
 };
 
 type SiteInfo = {
@@ -55,6 +59,9 @@ type SiteInfo = {
   wifi_ssid: string;
   wifi_password: string;
   notes: string;
+  true_customer_name: string;
+  end_customer_name: string;
+  zoho_site_code: string;
 };
 
 type ExpenseRow = {
@@ -91,6 +98,9 @@ const emptySiteInfo: SiteInfo = {
   wifi_ssid: "—",
   wifi_password: "—",
   notes: "—",
+  true_customer_name: "—",
+  end_customer_name: "—",
+  zoho_site_code: "—",
 };
 
 const emptyProjectContext: ProjectContext = {
@@ -159,6 +169,7 @@ export default function ProjectDashboardPage() {
   const [hasProjectAccess, setHasProjectAccess] = useState(false);
   const [accessResolved, setAccessResolved] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  const [zohoInfo, setZohoInfo] = useState<ZohoProjectInfoViewModel>(UNLINKED_PROJECT_INFO);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [expenseCreatorLabels, setExpenseCreatorLabels] = useState<Record<string, string>>({});
   const [expensesLoading, setExpensesLoading] = useState(false);
@@ -245,7 +256,7 @@ export default function ProjectDashboardPage() {
           supabase
             .from("projects")
             .select(
-              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes)",
+              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, zoho_site_code, end_customer_name)",
             )
             .eq("id", projectId)
             .eq("company_id", companyId)
@@ -265,6 +276,17 @@ export default function ProjectDashboardPage() {
           if (locationFromCustomer) location = locationFromCustomer;
 
           setHasLinkedCustomer(!!customerLookup);
+
+          let trueCustomerName = "—";
+          if (customerLookup?.customer_account_id) {
+            const { data: accountRow } = await supabase
+              .from("customer_accounts")
+              .select("name")
+              .eq("id", customerLookup.customer_account_id)
+              .maybeSingle<{ name: string | null }>();
+            trueCustomerName = displayCell(accountRow?.name);
+          }
+
           setSiteInfo({
             customer_name: displayCell(customerLookup?.customer_name),
             full_address: displayCell(customerLookup?.full_address),
@@ -278,6 +300,9 @@ export default function ProjectDashboardPage() {
             wifi_ssid: displayCell(customerLookup?.wifi_ssid),
             wifi_password: displayCell(customerLookup?.wifi_password),
             notes: displayCell(customerLookup?.notes),
+            true_customer_name: trueCustomerName,
+            end_customer_name: displayCell(customerLookup?.end_customer_name),
+            zoho_site_code: displayCell(customerLookup?.zoho_site_code),
           });
         } else {
           setHasLinkedCustomer(false);
@@ -369,6 +394,30 @@ export default function ProjectDashboardPage() {
       cancelled = true;
     };
   }, [accessResolved, companyId, hasProjectAccess, projectId, userContext.userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadZohoInfo = async () => {
+      if (!projectId || !userContext.userId || !hasProjectAccess || !accessResolved) return;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (!accessToken) return;
+        const res = await fetch(`/api/integrations/zoho-fsm/project-info?projectId=${encodeURIComponent(projectId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok || cancelled) return;
+        const info = (await res.json()) as ZohoProjectInfoViewModel;
+        if (!cancelled) setZohoInfo(info);
+      } catch {
+        // best-effort display only — never blocks the rest of the page
+      }
+    };
+    void loadZohoInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessResolved, hasProjectAccess, projectId, userContext.userId]);
 
   const expenseTotal = useMemo(
     () =>
@@ -793,6 +842,14 @@ export default function ProjectDashboardPage() {
                   <span className="font-semibold text-gray-600">Location:</span> {projectContext.location}
                 </p>
               </div>
+              {zohoInfo.linked ? (
+                <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  <p className="font-semibold">Linked to Zoho FSM</p>
+                  {zohoInfo.workOrderNumber ? <p>Work Order: {zohoInfo.workOrderNumber}</p> : null}
+                  {zohoInfo.serviceAppointmentNumber ? <p>Service Appointment: {zohoInfo.serviceAppointmentNumber}</p> : null}
+                  {zohoInfo.summary ? <p>{zohoInfo.summary}</p> : null}
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
@@ -809,7 +866,16 @@ export default function ProjectDashboardPage() {
               {siteInfoExpanded ? (
                 hasLinkedCustomer ? (
                   <div className="mt-4 grid gap-3 text-sm text-gray-800 sm:grid-cols-2">
+                    {siteInfo.true_customer_name !== "—" ? (
+                      <p><span className="font-semibold text-gray-600">Customer:</span> {siteInfo.true_customer_name}</p>
+                    ) : null}
                     <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
+                    {siteInfo.end_customer_name !== "—" ? (
+                      <p><span className="font-semibold text-gray-600">End customer:</span> {siteInfo.end_customer_name}</p>
+                    ) : null}
+                    {siteInfo.zoho_site_code !== "—" ? (
+                      <p><span className="font-semibold text-gray-600">Zoho site code:</span> {siteInfo.zoho_site_code}</p>
+                    ) : null}
                     <p><span className="font-semibold text-gray-600">Full address:</span> {siteInfo.full_address}</p>
                     <p><span className="font-semibold text-gray-600">Site contact:</span> {siteInfo.site_contact_name}</p>
                     <p><span className="font-semibold text-gray-600">Contact number:</span> {siteInfo.contact_number}</p>
