@@ -347,4 +347,47 @@ describe("zoho-fsm field mapping", () => {
       assert.equal(formatZohoPhoneForV1Display("  Call front desk  "), "Call front desk");
     });
   });
+
+  describe("Service Appointment Summary as project-scope source (business model: Work Order is umbrella scope, a Service Appointment is one visit's own scope)", () => {
+    const map = (workOrderOverrides: Partial<ZohoWorkOrderRecord>, serviceAppointmentOverrides: Partial<ZohoServiceAppointmentRecord>) =>
+      mapZohoRecordsToInboundInput({
+        workOrder: { id: "wo-1", Company: { id: "zc-1" }, ...workOrderOverrides },
+        serviceAppointment: { id: "sa-1", Name: "AP-10", ...serviceAppointmentOverrides },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+      });
+
+    it("uses the Service Appointment's own Summary, never the Work Order's, when both are present and differ (confirmed against the real AP-10 payload shape)", () => {
+      const input = map({ Summary: "2 installs" }, { Summary: "1 install" });
+      assert.equal(input.summary, "1 install");
+    });
+
+    it("falls back to the Work Order Summary only when the Service Appointment's own Summary is blank", () => {
+      const input = map({ Summary: "2 Camera AHD Demo" }, { Summary: null });
+      assert.equal(input.summary, "2 Camera AHD Demo");
+    });
+
+    it("falls back to the Work Order Summary when the Service Appointment's own Summary is whitespace-only", () => {
+      const input = map({ Summary: "2 Camera AHD Demo" }, { Summary: "   " });
+      assert.equal(input.summary, "2 Camera AHD Demo");
+    });
+
+    it("maps to null (not the Work Order Summary) when both are blank", () => {
+      const input = map({ Summary: null }, { Summary: null });
+      assert.equal(input.summary, null);
+    });
+
+    it("a Work Order Summary edit does not change the mapped summary as long as the Service Appointment's own Summary stays fixed (WO change must not fan out to an existing visit's scope)", () => {
+      const before = map({ Summary: "1 install" }, { Summary: "Install VAC4" });
+      const afterWoEdit = map({ Summary: "2 installs" }, { Summary: "Install VAC4" });
+      assert.equal(before.summary, "Install VAC4");
+      assert.equal(afterWoEdit.summary, "Install VAC4");
+      assert.equal(before.summary, afterWoEdit.summary);
+    });
+
+    it("raw_snapshot retains both the Work Order's and Service Appointment's own Summary values unchanged, for diagnostics/context", () => {
+      const input = map({ Summary: "2 installs" }, { Summary: "1 install" });
+      assert.equal(input.raw.workOrder.Summary, "2 installs");
+      assert.equal(input.raw.serviceAppointment.Summary, "1 install");
+    });
+  });
 });

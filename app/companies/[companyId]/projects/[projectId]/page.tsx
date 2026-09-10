@@ -17,7 +17,12 @@ const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 type ProjectContext = {
   companyName: string;
   projectName: string;
+  // Site name for a Zoho-linked project, or the legacy "Customer" name for a manual/non-Zoho
+  // project — see customerAccountName below to tell which case applies.
   customerName: string;
+  // "—" for a manual/non-Zoho project (no Customer Account concept); the dealer/Customer
+  // Account name for a Zoho-linked one.
+  customerAccountName: string;
   location: string;
 };
 
@@ -108,6 +113,7 @@ const emptyProjectContext: ProjectContext = {
   companyName: "—",
   projectName: "—",
   customerName: "—",
+  customerAccountName: "—",
   location: "—",
 };
 
@@ -269,6 +275,7 @@ export default function ProjectDashboardPage() {
 
         let customerName = projectRow?.customer_name?.trim() || "—";
         let location = projectRow?.location?.trim() || "—";
+        let customerAccountName = "—";
         if (projectRow?.customer_id) {
           const customerLookup = Array.isArray(projectRow.customers) ? projectRow.customers[0] : projectRow.customers;
           const customerNameFromCustomer = customerLookup?.customer_name?.trim();
@@ -287,6 +294,7 @@ export default function ProjectDashboardPage() {
               .maybeSingle<{ name: string | null }>();
             trueCustomerName = displayCell(accountRow?.name);
           }
+          customerAccountName = trueCustomerName;
 
           setSiteInfo({
             customer_name: displayCell(customerLookup?.customer_name),
@@ -315,6 +323,7 @@ export default function ProjectDashboardPage() {
           companyName: companyRow?.name?.trim() || "—",
           projectName: projectRow?.project_name?.trim() || "—",
           customerName,
+          customerAccountName,
           location,
         });
         setHasProjectAccess(true);
@@ -836,9 +845,21 @@ export default function ProjectDashboardPage() {
                 <p>
                   <span className="font-semibold text-gray-600">Project:</span> {projectContext.projectName}
                 </p>
-                <p>
-                  <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
-                </p>
+                {projectContext.customerAccountName !== "—" ? (
+                  <>
+                    <p>
+                      <span className="font-semibold text-gray-600">Customer Account:</span>{" "}
+                      {projectContext.customerAccountName}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-gray-600">Site:</span> {projectContext.customerName}
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
+                  </p>
+                )}
                 <div className="sm:col-span-2">
                   <span className="font-semibold text-gray-600">Location:</span>
                   <AddressActionMenu address={projectContext.location} className="mt-0.5 whitespace-pre-wrap text-sm text-gray-800" />
@@ -869,9 +890,13 @@ export default function ProjectDashboardPage() {
                 hasLinkedCustomer ? (
                   <div className="mt-4 grid gap-3 text-sm text-gray-800 sm:grid-cols-2">
                     {siteInfo.true_customer_name !== "—" ? (
-                      <p><span className="font-semibold text-gray-600">Customer:</span> {siteInfo.true_customer_name}</p>
-                    ) : null}
-                    <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
+                      <>
+                        <p><span className="font-semibold text-gray-600">Customer Account:</span> {siteInfo.true_customer_name}</p>
+                        <p><span className="font-semibold text-gray-600">Site:</span> {siteInfo.customer_name}</p>
+                      </>
+                    ) : (
+                      <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
+                    )}
                     {siteInfo.end_customer_name !== "—" ? (
                       <p><span className="font-semibold text-gray-600">End customer:</span> {siteInfo.end_customer_name}</p>
                     ) : null}

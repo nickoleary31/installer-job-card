@@ -649,6 +649,66 @@ describe("resolveInboundServiceAppointment", () => {
     assert.equal(state.projects[0].projectName, "Evergreen Acworth — Install Two AHD systems — AP-8");
   });
 
+  it("(shared Site) two SAs at the same Site (e.g. AP-10 and AP-11): redelivering AP-10 renames the shared Site and regenerates ONLY AP-10's project_name — AP-11's project row is untouched until AP-11 itself is synchronized", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+
+    const ap10First = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({
+        zohoServiceAppointmentId: "sa-ap10",
+        zohoWorkOrderId: "wo-ap10",
+        siteAddressName: "Kennesaw Branch",
+        summary: "2 Camera AHD Demo",
+        zohoServiceAppointmentNumber: "AP-10",
+      }),
+    );
+    const ap11First = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({
+        zohoServiceAppointmentId: "sa-ap11",
+        zohoWorkOrderId: "wo-ap11",
+        siteAddressName: "Kennesaw Branch",
+        summary: "2 Camera AHD Demo",
+        zohoServiceAppointmentNumber: "AP-11",
+      }),
+    );
+
+    // Sanity: same Site, two distinct projects.
+    assert.equal(state.sites.length, 1);
+    assert.equal(state.projects.length, 2);
+    const ap11ProjectNameBefore = state.projects.find((p) => p.id === ap11First.projectId)?.projectName;
+    assert.equal(ap11ProjectNameBefore, "Kennesaw Branch — 2 Camera AHD Demo — AP-11");
+
+    // Only AP-10 is actually edited/redelivered — the Site's Address Name changed in Zoho.
+    const ap10Second = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({
+        zohoServiceAppointmentId: "sa-ap10",
+        zohoWorkOrderId: "wo-ap10",
+        siteAddressName: "Kennesaw Warehouse",
+        summary: "2 Camera AHD Demo",
+        zohoServiceAppointmentNumber: "AP-10",
+      }),
+    );
+
+    assert.equal(ap10Second.outcome, "reused_existing");
+    assert.equal(ap10Second.projectId, ap10First.projectId);
+    assert.equal(state.sites.length, 1, "still one shared Site row, not duplicated");
+    // The shared Site is renamed — visible from either project's join.
+    assert.equal(state.sites[0].name, "Kennesaw Warehouse");
+    // AP-10's OWN project_name regenerates with the new Site name.
+    assert.equal(
+      state.projects.find((p) => p.id === ap10First.projectId)?.projectName,
+      "Kennesaw Warehouse — 2 Camera AHD Demo — AP-10",
+    );
+    // AP-11's project row is completely untouched — same project_name as before, even though the
+    // Site it's linked to (via a live join) now shows the new name. AP-11 only regenerates when
+    // AP-11 itself is synchronized.
+    const ap11ProjectAfter = state.projects.find((p) => p.id === ap11First.projectId);
+    assert.equal(ap11ProjectAfter?.projectName, ap11ProjectNameBefore);
+    assert.equal(ap11ProjectAfter?.projectName, "Kennesaw Branch — 2 Camera AHD Demo — AP-11");
+  });
+
   it("(C) withholds descriptive refresh and logs identity_mismatch_on_reuse when the incoming Service_Address.id no longer matches", async () => {
     const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
     const first = await resolveInboundServiceAppointment(repo, baseInput());

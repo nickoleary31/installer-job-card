@@ -18,10 +18,18 @@ type ProjectCardRow = {
   id: string;
   project_name: string;
   active: boolean;
+  // Site name for a Zoho-linked project, or the legacy "Customer" name for a manual/non-Zoho
+  // project — see displayCustomerAccountName below to tell which case applies.
   displayCustomerName: string;
+  // Set only for a Zoho-linked project (customer_account_id present on the linked Site). Manual/
+  // non-Zoho projects have no Customer Account concept, so this stays null and the tile falls
+  // back to the legacy single "Customer:" line.
+  displayCustomerAccountName: string | null;
   displayLocation: string;
   completedSubmissionCount: number;
 };
+
+type LinkedCustomerAccountRow = { name: string | null };
 
 type ProjectQueryRow = {
   id: string;
@@ -31,8 +39,18 @@ type ProjectQueryRow = {
   customer_id: string | null;
   customer_name: string | null;
   customers:
-    | { customer_name: string | null; full_address: string | null }
-    | { customer_name: string | null; full_address: string | null }[]
+    | {
+        customer_name: string | null;
+        full_address: string | null;
+        customer_account_id: string | null;
+        customer_accounts: LinkedCustomerAccountRow | LinkedCustomerAccountRow[] | null;
+      }
+    | {
+        customer_name: string | null;
+        full_address: string | null;
+        customer_account_id: string | null;
+        customer_accounts: LinkedCustomerAccountRow | LinkedCustomerAccountRow[] | null;
+      }[]
     | null;
 };
 
@@ -160,7 +178,7 @@ export default function CompanyProjectsPage() {
     const { data: projData, error: projError } = await supabase
       .from("projects")
       .select(
-        "id, project_name, active, location, customer_id, customer_name, customers:customer_id(customer_name, full_address)",
+        "id, project_name, active, location, customer_id, customer_name, customers:customer_id(customer_name, full_address, customer_account_id, customer_accounts:customer_account_id(name))",
       )
       .eq("company_id", companyId)
       .order("project_name", { ascending: true });
@@ -193,11 +211,19 @@ export default function CompanyProjectsPage() {
       const fromProject = row.customer_name?.trim() || "";
       const addressFromCustomer = linked?.full_address?.trim() || "";
       const fromProjectLocation = row.location?.trim() || "";
+      // A Customer Account only exists for a Zoho-linked Site (customer_account_id set) — a
+      // manual/non-Zoho Site has no such concept, so this stays null for those.
+      const customerAccount = linked?.customer_account_id
+        ? Array.isArray(linked.customer_accounts)
+          ? linked.customer_accounts[0]
+          : linked.customer_accounts
+        : null;
       return {
         id: row.id,
         project_name: row.project_name,
         active: row.active,
         displayCustomerName: fromCustomer || fromProject || "—",
+        displayCustomerAccountName: customerAccount?.name?.trim() || null,
         displayLocation: addressFromCustomer || fromProjectLocation || "",
         completedSubmissionCount: countByProject.get(row.id) ?? 0,
       };
@@ -241,6 +267,9 @@ export default function CompanyProjectsPage() {
                 project_name: p.project_name,
                 active: p.active,
                 displayCustomerName: p.displayCustomerName,
+                // The offline cache format doesn't carry Customer Account data — falls back to
+                // the legacy single "Customer:" line for cached/offline tiles.
+                displayCustomerAccountName: null,
                 displayLocation: p.displayLocation ?? "",
                 completedSubmissionCount: p.completedSubmissionCount,
               })),
@@ -818,9 +847,21 @@ export default function CompanyProjectsPage() {
                 className="block w-full rounded-2xl border border-indigo-200 bg-white p-5 text-left shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50"
               >
                 <h2 className="text-lg font-bold text-gray-900">{project.project_name}</h2>
-                <p className="mt-1 text-sm text-gray-700">
-                  <span className="font-semibold text-gray-600">Customer:</span> {project.displayCustomerName}
-                </p>
+                {project.displayCustomerAccountName ? (
+                  <>
+                    <p className="mt-1 text-sm text-gray-700">
+                      <span className="font-semibold text-gray-600">Customer Account:</span>{" "}
+                      {project.displayCustomerAccountName}
+                    </p>
+                    <p className="mt-0.5 text-sm text-gray-700">
+                      <span className="font-semibold text-gray-600">Site:</span> {project.displayCustomerName}
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-sm text-gray-700">
+                    <span className="font-semibold text-gray-600">Customer:</span> {project.displayCustomerName}
+                  </p>
+                )}
                 <p className="mt-0.5 text-sm text-gray-700">
                   <span className="font-semibold text-gray-600">Completed submissions:</span>{" "}
                   {project.completedSubmissionCount}

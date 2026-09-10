@@ -163,23 +163,29 @@ function siteRefreshArgsFor(input: InboundServiceAppointmentInput, siteName: str
 }
 
 /**
- * "<Site> — <Work Order Summary> — <Service Appointment Number>", e.g.
+ * "<Site> — <Service Appointment Summary> — <Service Appointment Number>", e.g.
  * "Evergreen Acworth — Install One AHD system with Speed Control — AP-8". Site is the current
  * Site display name (siteName, computed via fallbackSiteName), never the Customer Account or
- * OE/Company name, which already exist as separate hierarchy levels. The Service Appointment
- * number is what guarantees uniqueness within a company (projects_company_project_name_key)
- * even when the same Site has repeated visits or multiple Work Orders share a similar Summary —
- * never a synthetic (2)/(3) suffix.
+ * OE/Company name, which already exist as separate hierarchy levels. `input.summary` is this
+ * SA's own Summary (see field-mapping.ts's business-model note) — a Work Order is the umbrella
+ * scope, a Service Appointment is one visit's own scope, so the project name reflects THIS
+ * visit, not the whole Work Order. The Service Appointment number is what guarantees uniqueness
+ * within a company (projects_company_project_name_key) even when the same Site has repeated
+ * visits or multiple Service Appointments share a similar Summary — never a synthetic (2)/(3)
+ * suffix.
  *
  * project_name is derived Zoho-owned display metadata, not user-owned freeform text: this is
- * recomputed both at creation AND on every matching-identity redelivery (see
- * resolveInboundServiceAppointment), so an Address Name correction or a Summary revision updates
- * the SAME project's name rather than requiring a new one.
+ * recomputed both at creation AND on every matching-identity redelivery of THIS SAME Service
+ * Appointment (see resolveInboundServiceAppointment), so an Address Name correction or a Summary
+ * revision on this specific SA updates the SAME project's name rather than requiring a new one.
+ * There is no Work Order webhook, so a Work Order Summary edit alone never triggers this —
+ * only an actual edit/redelivery of the Service Appointment itself does.
  */
 function projectNameFor(input: InboundServiceAppointmentInput, siteName: string): string {
   const serviceAppointmentNumber = input.zohoServiceAppointmentNumber || input.zohoServiceAppointmentId;
-  // Defensive fallback only: Work Order Summary is required in the normal Zoho workflow, but a
-  // blank/malformed one is simply omitted rather than producing a name with a stray separator.
+  // Defensive fallback only: a Summary (SA's own, or the Work Order's as a narrower fallback —
+  // see field-mapping.ts) is expected in the normal Zoho workflow, but a blank/malformed one is
+  // simply omitted rather than producing a name with a stray separator.
   const parts = [siteName, input.summary, serviceAppointmentNumber].filter((part): part is string => Boolean(part));
   return parts.join(" — ");
 }
@@ -201,12 +207,17 @@ function projectNameFor(input: InboundServiceAppointmentInput, siteName: string)
  *   - Repeated delivery for an already-linked zoho_service_appointment_id whose OE company,
  *     Zoho dealer (Company) id, and Service_Address.id all still match what was recorded ->
  *     reuse the existing project/site/customer_account; refresh the link snapshot plus the same
- *     Site descriptive refresh as above, plus project_name (and the denormalized
+ *     Site descriptive refresh as above, plus THIS SA's own project_name (and the denormalized
  *     projects.customer_name) from current Zoho data — this half is specific to same-SA
- *     redelivery, since a brand-new SA creates its own new project instead. Identity/linkage
- *     (company, customer_account, Service_Address.id, project id, the SA->project relationship)
- *     is never touched. A Service_Address_Name correction, a Summary revision, or any other
- *     purely descriptive change is NOT a mismatch — it's a rename, handled here.
+ *     redelivery, since a brand-new SA creates its own new project instead, and it only ever
+ *     touches the redelivered SA's OWN project row. When multiple SAs share one Site (e.g. AP-10
+ *     and AP-11 both at the same physical location), redelivering AP-10 refreshes the shared
+ *     Site row (visible to both) but never rewrites AP-11's own project_name — that only happens
+ *     when AP-11 itself is synchronized/edited, preserving "one project follows only its own SA's
+ *     lifecycle." Identity/linkage (company, customer_account, Service_Address.id, project id,
+ *     the SA->project relationship) is never touched. A Service_Address_Name correction, this
+ *     SA's own Summary revision, or any other purely descriptive change is NOT a mismatch — it's
+ *     a rename, handled here.
  *   - Repeated delivery whose OE company, Zoho dealer, or Service_Address.id no longer matches
  *     what this SA was originally linked under -> identity_mismatch_on_reuse. The link snapshot
  *     still refreshes, but no descriptive fields are touched and nothing is reassigned; the

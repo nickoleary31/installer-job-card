@@ -26,12 +26,22 @@ type LinkRow = {
   raw_snapshot: unknown;
 };
 
+function readSummaryField(record: unknown): string | null {
+  if (!record || typeof record !== "object") return null;
+  const summary = (record as { Summary?: unknown }).Summary;
+  return typeof summary === "string" && summary.trim() ? summary.trim() : null;
+}
+
+/**
+ * Reads the Service Appointment's own Summary first — same authority/fallback order as
+ * lib/zoho-fsm/field-mapping.ts's `summary` mapping — so this "Linked to Zoho FSM" display
+ * banner never shows a different scope than what the project's own name was built from. The
+ * Work Order's Summary is only a defensive fallback for a not-yet-detailed Service Appointment.
+ */
 function readSummaryFromSnapshot(rawSnapshot: unknown): string | null {
   if (!rawSnapshot || typeof rawSnapshot !== "object") return null;
-  const workOrder = (rawSnapshot as { workOrder?: unknown }).workOrder;
-  if (!workOrder || typeof workOrder !== "object") return null;
-  const summary = (workOrder as { Summary?: unknown }).Summary;
-  return typeof summary === "string" && summary.trim() ? summary.trim() : null;
+  const snapshot = rawSnapshot as { workOrder?: unknown; serviceAppointment?: unknown };
+  return readSummaryField(snapshot.serviceAppointment) ?? readSummaryField(snapshot.workOrder);
 }
 
 export function buildProjectInfoViewModel(link: LinkRow | null): ZohoProjectInfoViewModel {

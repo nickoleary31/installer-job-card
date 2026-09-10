@@ -48,6 +48,11 @@ export type ZohoWorkOrderRecord = {
 export type ZohoServiceAppointmentRecord = {
   id: string;
   Name?: string | null;
+  // Confirmed against the real stored AP-10 Service Appointment payload: the SA carries its own
+  // top-level Summary field, independent of the parent Work Order's Summary. This is the
+  // authoritative scope/title for THIS visit — see the business-model note on
+  // mapZohoRecordsToInboundInput's `summary` output below.
+  Summary?: string | null;
   // The parent Work Order is not a top-level field on a Service Appointment — it is carried
   // per service line in Appointments_X_Services. All lines on one SA belong to the same Work
   // Order, so the first entry's reference is authoritative. Confirmed against the live "Get a
@@ -164,6 +169,16 @@ export type InboundServiceAppointmentInput = {
  *
  * Site identity is now Zoho's own Work_Order.Service_Address.id — no custom field required.
  * "Installer Sheetz Site Code" is no longer read at all.
+ *
+ * Business model: a Work Order is the umbrella/overall scope; a Service Appointment is the
+ * scope of one specific visit, and one Installer Sheetz project = one Service Appointment.
+ * `summary` is therefore sourced from the Service Appointment's OWN Summary field, never the
+ * parent Work Order's — a Work Order Summary edit must not retroactively change the scope of an
+ * already-existing visit/project. (The Work Order's Summary is still captured in raw_snapshot
+ * for diagnostics/context, just not used as project-scope authority.) If the Service
+ * Appointment's own Summary is blank, falling back to the Work Order's Summary is a deliberate,
+ * narrow exception — it's still better context than nothing for a not-yet-fully-detailed visit,
+ * and is naturally overridden the moment the Service Appointment itself gets a Summary.
  */
 export function mapZohoRecordsToInboundInput(args: {
   workOrder: ZohoWorkOrderRecord;
@@ -193,7 +208,9 @@ export function mapZohoRecordsToInboundInput(args: {
     // formatted to match V1's existing manual-entry convention (see formatZohoPhoneForV1Display).
     siteContactPhone: formatZohoPhoneForV1Display(workOrder.Phone?.trim() || workOrder.Mobile?.trim() || null),
     siteContactEmail: workOrder.Email?.trim() || null,
-    summary: workOrder.Summary?.trim() || null,
+    // Service Appointment Summary is the authoritative project-scope source (see docstring
+    // above); Work Order Summary is only a defensive fallback for a not-yet-detailed SA.
+    summary: serviceAppointment.Summary?.trim() || workOrder.Summary?.trim() || null,
     raw: { workOrder, serviceAppointment },
   };
 }
