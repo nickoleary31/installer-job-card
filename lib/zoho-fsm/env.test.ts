@@ -3,24 +3,23 @@ import { describe, it } from "node:test";
 import { getZohoFsmServerEnv } from "./env.ts";
 
 describe("zoho-fsm server env", () => {
-  it("defaults the two Work Order custom field API names to the confirmed live values", () => {
-    const original = {
-      company: process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY,
-      siteCode: process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_SITE_CODE,
-    };
+  it("defaults the Work Order custom field API name to the confirmed live value", () => {
+    const original = process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY;
     delete process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY;
-    delete process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_SITE_CODE;
     try {
       const env = getZohoFsmServerEnv();
       assert.equal(env.workOrderCompanyFieldApiName, "Installer_Sheetz_Company__C");
-      assert.equal(env.workOrderSiteCodeFieldApiName, "Installer_Sheetz_Site_Code__C");
     } finally {
-      if (original.company !== undefined) process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY = original.company;
-      if (original.siteCode !== undefined) process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_SITE_CODE = original.siteCode;
+      if (original !== undefined) process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY = original;
     }
   });
 
-  it("still allows an env var override for either field name", () => {
+  it("no longer exposes a Site Code field name — Site identity is Zoho's own Service_Address.id, not a custom field", () => {
+    const env = getZohoFsmServerEnv();
+    assert.equal("workOrderSiteCodeFieldApiName" in env, false);
+  });
+
+  it("still allows an env var override for the company field name", () => {
     const original = process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY;
     process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY = "Some_Other_Api_Name__C";
     try {

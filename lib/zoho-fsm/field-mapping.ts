@@ -23,13 +23,18 @@ export type ZohoWorkOrderRecord = {
   Email?: string | null;
   Phone?: string | null;
   Mobile?: string | null;
-  // Confirmed against a real Work Order payload (Zoho FSM, live test org). The granular address
-  // fields are prefixed "Service_"; `name` is Zoho's own internal address-record label (e.g.
-  // "AD-26"), not a human-meaningful site name — do not use it as one (see siteAddressName
-  // below).
+  // Confirmed against real Work Order payloads (Zoho FSM, live test org) — both a Company/
+  // Contact saved address and a Service Location produce this SAME Service_Address shape, so
+  // both are handled uniformly here with no separate Service Location lookup. `id` is Zoho's
+  // stable record id for this saved address and is now the Site's machine identity (see
+  // zohoServiceAddressId below). `name` (e.g. "AD-26", "AD-48") is Zoho's own internal
+  // address-record label, not a human-meaningful site name — do not use it as one.
+  // `Service_Address_Name` (e.g. "TKP Cherokee GA", "evergreen acworth") IS the human-entered,
+  // dispatcher-facing label and is the correct source for the Site's display name.
   Service_Address?: {
-    id?: string;
+    id?: string | null;
     name?: string | null;
+    Service_Address_Name?: string | null;
     Service_Street_1?: string | null;
     Service_Street_2?: string | null;
     Service_City?: string | null;
@@ -135,7 +140,7 @@ export type InboundServiceAppointmentInput = {
   zohoWorkOrderNumber: string | null;
   zohoServiceAppointmentNumber: string | null;
   installerSheetzCompanyValue: string | null;
-  zohoSiteCode: string | null;
+  zohoServiceAddressId: string | null;
   zohoCompanyId: string | null;
   dealerName: string | null;
   siteAddressName: string | null;
@@ -156,29 +161,31 @@ export type InboundServiceAppointmentInput = {
  * against a real stored Work Order that Email/Phone/Mobile live there, not on the Contact
  * record, so no separate Contacts GET is needed for V1. Work_Order.Contact.id/name remain the
  * authoritative relationship reference and are used only for siteContactName.
+ *
+ * Site identity is now Zoho's own Work_Order.Service_Address.id — no custom field required.
+ * "Installer Sheetz Site Code" is no longer read at all.
  */
 export function mapZohoRecordsToInboundInput(args: {
   workOrder: ZohoWorkOrderRecord;
   serviceAppointment: ZohoServiceAppointmentRecord;
   companyFieldApiName: string;
-  siteCodeFieldApiName: string;
 }): InboundServiceAppointmentInput {
-  const { workOrder, serviceAppointment, companyFieldApiName, siteCodeFieldApiName } = args;
+  const { workOrder, serviceAppointment, companyFieldApiName } = args;
   return {
     zohoWorkOrderId: workOrder.id,
     zohoServiceAppointmentId: serviceAppointment.id,
     zohoWorkOrderNumber: workOrder.Name?.trim() || null,
     zohoServiceAppointmentNumber: serviceAppointment.Name?.trim() || null,
     installerSheetzCompanyValue: extractWorkOrderCustomFieldValue(workOrder, companyFieldApiName),
-    zohoSiteCode: extractWorkOrderCustomFieldValue(workOrder, siteCodeFieldApiName),
+    zohoServiceAddressId: workOrder.Service_Address?.id || null,
     zohoCompanyId: workOrder.Company?.id || null,
     dealerName: workOrder.Company?.name?.trim() || null,
-    // No confirmed Zoho field currently supplies a genuinely descriptive human site name.
-    // Service_Address.name is Zoho's own internal address-record label (e.g. "AD-26"), not a
-    // site name, so it is deliberately not used here. siteAddressName stays null for V1;
-    // resolve.ts's fallbackSiteName() already falls back to the explicit Zoho Site Code in
-    // that case, which is the correct V1 behavior. Revisit if/when a real source is found.
-    siteAddressName: null,
+    // Service_Address_Name is the dispatcher-facing label for a saved address (e.g.
+    // "TKP Cherokee GA") — the correct source for a Site's human display name.
+    // Service_Address.name (e.g. "AD-26") is Zoho's own internal record label and is
+    // deliberately never used here; resolve.ts's fallbackSiteName() falls back to
+    // "<Company> — <Street>" when Service_Address_Name is blank.
+    siteAddressName: workOrder.Service_Address?.Service_Address_Name?.trim() || null,
     siteAddressLine: buildServiceAddressLine(workOrder.Service_Address),
     siteContactName: workOrder.Contact?.name?.trim() || null,
     // Phone ("Phone Primary" in this account's UI) preferred, Mobile ("Phone Secondary") as

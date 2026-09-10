@@ -3,7 +3,7 @@ import type { InboundServiceAppointmentInput } from "./field-mapping";
 export type InboundOutcome =
   | "ignored_not_opted_in"
   | "error_company_unmapped"
-  | "error_site_code_missing"
+  | "error_missing_service_address_id"
   | "error_missing_zoho_company_id"
   | "error_work_order_unresolvable"
   | "created"
@@ -25,15 +25,18 @@ export type InboundResolutionResult = {
 export interface ZohoFsmRepo {
   findActiveCompanyMapping(zohoValue: string): Promise<{ companyId: string } | null>;
   /**
-   * Returns the recorded identity (companyId, the site's zoho_site_code) alongside the link
-   * itself, so a repeat delivery can detect whether the incoming Company/Site Code still
-   * matches what this SA was originally linked under before refreshing anything.
+   * Returns the recorded identity (OE companyId, Zoho dealer/Company id, the linked Site's id
+   * and zoho_service_address_id) alongside the link itself, so a repeat delivery can detect
+   * whether the incoming OE/dealer/Service Address identity still matches what this SA was
+   * originally linked under before refreshing anything.
    */
   findExistingLink(zohoServiceAppointmentId: string): Promise<{
     id: string;
     projectId: string;
+    siteId: string | null;
     companyId: string;
-    zohoSiteCode: string | null;
+    zohoCompanyId: string;
+    zohoServiceAddressId: string | null;
   } | null>;
   refreshLinkSnapshot(
     linkId: string,
@@ -44,33 +47,56 @@ export interface ZohoFsmRepo {
     },
   ): Promise<void>;
   /**
-   * Non-destructive: implementations must only overwrite a field when its candidate value is
-   * non-null/non-blank. A null/blank candidate means "Zoho didn't supply this this time" and
-   * must leave the existing stored value untouched, never erase it.
+   * Zoho is the source of truth for a Zoho-linked Site's descriptive metadata — this is called
+   * whenever incoming Zoho data resolves to an EXISTING Site by its machine identity
+   * (customer_account_id + zoho_service_address_id), regardless of whether that happened via a
+   * same-SA redelivery or a brand-new SA landing on an already-known Site. siteName is always
+   * recomputed from current Zoho data via a guaranteed-non-blank fallback chain (see
+   * fallbackSiteName) and is applied unconditionally — it's derived display metadata, not
+   * user-owned freeform text. The remaining fields stay non-destructive: implementations must
+   * only overwrite a field when its candidate value is non-null/non-blank. A null/blank
+   * candidate means "Zoho didn't supply this this time" and must leave the existing stored
+   * value untouched, never erase it.
    */
-  refreshSiteAndProjectDisplayFields(
-    projectId: string,
+  refreshSiteDisplayFields(
+    siteId: string,
     args: {
+      siteName: string;
       fullAddress: string | null;
       siteContactName: string | null;
       contactNumber: string | null;
       contactEmail: string | null;
+    },
+  ): Promise<void>;
+  /**
+   * project_name and the denormalized projects.customer_name are always recomputed from current
+   * Zoho data and applied unconditionally, for the same reason as siteName above — so the
+   * project row stays internally coherent even outside the one screen that currently prefers
+   * the joined customer row over its own denormalized copy. Scoped to same-SA redelivery only:
+   * a brand-new SA landing on an existing Site creates its own new project instead (via
+   * createProject), it never calls this.
+   */
+  refreshProjectDisplayFields(
+    projectId: string,
+    args: {
+      projectName: string;
+      customerName: string;
       location: string | null;
     },
   ): Promise<void>;
   findCustomerAccountByZohoCompanyId(companyId: string, zohoCompanyId: string): Promise<{ id: string } | null>;
   createCustomerAccount(args: { companyId: string; name: string; zohoCompanyId: string }): Promise<{ id: string }>;
-  findSiteByCode(companyId: string, zohoSiteCode: string): Promise<{ id: string } | null>;
+  /** Scoped to customerAccountId, not just companyId — a Site's machine identity is composite. */
+  findSiteByServiceAddress(customerAccountId: string, zohoServiceAddressId: string): Promise<{ id: string } | null>;
   createSite(args: {
     companyId: string;
     customerAccountId: string;
-    zohoSiteCode: string;
+    zohoServiceAddressId: string;
     name: string;
     fullAddress: string | null;
     siteContactName: string | null;
     contactNumber: string | null;
     contactEmail: string | null;
-    endCustomerName: string | null;
   }): Promise<{ id: string }>;
   createProject(args: {
     companyId: string;
@@ -93,57 +119,99 @@ export interface ZohoFsmRepo {
     zohoWorkOrderId: string | null;
     zohoServiceAppointmentId: string | null;
     installerSheetzCompanyValue: string | null;
-    zohoSiteCodeValue: string | null;
+    zohoServiceAddressIdValue: string | null;
     outcome: InboundOutcome;
     detail: string | null;
     projectId: string | null;
   }): Promise<void>;
 }
 
+/**
+ * Deterministic Site display-name fallback chain (customer_name is DISPLAY metadata, not
+ * identity — see zohoServiceAddressId for the real machine identity):
+ *   1. Service_Address_Name, when nonblank (the normal path — dispatchers are expected to give
+ *      a saved/reusable address a meaningful name).
+ *   2. "<Zoho Company name> — <first line of the address>" when the address name is blank.
+ *   3. Whichever of Company name / first address line is present, alone.
+ *   4. "Zoho site" — final nonblank floor, only reachable if Zoho supplied neither.
+ * Never Service_Address.name (Zoho's internal record label, e.g. "AD-26") and never a Site Code
+ * — that identity model has been removed entirely.
+ */
 function fallbackSiteName(input: InboundServiceAppointmentInput): string {
-  return input.siteAddressName || input.zohoSiteCode || "Zoho site";
+  if (input.siteAddressName) return input.siteAddressName;
+  const firstAddressLine = input.siteAddressLine?.split("\n")[0]?.trim() || null;
+  if (input.dealerName && firstAddressLine) return `${input.dealerName} — ${firstAddressLine}`;
+  if (firstAddressLine) return firstAddressLine;
+  if (input.dealerName) return input.dealerName;
+  return "Zoho site";
+}
+
+/**
+ * The descriptive-field payload for repo.refreshSiteDisplayFields(), shared by both callers that
+ * resolve to an EXISTING Site by its machine identity (customer_account_id +
+ * zoho_service_address_id) — a same-SA redelivery and a brand-new SA landing on an already-known
+ * Site both need the identical refresh, so this is computed once rather than duplicated.
+ */
+function siteRefreshArgsFor(input: InboundServiceAppointmentInput, siteName: string) {
+  return {
+    siteName,
+    fullAddress: input.siteAddressLine,
+    siteContactName: input.siteContactName,
+    contactNumber: input.siteContactPhone,
+    contactEmail: input.siteContactEmail,
+  };
 }
 
 /**
  * "<Site> — <Work Order Summary> — <Service Appointment Number>", e.g.
- * "TEST-ROANOKE — Blaxtair 2 camera install - 3 systems — AP-4". Site is the resolved
- * Installer Sheetz Site display name (fallbackSiteName — matches what a newly-created site's
- * own customer_name is set to), never the Customer Account or OE/Company name, which already
- * exist as separate hierarchy levels. The Service Appointment number is what guarantees
- * uniqueness within a company (projects_company_project_name_key) even when the same Site has
- * repeated visits or multiple Work Orders share a similar Summary — never a synthetic (2)/(3)
- * suffix. Applied at project creation only; resolveInboundServiceAppointment's reused_existing
- * branch never touches project_name on redelivery.
+ * "Evergreen Acworth — Install One AHD system with Speed Control — AP-8". Site is the current
+ * Site display name (siteName, computed via fallbackSiteName), never the Customer Account or
+ * OE/Company name, which already exist as separate hierarchy levels. The Service Appointment
+ * number is what guarantees uniqueness within a company (projects_company_project_name_key)
+ * even when the same Site has repeated visits or multiple Work Orders share a similar Summary —
+ * never a synthetic (2)/(3) suffix.
+ *
+ * project_name is derived Zoho-owned display metadata, not user-owned freeform text: this is
+ * recomputed both at creation AND on every matching-identity redelivery (see
+ * resolveInboundServiceAppointment), so an Address Name correction or a Summary revision updates
+ * the SAME project's name rather than requiring a new one.
  */
-function projectNameFor(input: InboundServiceAppointmentInput): string {
+function projectNameFor(input: InboundServiceAppointmentInput, siteName: string): string {
   const serviceAppointmentNumber = input.zohoServiceAppointmentNumber || input.zohoServiceAppointmentId;
   // Defensive fallback only: Work Order Summary is required in the normal Zoho workflow, but a
   // blank/malformed one is simply omitted rather than producing a name with a stray separator.
-  const parts = [fallbackSiteName(input), input.summary, serviceAppointmentNumber].filter(
-    (part): part is string => Boolean(part),
-  );
+  const parts = [siteName, input.summary, serviceAppointmentNumber].filter((part): part is string => Boolean(part));
   return parts.join(" — ");
 }
 
 /**
  * Resolves one inbound Zoho Service Appointment event into a create-or-reuse decision, per the
- * approved Phase 1 behavior:
+ * final Phase 1 Site identity model:
  *   - Installer Sheetz Company blank -> ignore, not opted in.
  *   - Company value nonblank with no active mapping -> actionable error, no project.
- *   - Company recognized + Site Code blank -> actionable error, no project.
- *   - Company recognized + Site Code matches an existing Site -> reuse it.
- *   - Company recognized + Site Code is new -> resolve/create customer_account by stable
- *     Zoho Company.id, auto-create the Site, create the project.
- *   - Repeated delivery for an already-linked zoho_service_appointment_id with matching Company/
- *     Site Code -> reuse the existing project/site/customer_account; refresh the link snapshot
- *     plus non-destructively refresh Zoho-owned descriptive fields (full_address,
- *     site_contact_name, contact_number, contact_email, project.location) from any non-blank
- *     incoming values. Identity/linkage (company, site code, customer_account, project id, the
- *     SA->project relationship) is never touched.
- *   - Repeated delivery whose Company/Site Code no longer matches what this SA was originally
- *     linked under -> identity_mismatch_on_reuse. The link snapshot still refreshes, but no
- *     descriptive fields are touched and nothing is reassigned; the existing project id is
- *     still returned so the caller can log/alert without entering a retry loop.
+ *   - Company recognized but the Work Order has no Service_Address.id -> actionable error, no
+ *     project. No fallback to address-text matching.
+ *   - Company recognized + Service_Address.id matches an existing Site under the resolved
+ *     customer_account -> reuse it. Zoho is the source of truth for a Zoho-linked Site's
+ *     descriptive metadata, so this Site is refreshed from the CURRENT Work Order (display name,
+ *     full_address, site_contact_name, contact_number, contact_email — non-destructively for the
+ *     optional fields) before the new project is created for this new SA.
+ *   - Company recognized + Service_Address.id is new for that customer_account -> resolve/create
+ *     customer_account by stable Zoho Company.id, auto-create the Site, create the project.
+ *   - Repeated delivery for an already-linked zoho_service_appointment_id whose OE company,
+ *     Zoho dealer (Company) id, and Service_Address.id all still match what was recorded ->
+ *     reuse the existing project/site/customer_account; refresh the link snapshot plus the same
+ *     Site descriptive refresh as above, plus project_name (and the denormalized
+ *     projects.customer_name) from current Zoho data — this half is specific to same-SA
+ *     redelivery, since a brand-new SA creates its own new project instead. Identity/linkage
+ *     (company, customer_account, Service_Address.id, project id, the SA->project relationship)
+ *     is never touched. A Service_Address_Name correction, a Summary revision, or any other
+ *     purely descriptive change is NOT a mismatch — it's a rename, handled here.
+ *   - Repeated delivery whose OE company, Zoho dealer, or Service_Address.id no longer matches
+ *     what this SA was originally linked under -> identity_mismatch_on_reuse. The link snapshot
+ *     still refreshes, but no descriptive fields are touched and nothing is reassigned; the
+ *     existing project id is still returned so the caller can log/alert without entering a
+ *     retry loop.
  * Every branch is logged to zoho_fsm_inbound_events, including ones that never produce a
  * project, so failures are actionable rather than silently swallowed.
  */
@@ -156,19 +224,19 @@ export async function resolveInboundServiceAppointment(
       zohoWorkOrderId: input.zohoWorkOrderId,
       zohoServiceAppointmentId: input.zohoServiceAppointmentId,
       installerSheetzCompanyValue: input.installerSheetzCompanyValue,
-      zohoSiteCodeValue: input.zohoSiteCode,
+      zohoServiceAddressIdValue: input.zohoServiceAddressId,
       outcome,
       detail,
       projectId,
     });
 
   // Idempotency first: a repeated delivery for an already-linked SA must never create another
-  // customer_account, Site, or project, regardless of what the Company/Site Code branches below
-  // would otherwise decide.
+  // customer_account, Site, or project, regardless of what the branches below would otherwise
+  // decide.
   const existingLink = await repo.findExistingLink(input.zohoServiceAppointmentId);
   if (existingLink) {
     // Always safe: this just records the latest raw Zoho state for this SA, independent of
-    // whether our downstream Company/Site resolution below still matches.
+    // whether our downstream identity check below still matches.
     await repo.refreshLinkSnapshot(existingLink.id, {
       rawSnapshot: input.raw,
       zohoWorkOrderNumber: input.zohoWorkOrderNumber,
@@ -177,32 +245,39 @@ export async function resolveInboundServiceAppointment(
 
     const incomingCompanyValue = (input.installerSheetzCompanyValue || "").trim();
     const incomingMapping = incomingCompanyValue ? await repo.findActiveCompanyMapping(incomingCompanyValue) : null;
-    const incomingSiteCode = (input.zohoSiteCode || "").trim() || null;
 
     // Blank/unmapped incoming company counts as a mismatch too — the recorded link always has a
     // real company, so "no company this time" is itself a divergence from what was recorded.
     const companyMismatch = !incomingMapping || incomingMapping.companyId !== existingLink.companyId;
-    const siteCodeMismatch = incomingSiteCode !== existingLink.zohoSiteCode;
+    const dealerMismatch = (input.zohoCompanyId || null) !== existingLink.zohoCompanyId;
+    const serviceAddressMismatch = (input.zohoServiceAddressId || null) !== existingLink.zohoServiceAddressId;
 
-    if (companyMismatch || siteCodeMismatch) {
+    if (companyMismatch || dealerMismatch || serviceAddressMismatch) {
       const detail =
         `Identity mismatch on reuse for SA ${input.zohoServiceAppointmentId}: ` +
-        `recorded company_id="${existingLink.companyId}", site_code="${existingLink.zohoSiteCode ?? "(none)"}" ` +
+        `recorded company_id="${existingLink.companyId}", zoho_company_id="${existingLink.zohoCompanyId}", ` +
+        `service_address_id="${existingLink.zohoServiceAddressId ?? "(none)"}" ` +
         `vs incoming Installer Sheetz Company="${incomingCompanyValue || "(blank)"}"` +
         `${incomingMapping ? ` (resolved company_id="${incomingMapping.companyId}")` : incomingCompanyValue ? " (unmapped)" : ""}, ` +
-        `Site Code="${incomingSiteCode ?? "(blank)"}". Not reassigning or refreshing descriptive fields.`;
+        `zoho_company_id="${input.zohoCompanyId ?? "(blank)"}", ` +
+        `service_address_id="${input.zohoServiceAddressId ?? "(blank)"}". Not reassigning or refreshing descriptive fields.`;
       await log("identity_mismatch_on_reuse", detail, existingLink.projectId);
       return { outcome: "identity_mismatch_on_reuse", detail, projectId: existingLink.projectId };
     }
 
-    // Identity confirmed unchanged — safe to non-destructively refresh Zoho-owned descriptive
-    // fields. Identity/linkage fields (company, site code, customer_account, project id, the
-    // SA->project relationship itself) are never touched here.
-    await repo.refreshSiteAndProjectDisplayFields(existingLink.projectId, {
-      fullAddress: input.siteAddressLine,
-      siteContactName: input.siteContactName,
-      contactNumber: input.siteContactPhone,
-      contactEmail: input.siteContactEmail,
+    // Identity confirmed unchanged — refresh the Site's derived display name and descriptive
+    // fields (Zoho is the source of truth; non-destructive for the optional fields), plus this
+    // same-SA-redelivery-specific project_name/customer_name regeneration (always nonblank via
+    // the fallback chain, applied unconditionally). True identity/linkage fields (company,
+    // customer_account, Service_Address.id, project id, the SA->project relationship itself)
+    // are never touched here.
+    const siteName = fallbackSiteName(input);
+    if (existingLink.siteId) {
+      await repo.refreshSiteDisplayFields(existingLink.siteId, siteRefreshArgsFor(input, siteName));
+    }
+    await repo.refreshProjectDisplayFields(existingLink.projectId, {
+      projectName: projectNameFor(input, siteName),
+      customerName: siteName,
       location: input.siteAddressLine,
     });
     await log("reused_existing", null, existingLink.projectId);
@@ -222,11 +297,13 @@ export async function resolveInboundServiceAppointment(
     return { outcome: "error_company_unmapped", detail, projectId: null };
   }
 
-  const siteCode = (input.zohoSiteCode || "").trim();
-  if (!siteCode) {
-    const detail = "Installer Sheetz Site Code is blank on the Work Order.";
-    await log("error_site_code_missing", detail, null);
-    return { outcome: "error_site_code_missing", detail, projectId: null };
+  const serviceAddressId = input.zohoServiceAddressId;
+  if (!serviceAddressId) {
+    // No fallback to address-text matching — a Site cannot be resolved without Zoho's own
+    // stable Service_Address.id.
+    const detail = "Work Order has no Service_Address.id; cannot resolve a Site without a valid Zoho Service Address.";
+    await log("error_missing_service_address_id", detail, null);
+    return { outcome: "error_missing_service_address_id", detail, projectId: null };
   }
 
   const companyId = mapping.companyId;
@@ -251,28 +328,35 @@ export async function resolveInboundServiceAppointment(
       })
     ).id;
 
-  const existingSite = await repo.findSiteByCode(companyId, siteCode);
-  const siteId =
-    existingSite?.id ??
-    (
+  const siteName = fallbackSiteName(input);
+  const existingSite = await repo.findSiteByServiceAddress(customerAccountId, serviceAddressId);
+  let siteId: string;
+  if (existingSite) {
+    // A brand-new SA landing on an already-known Site (same customer_account +
+    // zoho_service_address_id) still refreshes that Site from the CURRENT Work Order — Zoho is
+    // the source of truth for descriptive metadata regardless of which SA triggered the delivery.
+    siteId = existingSite.id;
+    await repo.refreshSiteDisplayFields(siteId, siteRefreshArgsFor(input, siteName));
+  } else {
+    siteId = (
       await repo.createSite({
         companyId,
         customerAccountId,
-        zohoSiteCode: siteCode,
-        name: fallbackSiteName(input),
+        zohoServiceAddressId: serviceAddressId,
+        name: siteName,
         fullAddress: input.siteAddressLine,
         siteContactName: input.siteContactName,
         contactNumber: input.siteContactPhone,
         contactEmail: input.siteContactEmail,
-        endCustomerName: input.siteAddressName,
       })
     ).id;
+  }
 
   const project = await repo.createProject({
     companyId,
     customerId: siteId,
-    projectName: projectNameFor(input),
-    customerName: fallbackSiteName(input),
+    projectName: projectNameFor(input, siteName),
+    customerName: siteName,
     location: input.siteAddressLine || "",
   });
 

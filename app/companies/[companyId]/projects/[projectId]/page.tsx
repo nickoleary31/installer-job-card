@@ -44,7 +44,6 @@ type CustomerContextRow = {
   wifi_password: string | null;
   notes: string | null;
   customer_account_id: string | null;
-  zoho_site_code: string | null;
   end_customer_name: string | null;
 };
 
@@ -64,7 +63,6 @@ type SiteInfo = {
   notes: string;
   true_customer_name: string;
   end_customer_name: string;
-  zoho_site_code: string;
 };
 
 type ExpenseRow = {
@@ -104,7 +102,6 @@ const emptySiteInfo: SiteInfo = {
   notes: "—",
   true_customer_name: "—",
   end_customer_name: "—",
-  zoho_site_code: "—",
 };
 
 const emptyProjectContext: ProjectContext = {
@@ -260,7 +257,7 @@ export default function ProjectDashboardPage() {
           supabase
             .from("projects")
             .select(
-              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, contact_email, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, zoho_site_code, end_customer_name)",
+              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, contact_email, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, end_customer_name)",
             )
             .eq("id", projectId)
             .eq("company_id", companyId)
@@ -307,7 +304,6 @@ export default function ProjectDashboardPage() {
             notes: displayCell(customerLookup?.notes),
             true_customer_name: trueCustomerName,
             end_customer_name: displayCell(customerLookup?.end_customer_name),
-            zoho_site_code: displayCell(customerLookup?.zoho_site_code),
           });
         } else {
           setHasLinkedCustomer(false);
@@ -878,9 +874,6 @@ export default function ProjectDashboardPage() {
                     <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
                     {siteInfo.end_customer_name !== "—" ? (
                       <p><span className="font-semibold text-gray-600">End customer:</span> {siteInfo.end_customer_name}</p>
-                    ) : null}
-                    {siteInfo.zoho_site_code !== "—" ? (
-                      <p><span className="font-semibold text-gray-600">Zoho site code:</span> {siteInfo.zoho_site_code}</p>
                     ) : null}
                     <div className="sm:col-span-2">
                       <p className="font-semibold text-gray-600">Full address:</p>

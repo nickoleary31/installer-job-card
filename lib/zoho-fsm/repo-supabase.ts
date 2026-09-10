@@ -18,21 +18,26 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
     async findExistingLink(zohoServiceAppointmentId) {
       const { data, error } = await serviceClient
         .from("zoho_fsm_service_appointments")
-        .select("id, project_id, company_id, projects:project_id(customer_id, customers:customer_id(zoho_site_code))")
+        .select(
+          "id, project_id, company_id, zoho_company_id, projects:project_id(customer_id, customers:customer_id(zoho_service_address_id))",
+        )
         .eq("zoho_service_appointment_id", zohoServiceAppointmentId)
         .maybeSingle<{
           id: string;
           project_id: string;
           company_id: string;
-          projects: { customer_id: string | null; customers: { zoho_site_code: string | null } | null } | null;
+          zoho_company_id: string;
+          projects: { customer_id: string | null; customers: { zoho_service_address_id: string | null } | null } | null;
         }>();
       if (error) throw error;
       if (!data) return null;
       return {
         id: data.id,
         projectId: data.project_id,
+        siteId: data.projects?.customer_id ?? null,
         companyId: data.company_id,
-        zohoSiteCode: data.projects?.customers?.zoho_site_code ?? null,
+        zohoCompanyId: data.zoho_company_id,
+        zohoServiceAddressId: data.projects?.customers?.zoho_service_address_id ?? null,
       };
     },
 
@@ -51,49 +56,45 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
       if (error) throw error;
     },
 
-    async refreshSiteAndProjectDisplayFields(projectId, args) {
+    async refreshSiteDisplayFields(siteId, args) {
       // Independently blank-safe — treats whitespace-only candidates as absent rather than
-      // relying solely on callers to have already trimmed their input.
+      // relying solely on callers to have already trimmed their input. Does not apply to
+      // siteName below: it's derived display metadata with its own guaranteed-non-blank
+      // fallback chain (see resolve.ts) and is always applied.
       const nonBlank = (value: string | null): string | null => {
         if (typeof value !== "string") return null;
         const trimmed = value.trim();
         return trimmed ? trimmed : null;
       };
 
-      const { data: project, error: projectLookupError } = await serviceClient
+      const customerUpdate: Record<string, string> = { customer_name: args.siteName };
+      const fullAddress = nonBlank(args.fullAddress);
+      const siteContactName = nonBlank(args.siteContactName);
+      const contactNumber = nonBlank(args.contactNumber);
+      const contactEmail = nonBlank(args.contactEmail);
+      if (fullAddress) customerUpdate.full_address = fullAddress;
+      if (siteContactName) customerUpdate.site_contact_name = siteContactName;
+      if (contactNumber) customerUpdate.contact_number = contactNumber;
+      if (contactEmail) customerUpdate.contact_email = contactEmail;
+      const { error: customerError } = await serviceClient.from("customers").update(customerUpdate).eq("id", siteId);
+      if (customerError) throw customerError;
+    },
+
+    async refreshProjectDisplayFields(projectId, args) {
+      // project_name and the denormalized projects.customer_name are unconditional — both are
+      // derived Zoho display metadata with their own nonblank fallback chain. Leaving
+      // projects.customer_name stale would make this row internally inconsistent with the Site
+      // it's linked to, even though the current project-list screen happens to prefer the
+      // joined customers.customer_name when a link exists. location stays non-destructive, same
+      // convention as the other optional descriptive fields.
+      const projectUpdate: Record<string, string> = { project_name: args.projectName, customer_name: args.customerName };
+      const location = typeof args.location === "string" ? args.location.trim() : "";
+      if (location) projectUpdate.location = location;
+      const { error: projectUpdateError } = await serviceClient
         .from("projects")
-        .select("customer_id")
-        .eq("id", projectId)
-        .maybeSingle<{ customer_id: string | null }>();
-      if (projectLookupError) throw projectLookupError;
-
-      if (project?.customer_id) {
-        const customerUpdate: Record<string, string> = {};
-        const fullAddress = nonBlank(args.fullAddress);
-        const siteContactName = nonBlank(args.siteContactName);
-        const contactNumber = nonBlank(args.contactNumber);
-        const contactEmail = nonBlank(args.contactEmail);
-        if (fullAddress) customerUpdate.full_address = fullAddress;
-        if (siteContactName) customerUpdate.site_contact_name = siteContactName;
-        if (contactNumber) customerUpdate.contact_number = contactNumber;
-        if (contactEmail) customerUpdate.contact_email = contactEmail;
-        if (Object.keys(customerUpdate).length > 0) {
-          const { error: customerError } = await serviceClient
-            .from("customers")
-            .update(customerUpdate)
-            .eq("id", project.customer_id);
-          if (customerError) throw customerError;
-        }
-      }
-
-      const location = nonBlank(args.location);
-      if (location) {
-        const { error: projectUpdateError } = await serviceClient
-          .from("projects")
-          .update({ location })
-          .eq("id", projectId);
-        if (projectUpdateError) throw projectUpdateError;
-      }
+        .update(projectUpdate)
+        .eq("id", projectId);
+      if (projectUpdateError) throw projectUpdateError;
     },
 
     async findCustomerAccountByZohoCompanyId(companyId, zohoCompanyId) {
@@ -121,12 +122,12 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
       return { id: data.id };
     },
 
-    async findSiteByCode(companyId, zohoSiteCode) {
+    async findSiteByServiceAddress(customerAccountId, zohoServiceAddressId) {
       const { data, error } = await serviceClient
         .from("customers")
         .select("id")
-        .eq("company_id", companyId)
-        .eq("zoho_site_code", zohoSiteCode)
+        .eq("customer_account_id", customerAccountId)
+        .eq("zoho_service_address_id", zohoServiceAddressId)
         .maybeSingle<{ id: string }>();
       if (error) throw error;
       return data ? { id: data.id } : null;
@@ -138,13 +139,12 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
         .insert({
           company_id: args.companyId,
           customer_account_id: args.customerAccountId,
-          zoho_site_code: args.zohoSiteCode,
+          zoho_service_address_id: args.zohoServiceAddressId,
           customer_name: args.name,
           full_address: args.fullAddress,
           site_contact_name: args.siteContactName,
           contact_number: args.contactNumber,
           contact_email: args.contactEmail,
-          end_customer_name: args.endCustomerName,
         })
         .select("id")
         .single<{ id: string }>();
@@ -196,7 +196,7 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
         zoho_work_order_id: args.zohoWorkOrderId,
         zoho_service_appointment_id: args.zohoServiceAppointmentId,
         installer_sheetz_company_value: args.installerSheetzCompanyValue,
-        zoho_site_code_value: args.zohoSiteCodeValue,
+        zoho_service_address_id_value: args.zohoServiceAddressIdValue,
         outcome: args.outcome,
         detail: args.detail,
         project_id: args.projectId,

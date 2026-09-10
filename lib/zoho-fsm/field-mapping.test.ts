@@ -18,8 +18,8 @@ describe("zoho-fsm field mapping", () => {
   });
 
   it("treats a blank/whitespace custom field value as blank", () => {
-    const wo: ZohoWorkOrderRecord = { id: "wo-1", Installer_Sheetz_Site_Code__C: "   " };
-    assert.equal(extractWorkOrderCustomFieldValue(wo, "Installer_Sheetz_Site_Code__C"), null);
+    const wo: ZohoWorkOrderRecord = { id: "wo-1", Installer_Sheetz_Company__C: "   " };
+    assert.equal(extractWorkOrderCustomFieldValue(wo, "Installer_Sheetz_Company__C"), null);
   });
 
   it("derives the parent Work Order id from Appointments_X_Services (not a top-level SA field)", () => {
@@ -118,18 +118,17 @@ describe("zoho-fsm field mapping", () => {
         Email: "jane@example.com",
         Phone: "555-1234",
         Service_Address: {
-          id: "addr-1",
+          id: "46814000000400012",
           name: "AD-26",
+          Service_Address_Name: "evergreen acworth",
           Service_Street_1: "1 Plant Rd",
           Service_City: "Roanoke",
           Service_State: "VA",
         },
         Installer_Sheetz_Company__C: "Blaxtair",
-        Installer_Sheetz_Site_Code__C: "TEST-ROANOKE",
       },
       serviceAppointment: { id: "sa-1", Name: "AP-2" },
       companyFieldApiName: "Installer_Sheetz_Company__C",
-      siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
     });
 
     assert.equal(input.zohoWorkOrderId, "wo-1");
@@ -137,7 +136,8 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.zohoWorkOrderNumber, "WO21");
     assert.equal(input.zohoServiceAppointmentNumber, "AP-2");
     assert.equal(input.installerSheetzCompanyValue, "Blaxtair");
-    assert.equal(input.zohoSiteCode, "TEST-ROANOKE");
+    assert.equal(input.zohoServiceAddressId, "46814000000400012");
+    assert.equal(input.siteAddressName, "evergreen acworth");
     assert.equal(input.zohoCompanyId, "zc-1");
     assert.equal(input.dealerName, "Shoppas");
     assert.equal(input.siteAddressLine, "1 Plant Rd\nRoanoke, VA");
@@ -149,9 +149,45 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.summary, "Install 3 systems");
   });
 
-  it("never uses Service_Address.name (Zoho's internal address-record label) as the site name", () => {
-    // Exact real payload confirmed against the live Zoho FSM test org (raw_snapshot on the
-    // zoho_fsm_service_appointments row from the first successful webhook test).
+  it("extracts Service_Address.id as the Site machine identity, trimmed", () => {
+    const input = mapZohoRecordsToInboundInput({
+      workOrder: { id: "wo-1", Service_Address: { id: "46814000000403249" } },
+      serviceAppointment: { id: "sa-1" },
+      companyFieldApiName: "Installer_Sheetz_Company__C",
+    });
+    assert.equal(input.zohoServiceAddressId, "46814000000403249");
+  });
+
+  it("maps zohoServiceAddressId to null when Service_Address is missing entirely", () => {
+    const input = mapZohoRecordsToInboundInput({
+      workOrder: { id: "wo-1" },
+      serviceAppointment: { id: "sa-1" },
+      companyFieldApiName: "Installer_Sheetz_Company__C",
+    });
+    assert.equal(input.zohoServiceAddressId, null);
+  });
+
+  it("trims Service_Address_Name and treats a blank one as null (never Service_Address.name)", () => {
+    const trimmed = mapZohoRecordsToInboundInput({
+      workOrder: { id: "wo-1", Service_Address: { id: "addr-1", Service_Address_Name: "  TKP Cherokee GA  " } },
+      serviceAppointment: { id: "sa-1" },
+      companyFieldApiName: "Installer_Sheetz_Company__C",
+    });
+    assert.equal(trimmed.siteAddressName, "TKP Cherokee GA");
+
+    const blank = mapZohoRecordsToInboundInput({
+      workOrder: { id: "wo-1", Service_Address: { id: "addr-1", Service_Address_Name: "   " } },
+      serviceAppointment: { id: "sa-1" },
+      companyFieldApiName: "Installer_Sheetz_Company__C",
+    });
+    assert.equal(blank.siteAddressName, null);
+  });
+
+  it("never uses Service_Address.name (Zoho's internal address-record label) as the site name — even when it looks plausible and Service_Address_Name is blank", () => {
+    // Exact real payload shape confirmed against the live Zoho FSM test org (raw_snapshot on the
+    // zoho_fsm_service_appointments row from the first successful webhook test). Service_Address_
+    // Name deliberately omitted here to prove Service_Address.name ("AD-26") is never used as a
+    // substitute — the fallback to "<Company> — <Street>" is resolve.ts's job, not this layer's.
     const input = mapZohoRecordsToInboundInput({
       workOrder: {
         id: "wo-1",
@@ -168,21 +204,18 @@ describe("zoho-fsm field mapping", () => {
           Service_Zip_Code: "30102",
         },
         Installer_Sheetz_Company__C: "Blaxtair",
-        Installer_Sheetz_Site_Code__C: "TEST-ROANOKE",
       },
       serviceAppointment: { id: "sa-1", Name: "AP-4" },
       companyFieldApiName: "Installer_Sheetz_Company__C",
-      siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
     });
 
     // Matches the expected V1 output exactly: customers.full_address / projects.location both
-    // become this two-line value; customers.customer_name stays "TEST-ROANOKE" (the site code),
-    // never "AD-26".
+    // become this two-line value.
     assert.equal(input.siteAddressLine, "5811 Priest Rd\nAcworth, GA 30102");
+    assert.equal(input.zohoServiceAddressId, "addr-real");
     // siteAddressName must stay null — "AD-26" is not a usable site name (confirmed against the
     // Zoho UI: the human-facing "Address Name" field is blank even though the API's Service_
-    // Address.name holds "AD-26", an internal reference record name). resolve.ts's
-    // fallbackSiteName() falls back to zohoSiteCode ("TEST-ROANOKE") when this is null.
+    // Address.name holds "AD-26", an internal reference record name).
     assert.equal(input.siteAddressName, null);
     assert.notEqual(input.siteAddressName, "AD-26");
   });
@@ -192,10 +225,10 @@ describe("zoho-fsm field mapping", () => {
       workOrder: { id: "wo-2" },
       serviceAppointment: { id: "sa-2" },
       companyFieldApiName: "Installer_Sheetz_Company__C",
-      siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
     });
     assert.equal(input.installerSheetzCompanyValue, null);
-    assert.equal(input.zohoSiteCode, null);
+    assert.equal(input.zohoServiceAddressId, null);
+    assert.equal(input.siteAddressName, null);
     assert.equal(input.zohoCompanyId, null);
     assert.equal(input.dealerName, null);
     assert.equal(input.siteContactName, null);
@@ -209,14 +242,12 @@ describe("zoho-fsm field mapping", () => {
       Company: { id: "zc-1", name: "Shoppas" },
       Contact: { id: "zct-1", name: "Nick NDJO" },
       Installer_Sheetz_Company__C: "Blaxtair",
-      Installer_Sheetz_Site_Code__C: "TEST-ROANOKE",
     };
     const map = (workOrderOverrides: Partial<ZohoWorkOrderRecord>) =>
       mapZohoRecordsToInboundInput({
         workOrder: { ...baseWorkOrder, ...workOrderOverrides },
         serviceAppointment: { id: "sa-1" },
         companyFieldApiName: "Installer_Sheetz_Company__C",
-        siteCodeFieldApiName: "Installer_Sheetz_Site_Code__C",
       });
 
     it("(1) maps Contact.name / Email / Phone straight off the Work Order when all are populated, formatted to match V1's manual-entry convention", () => {

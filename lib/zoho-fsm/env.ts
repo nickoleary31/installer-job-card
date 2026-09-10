@@ -1,8 +1,10 @@
 // Server-only Zoho FSM configuration. Never import this from client components.
 //
-// Field API names are configurable via env var override, but the defaults below are the
-// confirmed live API names for these two Work Order custom fields (verified directly against
-// the Zoho FSM test organization) — not a guess from the field labels.
+// The Work Order custom field API name is configurable via env var override, but the default
+// below is the confirmed live API name (verified directly against the Zoho FSM test
+// organization) — not a guess from the field label. This is the sole remaining custom-field
+// dependency: "Installer Sheetz Site Code" was removed from the integration design — Site
+// identity is now Zoho's own Service_Address.id, which requires no custom field at all.
 
 export type ZohoFsmServerEnv = {
   clientId: string;
@@ -12,14 +14,12 @@ export type ZohoFsmServerEnv = {
   accountsBaseUrl: string;
   webhookSecret: string;
   workOrderCompanyFieldApiName: string;
-  workOrderSiteCodeFieldApiName: string;
   missing: string[];
 };
 
 const DEFAULT_API_BASE_URL = "https://fsm.zoho.com/fsm/v1";
 const DEFAULT_ACCOUNTS_BASE_URL = "https://accounts.zoho.com";
 const DEFAULT_COMPANY_FIELD_API_NAME = "Installer_Sheetz_Company__C";
-const DEFAULT_SITE_CODE_FIELD_API_NAME = "Installer_Sheetz_Site_Code__C";
 
 export function getZohoFsmServerEnv(): ZohoFsmServerEnv {
   const clientId = process.env.ZOHO_FSM_CLIENT_ID?.trim() || "";
@@ -30,8 +30,6 @@ export function getZohoFsmServerEnv(): ZohoFsmServerEnv {
   const webhookSecret = process.env.ZOHO_FSM_WEBHOOK_SECRET?.trim() || "";
   const workOrderCompanyFieldApiName =
     process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY?.trim() || DEFAULT_COMPANY_FIELD_API_NAME;
-  const workOrderSiteCodeFieldApiName =
-    process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_SITE_CODE?.trim() || DEFAULT_SITE_CODE_FIELD_API_NAME;
 
   const missing: string[] = [];
   if (!clientId) missing.push("ZOHO_FSM_CLIENT_ID");
@@ -47,7 +45,6 @@ export function getZohoFsmServerEnv(): ZohoFsmServerEnv {
     accountsBaseUrl,
     webhookSecret,
     workOrderCompanyFieldApiName,
-    workOrderSiteCodeFieldApiName,
     missing,
   };
 }

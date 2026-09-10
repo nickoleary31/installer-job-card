@@ -72,7 +72,7 @@ export async function POST(req: Request) {
         zohoWorkOrderId: null,
         zohoServiceAppointmentId: serviceAppointmentId,
         installerSheetzCompanyValue: null,
-        zohoSiteCodeValue: null,
+        zohoServiceAddressIdValue: null,
         outcome: "error_work_order_unresolvable",
         detail,
         projectId: null,
@@ -85,7 +85,6 @@ export async function POST(req: Request) {
       workOrder,
       serviceAppointment,
       companyFieldApiName: zohoEnv.workOrderCompanyFieldApiName,
-      siteCodeFieldApiName: zohoEnv.workOrderSiteCodeFieldApiName,
     });
 
     const result = await resolveInboundServiceAppointment(repo, input);
