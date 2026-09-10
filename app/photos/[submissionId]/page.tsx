@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
+import { TkpLogo } from "@/components/TkpLogo";
 
 type PhotoItem = {
   group: "vehicle" | "vac4" | "ppd" | "cp4" | "linxup";
@@ -369,7 +370,7 @@ export default function PhotoGalleryPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-5xl space-y-4 px-4 sm:px-5">
         <header className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-          <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
+          <TkpLogo />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Photo Gallery</h1>
           <p className="mt-1 text-sm text-gray-600">Submission ID: {submissionId || "—"}</p>
           <Link
