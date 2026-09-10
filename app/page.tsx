@@ -6699,7 +6699,7 @@ export function NewSubmissionForm() {
       <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:space-y-6 sm:px-5 sm:py-6">
         <header className={headerCardClassName}>
           <div className="flex flex-col items-start gap-1.5">
-            <img src="/powerfleet-logo.png" alt="Powerfleet" className="h-10 w-auto sm:h-12" />
+            <img src="/tkp-telematics-logo.png" alt="TKP Telematics" className="h-10 w-auto sm:h-12" />
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Sheetz</h1>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wide text-blue-700 ring-1 ring-inset ring-blue-200/80 sm:px-3 sm:py-1">

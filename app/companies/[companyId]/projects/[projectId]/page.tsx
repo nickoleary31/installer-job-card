@@ -789,7 +789,7 @@ export default function ProjectDashboardPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
         <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
-          <Image src="/powerfleet-logo.png" alt="Powerfleet" width={160} height={48} priority className="h-10 w-auto sm:h-12" />
+          <Image src="/tkp-telematics-logo.png" alt="TKP Telematics" width={96} height={48} priority className="h-10 w-auto sm:h-12" />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Sheetz</h1>
           <p className="text-base font-medium leading-tight text-gray-600">Digital Job Cards for Field Technicians</p>
           <Link
