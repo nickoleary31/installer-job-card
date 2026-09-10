@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import { AddressActionMenu } from "@/components/AddressActionMenu";
+import { TkpLogo } from "@/components/TkpLogo";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -789,7 +789,7 @@ export default function ProjectDashboardPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
         <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
-          <Image src="/tkp-telematics-logo.png" alt="TKP Telematics" width={96} height={48} priority className="h-10 w-auto sm:h-12" />
+          <TkpLogo priority />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">Installer Sheetz</h1>
           <p className="text-base font-medium leading-tight text-gray-600">Digital Job Cards for Field Technicians</p>
           <Link

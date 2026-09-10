@@ -127,6 +127,13 @@ Requirements for V2:
 - If a logo is uploaded: show logo + organization/app context, as designed.
 - If no logo is uploaded: fall back to clean text-only branding using the organization display
   name. Never silently substitute an OEM/manufacturer/customer logo as a stand-in brand.
+- An installer/commissioning-party may optionally provide a separate dark-theme logo variant
+  (V1's TKP Telematics header logo does this — see `components/TkpLogo.tsx` for the pattern:
+  CSS-only swap on the app's real theme mechanism, no recoloring).
+- If only one logo is supplied and it isn't suitable for the active theme (e.g. a light-only
+  logo shown in dark mode), fall back to text-only organization-name branding for that theme
+  rather than algorithmically recoloring it (invert/filter/brightness tricks) or substituting an
+  OEM/manufacturer/customer logo as a stand-in.
 
 Examples:
 

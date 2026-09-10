@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
+import { TkpLogo } from "@/components/TkpLogo";
 
 const JOB_CARD_DRAFTS_STORAGE_KEY = "installer-job-card-drafts-v1";
 const JOB_CARD_RESUME_DRAFT_ID_KEY = "installer-job-card-resume-draft-id-v1";
@@ -185,7 +186,7 @@ export default function DraftsPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
         <header className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-          <img src="/tkp-telematics-logo.png" alt="TKP Telematics" className="h-10 w-auto sm:h-12" />
+          <TkpLogo />
           <h1 className="text-2xl font-bold tracking-tight text-gray-950">Installer Sheetz</h1>
           <p className="mt-1 text-sm text-gray-600">Digital Job Cards for Field Technicians</p>
           <div className="mt-3 flex items-center justify-between gap-3">
