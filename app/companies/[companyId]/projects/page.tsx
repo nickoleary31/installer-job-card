@@ -10,6 +10,7 @@ import {
   upsertStarterDataSnapshot,
 } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
+import { formatCompletedSubmissionCount } from "@/lib/zoho-fsm/project-progress-display";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -27,6 +28,12 @@ type ProjectCardRow = {
   displayCustomerAccountName: string | null;
   displayLocation: string;
   completedSubmissionCount: number;
+  // SA Target/Finalized Asset Count evidence for a Zoho-linked project (see
+  // lib/zoho-fsm/project-progress-display.ts) — null for a manual/non-Zoho project, or a
+  // Zoho-linked one with no evidence captured yet. Display-only; never null for the offline
+  // cache format either, which doesn't carry this (see the offline-loaded branch below).
+  saTargetAssetCount: number | null;
+  saFinalizedAssetCount: number | null;
 };
 
 type LinkedCustomerAccountRow = { name: string | null };
@@ -205,6 +212,25 @@ export default function CompanyProjectsPage() {
       countByProject.set(pid, (countByProject.get(pid) || 0) + 1);
     }
 
+    // Best-effort only: zoho_fsm_service_appointments has no client-facing RLS policy, so this
+    // Zoho SA Target/Finalized evidence can only be read through this server route (service-role
+    // client) — see app/api/integrations/zoho-fsm/project-progress/route.ts. A manual/non-Zoho
+    // company, or any failure here, simply leaves every project's denominator absent (existing
+    // plain-count display), never blocking the rest of the project list from loading.
+    let progressByProjectId: Record<string, { saTargetAssetCount: number | null; saFinalizedAssetCount: number | null }> = {};
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      if (accessToken) {
+        const res = await fetch(`/api/integrations/zoho-fsm/project-progress?companyId=${encodeURIComponent(companyId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (res.ok) progressByProjectId = await res.json();
+      }
+    } catch {
+      // best-effort display only — see comment above
+    }
+
     const enriched: ProjectCardRow[] = projectsRaw.map((row) => {
       const linked = Array.isArray(row.customers) ? row.customers[0] : row.customers;
       const fromCustomer = linked?.customer_name?.trim() || "";
@@ -226,6 +252,8 @@ export default function CompanyProjectsPage() {
         displayCustomerAccountName: customerAccount?.name?.trim() || null,
         displayLocation: addressFromCustomer || fromProjectLocation || "",
         completedSubmissionCount: countByProject.get(row.id) ?? 0,
+        saTargetAssetCount: progressByProjectId[row.id]?.saTargetAssetCount ?? null,
+        saFinalizedAssetCount: progressByProjectId[row.id]?.saFinalizedAssetCount ?? null,
       };
     });
 
@@ -272,6 +300,11 @@ export default function CompanyProjectsPage() {
                 displayCustomerAccountName: null,
                 displayLocation: p.displayLocation ?? "",
                 completedSubmissionCount: p.completedSubmissionCount,
+                // The offline cache format doesn't carry SA Target/Finalized evidence either —
+                // cached/offline tiles show the existing plain-count display, matching
+                // displayCustomerAccountName's precedent above.
+                saTargetAssetCount: null,
+                saFinalizedAssetCount: null,
               })),
             );
             setCompanyName(cachedCompany?.name?.trim() || "—");
@@ -864,7 +897,11 @@ export default function CompanyProjectsPage() {
                 )}
                 <p className="mt-0.5 text-sm text-gray-700">
                   <span className="font-semibold text-gray-600">Completed submissions:</span>{" "}
-                  {project.completedSubmissionCount}
+                  {formatCompletedSubmissionCount({
+                    completedSubmissionCount: project.completedSubmissionCount,
+                    saTargetAssetCount: project.saTargetAssetCount,
+                    saFinalizedAssetCount: project.saFinalizedAssetCount,
+                  })}
                 </p>
                 <p className="mt-1 text-sm text-gray-600">{project.active ? "Active project" : "Inactive project"}</p>
               </button>
