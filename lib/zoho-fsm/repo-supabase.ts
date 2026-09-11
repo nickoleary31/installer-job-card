@@ -48,6 +48,14 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
           raw_snapshot: args.rawSnapshot,
           zoho_work_order_number: args.zohoWorkOrderNumber,
           zoho_service_appointment_number: args.zohoServiceAppointmentNumber,
+          // Passive evidence fields — always refreshed alongside raw_snapshot, independent of
+          // the identity-mismatch check in resolve.ts. sa_finalized_asset_count intentionally
+          // passes through null as null (never coerced to 0) — see field-mapping.ts's
+          // readNullableIntegerField.
+          parent_work_order_id: args.parentWorkOrderId,
+          sa_target_asset_count: args.saTargetAssetCount,
+          sa_finalized_asset_count: args.saFinalizedAssetCount,
+          zoho_sa_status: args.zohoSaStatus,
           inbound_status: "updated",
           inbound_last_event_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -175,12 +183,18 @@ export function createSupabaseZohoFsmRepo(serviceClient: SupabaseClient): ZohoFs
         .insert({
           project_id: args.projectId,
           company_id: args.companyId,
-          zoho_work_order_id: args.zohoWorkOrderId,
+          // Physical column name is unchanged (zoho_work_order_id); args.owningWorkOrderId is
+          // the application/type-level name for the same value — see resolve.ts's ZohoFsmRepo.
+          zoho_work_order_id: args.owningWorkOrderId,
           zoho_service_appointment_id: args.zohoServiceAppointmentId,
           zoho_work_order_number: args.zohoWorkOrderNumber,
           zoho_service_appointment_number: args.zohoServiceAppointmentNumber,
           zoho_company_id: args.zohoCompanyId,
           raw_snapshot: args.rawSnapshot,
+          parent_work_order_id: args.parentWorkOrderId,
+          sa_target_asset_count: args.saTargetAssetCount,
+          sa_finalized_asset_count: args.saFinalizedAssetCount,
+          zoho_sa_status: args.zohoSaStatus,
           inbound_status: "created",
           inbound_last_event_at: new Date().toISOString(),
         })

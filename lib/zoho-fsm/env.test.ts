@@ -55,4 +55,30 @@ describe("zoho-fsm server env", () => {
       if (originalValues.webhookSecret !== undefined) process.env.ZOHO_FSM_WEBHOOK_SECRET = originalValues.webhookSecret;
     }
   });
+
+  describe("evidenceApiSecret (read-only evidence endpoint's own server-to-server secret)", () => {
+    it("reads ZOHO_FSM_EVIDENCE_API_SECRET when set", () => {
+      const original = process.env.ZOHO_FSM_EVIDENCE_API_SECRET;
+      process.env.ZOHO_FSM_EVIDENCE_API_SECRET = "test-evidence-secret";
+      try {
+        const env = getZohoFsmServerEnv();
+        assert.equal(env.evidenceApiSecret, "test-evidence-secret");
+      } finally {
+        if (original === undefined) delete process.env.ZOHO_FSM_EVIDENCE_API_SECRET;
+        else process.env.ZOHO_FSM_EVIDENCE_API_SECRET = original;
+      }
+    });
+
+    it("defaults to an empty string when unset, and is never added to `missing` — it must not block the unrelated inbound SA webhook from functioning", () => {
+      const original = process.env.ZOHO_FSM_EVIDENCE_API_SECRET;
+      delete process.env.ZOHO_FSM_EVIDENCE_API_SECRET;
+      try {
+        const env = getZohoFsmServerEnv();
+        assert.equal(env.evidenceApiSecret, "");
+        assert.equal(env.missing.includes("ZOHO_FSM_EVIDENCE_API_SECRET"), false);
+      } finally {
+        if (original !== undefined) process.env.ZOHO_FSM_EVIDENCE_API_SECRET = original;
+      }
+    });
+  });
 });

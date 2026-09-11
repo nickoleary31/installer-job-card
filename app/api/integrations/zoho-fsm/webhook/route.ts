@@ -3,7 +3,7 @@ import { getSupabaseServerEnv, createServiceRoleClient } from "@/lib/company-use
 import { getZohoFsmServerEnv } from "@/lib/zoho-fsm/env";
 import { isValidWebhookSecret, ZOHO_FSM_WEBHOOK_SECRET_HEADER } from "@/lib/zoho-fsm/webhook-auth";
 import { fetchServiceAppointment, fetchWorkOrder } from "@/lib/zoho-fsm/client";
-import { extractWorkOrderIdFromServiceAppointment, mapZohoRecordsToInboundInput } from "@/lib/zoho-fsm/field-mapping";
+import { extractOwningWorkOrderIdFromServiceAppointment, mapZohoRecordsToInboundInput } from "@/lib/zoho-fsm/field-mapping";
 import { resolveInboundServiceAppointment } from "@/lib/zoho-fsm/resolve";
 import { createSupabaseZohoFsmRepo } from "@/lib/zoho-fsm/repo-supabase";
 
@@ -12,8 +12,9 @@ import { createSupabaseZohoFsmRepo } from "@/lib/zoho-fsm/repo-supabase";
  * on create/schedule) to POST here with a JSON body:
  *   { "service_appointment_id": "${!Service_Appointments.id}" }
  * plus a static custom header carrying the shared secret (see ZOHO_FSM_WEBHOOK_SECRET_HEADER).
- * The webhook body is never trusted beyond this one id: the parent Work Order id is derived
- * server-side from the authoritative Service Appointment GET response (confirmed available via
+ * The webhook body is never trusted beyond this one id: the owning Work Order id (the Work
+ * Order directly associated with this SA — NOT the Parent Work Order) is derived server-side
+ * from the authoritative Service Appointment GET response (confirmed available via
  * Appointments_X_Services[].Work_Order — see lib/zoho-fsm/field-mapping.ts), and all customer/
  * company/site/core data comes from authoritative Zoho GET responses, never from the webhook
  * payload itself.
@@ -62,12 +63,14 @@ export async function POST(req: Request) {
 
   try {
     // Never trust the webhook body beyond the service_appointment_id above — always re-fetch
-    // authoritative data server-side before making any decision. The parent Work Order id is
-    // derived from the SA response itself, not supplied by the caller.
+    // authoritative data server-side before making any decision. The owning Work Order id (the
+    // Work Order directly associated with this SA) is derived from the SA response itself, not
+    // supplied by the caller. Its Parent_Work_Order.id (if any) is a field ON that owning Work
+    // Order record, so no separate fetch is needed for it — see field-mapping.ts.
     const serviceAppointment = await fetchServiceAppointment(zohoEnv, serviceAppointmentId);
-    const workOrderId = extractWorkOrderIdFromServiceAppointment(serviceAppointment);
-    if (!workOrderId) {
-      const detail = `Service Appointment ${serviceAppointmentId} has no resolvable parent Work Order (empty Appointments_X_Services).`;
+    const owningWorkOrderId = extractOwningWorkOrderIdFromServiceAppointment(serviceAppointment);
+    if (!owningWorkOrderId) {
+      const detail = `Service Appointment ${serviceAppointmentId} has no resolvable owning Work Order (empty Appointments_X_Services).`;
       await repo.logInboundEvent({
         zohoWorkOrderId: null,
         zohoServiceAppointmentId: serviceAppointmentId,
@@ -79,7 +82,7 @@ export async function POST(req: Request) {
       });
       return NextResponse.json({ error: detail }, { status: 422 });
     }
-    const workOrder = await fetchWorkOrder(zohoEnv, workOrderId);
+    const workOrder = await fetchWorkOrder(zohoEnv, owningWorkOrderId);
 
     const input = mapZohoRecordsToInboundInput({
       workOrder,

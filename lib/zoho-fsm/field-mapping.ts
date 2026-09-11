@@ -42,6 +42,20 @@ export type ZohoWorkOrderRecord = {
     Service_Zip_Code?: string | null;
     Service_Country?: string | null;
   } | null;
+  // Zoho's own native relationship: the ORIGINAL commercial/deployment Work Order this Work
+  // Order was created directly from (never a custom field). Confirmed against live payloads —
+  // two sibling Follow-Up/Batch Work Orders ("WO21", "WO22") both carrying
+  // {"module":"Work_Orders","name":"WO16","id":"46814000000403750"}. Null when this Work Order
+  // IS itself the Parent (nothing created it from another Work Order).
+  //
+  // NEVER confuse this with the "owning Work Order" concept below
+  // (extractOwningWorkOrderIdFromServiceAppointment) — that is the Work Order directly
+  // associated with a Service Appointment (normally a Follow-Up/Batch WO for deployment work).
+  // Parent_Work_Order.id is a different, higher relationship: which Work Order that owning
+  // Work Order was itself created from. Older code/comments in this adapter called the owning
+  // Work Order the "parent Work Order," which is now a confusing and incorrect name given this
+  // real Parent_Work_Order field — see extractParentWorkOrderId below.
+  Parent_Work_Order?: { module?: string | null; name?: string | null; id: string } | null;
   [customFieldApiName: string]: unknown;
 };
 
@@ -53,26 +67,53 @@ export type ZohoServiceAppointmentRecord = {
   // authoritative scope/title for THIS visit — see the business-model note on
   // mapZohoRecordsToInboundInput's `summary` output below.
   Summary?: string | null;
-  // The parent Work Order is not a top-level field on a Service Appointment — it is carried
-  // per service line in Appointments_X_Services. All lines on one SA belong to the same Work
-  // Order, so the first entry's reference is authoritative. Confirmed against the live "Get a
-  // Service Appointment" API response shape.
+  // The owning Work Order (the Work Order directly associated with this Service Appointment) is
+  // not a top-level field on a Service Appointment — it is carried per service line in
+  // Appointments_X_Services. All lines on one SA belong to the same Work Order, so the first
+  // entry's reference is authoritative. Confirmed against the live "Get a Service Appointment"
+  // API response shape.
   Appointments_X_Services?: Array<{ Work_Order?: { id: string; name?: string | null } | null }> | null;
+  // This Service Appointment's OWN copy of the batch's target asset count — the target at the
+  // start of this batch, frozen historically. Confirmed live-tested to diverge from the owning
+  // Work Order's own Target_Asset_Count__C after creation; never substitute one for the other.
+  Target_Asset_Count__C?: number | string | null;
+  // This Service Appointment's OWN copy of the finalized asset count. null/absent means "not yet
+  // finalized"; 0 means "finalized with zero completed assets" — these must never collapse into
+  // each other (see readNullableIntegerField below).
+  Finalized_Asset_Count__C?: number | string | null;
+  // Zoho's own Service Appointment lifecycle status (e.g. Scheduled, In Progress, Completed,
+  // Cannot Complete, Cancelled, No Show), captured verbatim — never collapsed into a generic
+  // "inactive"/adapter-internal state.
+  Status?: string | null;
   [key: string]: unknown;
 };
 
 /**
- * Derives the parent Work Order id from a fetched Service Appointment record. Returns null if
- * it cannot be determined (e.g. the SA has no service lines yet) — callers must treat that as
- * an actionable failure, not fall back to guessing.
+ * Derives the OWNING Work Order id from a fetched Service Appointment record — the Work Order
+ * directly associated with this SA (normally a Follow-Up/Batch WO for deployment work). This is
+ * NOT the Parent Work Order (see extractParentWorkOrderId) — the two are distinct relationships
+ * and must never be conflated. Returns null if it cannot be determined (e.g. the SA has no
+ * service lines yet) — callers must treat that as an actionable failure, not fall back to
+ * guessing.
  */
-export function extractWorkOrderIdFromServiceAppointment(sa: ZohoServiceAppointmentRecord): string | null {
+export function extractOwningWorkOrderIdFromServiceAppointment(sa: ZohoServiceAppointmentRecord): string | null {
   const lines = Array.isArray(sa.Appointments_X_Services) ? sa.Appointments_X_Services : [];
   for (const line of lines) {
     const workOrderId = line?.Work_Order?.id;
     if (workOrderId) return workOrderId;
   }
   return null;
+}
+
+/**
+ * Reads Zoho's native Parent_Work_Order.id off an owning Work Order record — the original
+ * commercial/deployment Work Order this Work Order was created directly from. Never a custom
+ * field, never inferred from summaries/numbers/timestamps. Null when this Work Order IS the
+ * Parent (nothing created it from another Work Order).
+ */
+export function extractParentWorkOrderId(workOrder: ZohoWorkOrderRecord): string | null {
+  const id = workOrder.Parent_Work_Order?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
 function readTextField(record: Record<string, unknown> | null | undefined, apiName: string): string | null {
@@ -83,12 +124,47 @@ function readTextField(record: Record<string, unknown> | null | undefined, apiNa
   return trimmed || null;
 }
 
+/**
+ * Reads a Zoho Number field, preserving the null-vs-zero distinction that matters for
+ * Target_Asset_Count__C / Finalized_Asset_Count__C: a missing/blank value maps to null ("not
+ * finalized" for the Finalized field), while an actual 0 is returned as the number 0
+ * ("finalized with zero completed assets"). Never defaults a missing value to 0. Accepts either
+ * a native JSON number or a numeric string, since Zoho's exact wire representation for this
+ * field was not independently re-verified beyond the values already confirmed live (2, 3, 4, 6).
+ */
+function readNullableIntegerField(record: Record<string, unknown> | null | undefined, apiName: string): number | null {
+  if (!record) return null;
+  const value = record[apiName];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
 /** Reads a Work Order custom field by its confirmed API name (see lib/zoho-fsm/env.ts). */
 export function extractWorkOrderCustomFieldValue(
   workOrder: ZohoWorkOrderRecord,
   fieldApiName: string,
 ): string | null {
   return readTextField(workOrder as Record<string, unknown>, fieldApiName);
+}
+
+/** This Service Appointment's OWN Target_Asset_Count__C — never the owning Work Order's copy. */
+export function extractSaTargetAssetCount(sa: ZohoServiceAppointmentRecord): number | null {
+  return readNullableIntegerField(sa as Record<string, unknown>, "Target_Asset_Count__C");
+}
+
+/**
+ * This Service Appointment's OWN Finalized_Asset_Count__C — never the owning Work Order's copy.
+ * null means not finalized; 0 means finalized with zero completed assets (see
+ * readNullableIntegerField).
+ */
+export function extractSaFinalizedAssetCount(sa: ZohoServiceAppointmentRecord): number | null {
+  return readNullableIntegerField(sa as Record<string, unknown>, "Finalized_Asset_Count__C");
+}
+
+/** This Service Appointment's own Zoho lifecycle Status, captured verbatim. */
+export function extractSaStatus(sa: ZohoServiceAppointmentRecord): string | null {
+  return readTextField(sa as Record<string, unknown>, "Status");
 }
 
 function trimmedOrEmpty(value: unknown): string {
@@ -140,7 +216,10 @@ export function formatZohoPhoneForV1Display(value: string | null | undefined): s
 }
 
 export type InboundServiceAppointmentInput = {
-  zohoWorkOrderId: string;
+  // The Work Order directly associated with this Service Appointment (normally a Follow-Up/
+  // Batch WO for deployment work) — see extractOwningWorkOrderIdFromServiceAppointment. Never
+  // the Parent Work Order (parentWorkOrderId below is a distinct, separate relationship).
+  owningWorkOrderId: string;
   zohoServiceAppointmentId: string;
   zohoWorkOrderNumber: string | null;
   zohoServiceAppointmentNumber: string | null;
@@ -154,6 +233,15 @@ export type InboundServiceAppointmentInput = {
   siteContactPhone: string | null;
   siteContactEmail: string | null;
   summary: string | null;
+  // Zoho's native Parent_Work_Order.id off the owning Work Order — null when the owning Work
+  // Order IS itself the Parent. See extractParentWorkOrderId.
+  parentWorkOrderId: string | null;
+  // The Service Appointment's OWN Target/Finalized Asset Count and Status — never the owning
+  // Work Order's copies, which can diverge after creation. Passive evidence only; V1 does not
+  // act on these values beyond storing/exposing them (see lib/zoho-fsm/evidence.ts).
+  saTargetAssetCount: number | null;
+  saFinalizedAssetCount: number | null;
+  zohoSaStatus: string | null;
   raw: { workOrder: ZohoWorkOrderRecord; serviceAppointment: ZohoServiceAppointmentRecord };
 };
 
@@ -187,7 +275,7 @@ export function mapZohoRecordsToInboundInput(args: {
 }): InboundServiceAppointmentInput {
   const { workOrder, serviceAppointment, companyFieldApiName } = args;
   return {
-    zohoWorkOrderId: workOrder.id,
+    owningWorkOrderId: workOrder.id,
     zohoServiceAppointmentId: serviceAppointment.id,
     zohoWorkOrderNumber: workOrder.Name?.trim() || null,
     zohoServiceAppointmentNumber: serviceAppointment.Name?.trim() || null,
@@ -211,6 +299,10 @@ export function mapZohoRecordsToInboundInput(args: {
     // Service Appointment Summary is the authoritative project-scope source (see docstring
     // above); Work Order Summary is only a defensive fallback for a not-yet-detailed SA.
     summary: serviceAppointment.Summary?.trim() || workOrder.Summary?.trim() || null,
+    parentWorkOrderId: extractParentWorkOrderId(workOrder),
+    saTargetAssetCount: extractSaTargetAssetCount(serviceAppointment),
+    saFinalizedAssetCount: extractSaFinalizedAssetCount(serviceAppointment),
+    zohoSaStatus: extractSaStatus(serviceAppointment),
     raw: { workOrder, serviceAppointment },
   };
 }

@@ -20,12 +20,16 @@ type FakeLink = {
   id: string;
   projectId: string;
   companyId: string;
-  zohoWorkOrderId: string;
+  owningWorkOrderId: string;
   zohoServiceAppointmentId: string;
   zohoWorkOrderNumber: string | null;
   zohoServiceAppointmentNumber: string | null;
   zohoCompanyId: string;
   rawSnapshot: unknown;
+  parentWorkOrderId: string | null;
+  saTargetAssetCount: number | null;
+  saFinalizedAssetCount: number | null;
+  zohoSaStatus: string | null;
 };
 type FakeInboundEvent = {
   outcome: string;
@@ -72,6 +76,10 @@ function createFakeRepo(seed?: { companyMappings?: Record<string, string> }) {
       link.rawSnapshot = args.rawSnapshot;
       link.zohoWorkOrderNumber = args.zohoWorkOrderNumber;
       link.zohoServiceAppointmentNumber = args.zohoServiceAppointmentNumber;
+      link.parentWorkOrderId = args.parentWorkOrderId;
+      link.saTargetAssetCount = args.saTargetAssetCount;
+      link.saFinalizedAssetCount = args.saFinalizedAssetCount;
+      link.zohoSaStatus = args.zohoSaStatus;
     },
     async refreshSiteDisplayFields(siteId, args) {
       // Mirrors repo-supabase.ts's own blank-safety for optional fields; siteName is
@@ -150,7 +158,7 @@ function createFakeRepo(seed?: { companyMappings?: Record<string, string> }) {
 
 function baseInput(overrides: Partial<InboundServiceAppointmentInput> = {}): InboundServiceAppointmentInput {
   return {
-    zohoWorkOrderId: "wo-1",
+    owningWorkOrderId: "wo-1",
     zohoServiceAppointmentId: "sa-1",
     zohoWorkOrderNumber: "WO21",
     zohoServiceAppointmentNumber: "AP-2",
@@ -164,6 +172,10 @@ function baseInput(overrides: Partial<InboundServiceAppointmentInput> = {}): Inb
     siteContactPhone: "555-1234",
     siteContactEmail: "jane@example.com",
     summary: "Install 3 systems",
+    parentWorkOrderId: null,
+    saTargetAssetCount: null,
+    saFinalizedAssetCount: null,
+    zohoSaStatus: null,
     raw: { workOrder: {} as never, serviceAppointment: {} as never },
     ...overrides,
   };
@@ -209,7 +221,7 @@ describe("resolveInboundServiceAppointment", () => {
     // A different SA at the same known site (e.g. a repeat visit) reuses it.
     const second = await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-2", zohoWorkOrderId: "wo-2" }),
+      baseInput({ zohoServiceAppointmentId: "sa-2", owningWorkOrderId: "wo-2" }),
     );
     assert.equal(second.outcome, "created");
     assert.equal(state.sites.length, 1, "must not create a second Site for the same Service_Address.id");
@@ -220,7 +232,7 @@ describe("resolveInboundServiceAppointment", () => {
     const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
     const first = await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-1", zohoWorkOrderId: "wo-1", siteAddressName: "Evergreen AHD Demo" }),
+      baseInput({ zohoServiceAppointmentId: "sa-1", owningWorkOrderId: "wo-1", siteAddressName: "Evergreen AHD Demo" }),
     );
     assert.equal(first.outcome, "created");
     assert.equal(state.sites.length, 1);
@@ -233,7 +245,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-2",
-        zohoWorkOrderId: "wo-2",
+        owningWorkOrderId: "wo-2",
         siteAddressName: "Evergreen Acworth",
         summary: "Install Two AHD systems",
         zohoServiceAppointmentNumber: "AP-9",
@@ -260,7 +272,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-1",
-        zohoWorkOrderId: "wo-1",
+        owningWorkOrderId: "wo-1",
         siteAddressLine: "1 Plant Rd, Roanoke, VA",
         siteContactName: "Jane Doe",
         siteContactPhone: "555-1234",
@@ -274,7 +286,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-2",
-        zohoWorkOrderId: "wo-2",
+        owningWorkOrderId: "wo-2",
         siteAddressLine: "5811 Priest Rd\nAcworth, GA 30102",
         siteContactName: "New Contact",
         siteContactPhone: "555-9999",
@@ -296,7 +308,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-1",
-        zohoWorkOrderId: "wo-1",
+        owningWorkOrderId: "wo-1",
         siteAddressLine: "1 Plant Rd, Roanoke, VA",
         siteContactName: "Jane Doe",
         siteContactPhone: "555-1234",
@@ -308,7 +320,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-2",
-        zohoWorkOrderId: "wo-2",
+        owningWorkOrderId: "wo-2",
         siteAddressLine: null,
         siteContactName: null,
         siteContactPhone: null,
@@ -353,7 +365,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-1001",
-        zohoWorkOrderId: "wo-1001",
+        owningWorkOrderId: "wo-1001",
         siteAddressName: "Evergreen Acworth",
         summary: "Install VAC4",
         zohoServiceAppointmentNumber: "AP-4",
@@ -363,7 +375,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-1002",
-        zohoWorkOrderId: "wo-1002",
+        owningWorkOrderId: "wo-1002",
         siteAddressName: "Evergreen Acworth",
         summary: "Install VAC4",
         zohoServiceAppointmentNumber: "AP-5",
@@ -392,15 +404,15 @@ describe("resolveInboundServiceAppointment", () => {
 
     const first = await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-1001", zohoWorkOrderId: sharedWorkOrderId }),
+      baseInput({ zohoServiceAppointmentId: "sa-1001", owningWorkOrderId: sharedWorkOrderId }),
     );
     const second = await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-1002", zohoWorkOrderId: sharedWorkOrderId }),
+      baseInput({ zohoServiceAppointmentId: "sa-1002", owningWorkOrderId: sharedWorkOrderId }),
     );
     const third = await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-1003", zohoWorkOrderId: sharedWorkOrderId }),
+      baseInput({ zohoServiceAppointmentId: "sa-1003", owningWorkOrderId: sharedWorkOrderId }),
     );
 
     assert.equal(first.outcome, "created");
@@ -410,7 +422,7 @@ describe("resolveInboundServiceAppointment", () => {
     assert.equal(new Set([first.projectId, second.projectId, third.projectId]).size, 3);
     assert.equal(state.projects.length, 3);
     assert.equal(state.links.length, 3);
-    assert.ok(state.links.every((link) => link.zohoWorkOrderId === sharedWorkOrderId));
+    assert.ok(state.links.every((link) => link.owningWorkOrderId === sharedWorkOrderId));
     // The site (same physical location across all three dispatches) and the customer_account
     // are correctly shared/reused — only the project/link is per-SA.
     assert.equal(state.sites.length, 1);
@@ -421,11 +433,11 @@ describe("resolveInboundServiceAppointment", () => {
     const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
     await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-roanoke", zohoWorkOrderId: "wo-roanoke", zohoServiceAddressId: "addr-roanoke" }),
+      baseInput({ zohoServiceAppointmentId: "sa-roanoke", owningWorkOrderId: "wo-roanoke", zohoServiceAddressId: "addr-roanoke" }),
     );
     await resolveInboundServiceAppointment(
       repo,
-      baseInput({ zohoServiceAppointmentId: "sa-detroit", zohoWorkOrderId: "wo-detroit", zohoServiceAddressId: "addr-detroit" }),
+      baseInput({ zohoServiceAppointmentId: "sa-detroit", owningWorkOrderId: "wo-detroit", zohoServiceAddressId: "addr-detroit" }),
     );
 
     assert.equal(state.customerAccounts.length, 1, "Shoppas should only be created once");
@@ -453,7 +465,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-shoppas",
-        zohoWorkOrderId: "wo-shoppas",
+        owningWorkOrderId: "wo-shoppas",
         zohoCompanyId: "zc-shoppas",
         dealerName: "Shoppas",
         siteAddressName: "Main Warehouse",
@@ -464,7 +476,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-evergreen",
-        zohoWorkOrderId: "wo-evergreen",
+        owningWorkOrderId: "wo-evergreen",
         zohoCompanyId: "zc-evergreen",
         dealerName: "Evergreen",
         siteAddressName: "Main Warehouse",
@@ -485,7 +497,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-shoppas",
-        zohoWorkOrderId: "wo-shoppas",
+        owningWorkOrderId: "wo-shoppas",
         zohoCompanyId: "zc-shoppas",
         dealerName: "Shoppas",
         zohoServiceAddressId: "addr-shared",
@@ -495,7 +507,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-evergreen",
-        zohoWorkOrderId: "wo-evergreen",
+        owningWorkOrderId: "wo-evergreen",
         zohoCompanyId: "zc-evergreen",
         dealerName: "Evergreen",
         zohoServiceAddressId: "addr-shared",
@@ -566,6 +578,45 @@ describe("resolveInboundServiceAppointment", () => {
     assert.equal(state.sites[0].contactNumber, "555-9999");
     assert.equal(state.sites[0].contactEmail, "new@example.com");
     assert.equal(state.projects[0].location, "5811 Priest Rd\nAcworth, GA 30102");
+  });
+
+  it("(passive evidence) the existing linked/reuse refresh path updates parentWorkOrderId/saTargetAssetCount/saFinalizedAssetCount/zohoSaStatus to current values rather than leaving them stale — including saFinalizedAssetCount transitioning from null to 0", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    const first = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ parentWorkOrderId: "wo-parent-16", saTargetAssetCount: 6, saFinalizedAssetCount: null, zohoSaStatus: "Scheduled" }),
+    );
+    assert.equal(first.outcome, "created");
+    assert.equal(state.links[0].parentWorkOrderId, "wo-parent-16");
+    assert.equal(state.links[0].saTargetAssetCount, 6);
+    assert.equal(state.links[0].saFinalizedAssetCount, null);
+    assert.equal(state.links[0].zohoSaStatus, "Scheduled");
+
+    const second = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ parentWorkOrderId: "wo-parent-16", saTargetAssetCount: 6, saFinalizedAssetCount: 0, zohoSaStatus: "Completed" }),
+    );
+    assert.equal(second.outcome, "reused_existing");
+    assert.equal(state.links.length, 1, "same link row, not a new one");
+    assert.equal(state.links[0].saFinalizedAssetCount, 0, "must update to the numeric 0, not remain null");
+    assert.notEqual(state.links[0].saFinalizedAssetCount, null);
+    assert.equal(state.links[0].zohoSaStatus, "Completed", "must update to the current Zoho status, not remain stale");
+  });
+
+  it("(passive evidence, mismatch branch) parentWorkOrderId/saTargetAssetCount/saFinalizedAssetCount/zohoSaStatus still refresh even when the identity mismatch check rejects the delivery — this is Zoho integration state, not identity", async () => {
+    const { repo, state } = createFakeRepo({ companyMappings: { Blaxtair: "company-blaxtair" } });
+    await resolveInboundServiceAppointment(repo, baseInput({ saTargetAssetCount: 2, zohoSaStatus: "Scheduled" }));
+
+    const mismatched = await resolveInboundServiceAppointment(
+      repo,
+      baseInput({ zohoServiceAddressId: "some-other-address-id", saTargetAssetCount: 4, zohoSaStatus: "In Progress" }),
+    );
+
+    assert.equal(mismatched.outcome, "identity_mismatch_on_reuse");
+    // The link snapshot (including passive evidence fields) still refreshes on a mismatch —
+    // only descriptive Site/project fields and identity/linkage are withheld.
+    assert.equal(state.links[0].saTargetAssetCount, 4);
+    assert.equal(state.links[0].zohoSaStatus, "In Progress");
   });
 
   it("(B) does not erase existing descriptive values when the incoming Zoho value is null/blank", async () => {
@@ -656,7 +707,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-ap10",
-        zohoWorkOrderId: "wo-ap10",
+        owningWorkOrderId: "wo-ap10",
         siteAddressName: "Kennesaw Branch",
         summary: "2 Camera AHD Demo",
         zohoServiceAppointmentNumber: "AP-10",
@@ -666,7 +717,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-ap11",
-        zohoWorkOrderId: "wo-ap11",
+        owningWorkOrderId: "wo-ap11",
         siteAddressName: "Kennesaw Branch",
         summary: "2 Camera AHD Demo",
         zohoServiceAppointmentNumber: "AP-11",
@@ -684,7 +735,7 @@ describe("resolveInboundServiceAppointment", () => {
       repo,
       baseInput({
         zohoServiceAppointmentId: "sa-ap10",
-        zohoWorkOrderId: "wo-ap10",
+        owningWorkOrderId: "wo-ap10",
         siteAddressName: "Kennesaw Warehouse",
         summary: "2 Camera AHD Demo",
         zohoServiceAppointmentNumber: "AP-10",

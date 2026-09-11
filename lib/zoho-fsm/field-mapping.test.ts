@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildServiceAddressLine,
+  extractOwningWorkOrderIdFromServiceAppointment,
+  extractParentWorkOrderId,
+  extractSaFinalizedAssetCount,
+  extractSaStatus,
+  extractSaTargetAssetCount,
   extractWorkOrderCustomFieldValue,
-  extractWorkOrderIdFromServiceAppointment,
   formatZohoPhoneForV1Display,
   mapZohoRecordsToInboundInput,
   type ZohoServiceAppointmentRecord,
@@ -22,13 +26,13 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(extractWorkOrderCustomFieldValue(wo, "Installer_Sheetz_Company__C"), null);
   });
 
-  it("derives the parent Work Order id from Appointments_X_Services (not a top-level SA field)", () => {
+  it("derives the owning Work Order id from Appointments_X_Services (not a top-level SA field)", () => {
     const sa: ZohoServiceAppointmentRecord = {
       id: "sa-1",
       Name: "AP-2",
       Appointments_X_Services: [{ Work_Order: { id: "wo-1", name: "WO3" } }],
     };
-    assert.equal(extractWorkOrderIdFromServiceAppointment(sa), "wo-1");
+    assert.equal(extractOwningWorkOrderIdFromServiceAppointment(sa), "wo-1");
   });
 
   it("uses the first line's Work Order when multiple service lines are present", () => {
@@ -39,16 +43,70 @@ describe("zoho-fsm field mapping", () => {
         { Work_Order: { id: "wo-1" } },
       ],
     };
-    assert.equal(extractWorkOrderIdFromServiceAppointment(sa), "wo-1");
+    assert.equal(extractOwningWorkOrderIdFromServiceAppointment(sa), "wo-1");
   });
 
-  it("returns null (actionable failure) when there is no derivable Work Order reference", () => {
-    assert.equal(extractWorkOrderIdFromServiceAppointment({ id: "sa-1" }), null);
-    assert.equal(extractWorkOrderIdFromServiceAppointment({ id: "sa-1", Appointments_X_Services: [] }), null);
+  it("returns null (actionable failure) when there is no derivable owning Work Order reference", () => {
+    assert.equal(extractOwningWorkOrderIdFromServiceAppointment({ id: "sa-1" }), null);
+    assert.equal(extractOwningWorkOrderIdFromServiceAppointment({ id: "sa-1", Appointments_X_Services: [] }), null);
     assert.equal(
-      extractWorkOrderIdFromServiceAppointment({ id: "sa-1", Appointments_X_Services: [{ Work_Order: null }] }),
+      extractOwningWorkOrderIdFromServiceAppointment({ id: "sa-1", Appointments_X_Services: [{ Work_Order: null }] }),
       null,
     );
+  });
+
+  describe("extractParentWorkOrderId (Zoho's native Parent_Work_Order.id, never a custom field)", () => {
+    it("reads Parent_Work_Order.id when populated (real live shape: Follow-Up WOs WO21/WO22 both pointing at Parent WO16)", () => {
+      const workOrder: ZohoWorkOrderRecord = {
+        id: "wo-21",
+        Parent_Work_Order: { module: "Work_Orders", name: "WO16", id: "46814000000403750" },
+      };
+      assert.equal(extractParentWorkOrderId(workOrder), "46814000000403750");
+    });
+
+    it("returns null when Parent_Work_Order is null (this Work Order IS the Parent)", () => {
+      assert.equal(extractParentWorkOrderId({ id: "wo-16", Parent_Work_Order: null }), null);
+    });
+
+    it("returns null when Parent_Work_Order is absent entirely", () => {
+      assert.equal(extractParentWorkOrderId({ id: "wo-16" }), null);
+    });
+  });
+
+  describe("SA-own Target/Finalized Asset Count and Status (never the owning Work Order's copies)", () => {
+    it("captures Target_Asset_Count__C when populated", () => {
+      assert.equal(extractSaTargetAssetCount({ id: "sa-1", Target_Asset_Count__C: 6 }), 6);
+    });
+
+    it("returns null when Target_Asset_Count__C is null/absent", () => {
+      assert.equal(extractSaTargetAssetCount({ id: "sa-1", Target_Asset_Count__C: null }), null);
+      assert.equal(extractSaTargetAssetCount({ id: "sa-1" }), null);
+    });
+
+    it("returns null when Finalized_Asset_Count__C is null/absent (not yet finalized)", () => {
+      assert.equal(extractSaFinalizedAssetCount({ id: "sa-1", Finalized_Asset_Count__C: null }), null);
+      assert.equal(extractSaFinalizedAssetCount({ id: "sa-1" }), null);
+    });
+
+    it("captures Finalized_Asset_Count__C = 0 as the number 0, never converted to null (finalized with zero completed assets)", () => {
+      const result = extractSaFinalizedAssetCount({ id: "sa-1", Finalized_Asset_Count__C: 0 });
+      assert.equal(result, 0);
+      assert.notEqual(result, null);
+    });
+
+    it("also accepts a numeric-string wire value without losing the null-vs-zero distinction", () => {
+      assert.equal(extractSaFinalizedAssetCount({ id: "sa-1", Finalized_Asset_Count__C: "0" }), 0);
+      assert.equal(extractSaTargetAssetCount({ id: "sa-1", Target_Asset_Count__C: "17" }), 17);
+    });
+
+    it("captures Status verbatim, never collapsed into a generic state", () => {
+      assert.equal(extractSaStatus({ id: "sa-1", Status: "Cannot Complete" }), "Cannot Complete");
+    });
+
+    it("returns null when Status is blank/absent", () => {
+      assert.equal(extractSaStatus({ id: "sa-1", Status: null }), null);
+      assert.equal(extractSaStatus({ id: "sa-1" }), null);
+    });
   });
 
   it("builds a human-readable multiline address (Street / City, State Zip) from Zoho's actual Service_ prefixed fields", () => {
@@ -131,7 +189,7 @@ describe("zoho-fsm field mapping", () => {
       companyFieldApiName: "Installer_Sheetz_Company__C",
     });
 
-    assert.equal(input.zohoWorkOrderId, "wo-1");
+    assert.equal(input.owningWorkOrderId, "wo-1");
     assert.equal(input.zohoServiceAppointmentId, "sa-1");
     assert.equal(input.zohoWorkOrderNumber, "WO21");
     assert.equal(input.zohoServiceAppointmentNumber, "AP-2");
@@ -234,6 +292,58 @@ describe("zoho-fsm field mapping", () => {
     assert.equal(input.siteContactName, null);
     assert.equal(input.siteContactPhone, null);
     assert.equal(input.siteContactEmail, null);
+    assert.equal(input.parentWorkOrderId, null);
+    assert.equal(input.saTargetAssetCount, null);
+    assert.equal(input.saFinalizedAssetCount, null);
+    assert.equal(input.zohoSaStatus, null);
+  });
+
+  describe("mapZohoRecordsToInboundInput threads through Parent Work Order id + SA Target/Finalized/Status (real live values: Follow-Up WO21 under Parent WO16)", () => {
+    it("captures parentWorkOrderId, saTargetAssetCount, saFinalizedAssetCount, and zohoSaStatus", () => {
+      const input = mapZohoRecordsToInboundInput({
+        workOrder: {
+          id: "wo-21",
+          Parent_Work_Order: { module: "Work_Orders", name: "WO16", id: "46814000000403750" },
+        },
+        serviceAppointment: {
+          id: "sa-15",
+          Name: "AP-15",
+          Target_Asset_Count__C: 6,
+          Finalized_Asset_Count__C: 2,
+          Status: "Scheduled",
+        },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+      });
+      assert.equal(input.parentWorkOrderId, "46814000000403750");
+      assert.equal(input.saTargetAssetCount, 6);
+      assert.equal(input.saFinalizedAssetCount, 2);
+      assert.equal(input.zohoSaStatus, "Scheduled");
+    });
+
+    it("keeps saFinalizedAssetCount = 0 distinguishable from null (finalized-with-zero vs not-finalized)", () => {
+      const finalizedZero = mapZohoRecordsToInboundInput({
+        workOrder: { id: "wo-1" },
+        serviceAppointment: { id: "sa-1", Finalized_Asset_Count__C: 0 },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+      });
+      assert.equal(finalizedZero.saFinalizedAssetCount, 0);
+
+      const notFinalized = mapZohoRecordsToInboundInput({
+        workOrder: { id: "wo-1" },
+        serviceAppointment: { id: "sa-1", Finalized_Asset_Count__C: null },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+      });
+      assert.equal(notFinalized.saFinalizedAssetCount, null);
+    });
+
+    it("maps parentWorkOrderId to null when the owning Work Order IS the Parent (Parent_Work_Order null)", () => {
+      const input = mapZohoRecordsToInboundInput({
+        workOrder: { id: "wo-16", Parent_Work_Order: null },
+        serviceAppointment: { id: "sa-1" },
+        companyFieldApiName: "Installer_Sheetz_Company__C",
+      });
+      assert.equal(input.parentWorkOrderId, null);
+    });
   });
 
   describe("Work Order-direct contact mapping (Email/Phone/Mobile live on the Work Order, not the Contact record)", () => {

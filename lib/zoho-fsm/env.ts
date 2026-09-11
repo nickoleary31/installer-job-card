@@ -14,6 +14,15 @@ export type ZohoFsmServerEnv = {
   accountsBaseUrl: string;
   webhookSecret: string;
   workOrderCompanyFieldApiName: string;
+  /**
+   * Shared secret for the read-only evidence endpoint (see app/api/integrations/zoho-fsm/
+   * evidence/route.ts) — a future external orchestrator's server-to-server credential, separate
+   * from webhookSecret (a different trust direction: Zoho pushing in vs. the orchestrator
+   * pulling out). Deliberately NOT included in `missing` below — it is optional until the
+   * evidence endpoint is actually configured, and must never block the unrelated inbound SA
+   * webhook from functioning. The evidence route checks for its own presence itself.
+   */
+  evidenceApiSecret: string;
   missing: string[];
 };
 
@@ -30,6 +39,7 @@ export function getZohoFsmServerEnv(): ZohoFsmServerEnv {
   const webhookSecret = process.env.ZOHO_FSM_WEBHOOK_SECRET?.trim() || "";
   const workOrderCompanyFieldApiName =
     process.env.ZOHO_FSM_FIELD_INSTALLER_SHEETZ_COMPANY?.trim() || DEFAULT_COMPANY_FIELD_API_NAME;
+  const evidenceApiSecret = process.env.ZOHO_FSM_EVIDENCE_API_SECRET?.trim() || "";
 
   const missing: string[] = [];
   if (!clientId) missing.push("ZOHO_FSM_CLIENT_ID");
@@ -45,6 +55,7 @@ export function getZohoFsmServerEnv(): ZohoFsmServerEnv {
     accountsBaseUrl,
     webhookSecret,
     workOrderCompanyFieldApiName,
+    evidenceApiSecret,
     missing,
   };
 }

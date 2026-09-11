@@ -38,12 +38,24 @@ export interface ZohoFsmRepo {
     zohoCompanyId: string;
     zohoServiceAddressId: string | null;
   } | null>;
+  /**
+   * Always safe to call for ANY existing link, independent of the identity-mismatch check below
+   * — raw_snapshot and these four passive evidence fields (owning Work Order's Parent_Work_Order
+   * relationship, this SA's own Target/Finalized Asset Count, this SA's own Status) are Zoho
+   * integration state, not identity, so they refresh unconditionally on every redelivery. Read-
+   * only evidence for a future orchestrator (see lib/zoho-fsm/evidence.ts) — V1 never acts on
+   * these values itself.
+   */
   refreshLinkSnapshot(
     linkId: string,
     args: {
       rawSnapshot: unknown;
       zohoWorkOrderNumber: string | null;
       zohoServiceAppointmentNumber: string | null;
+      parentWorkOrderId: string | null;
+      saTargetAssetCount: number | null;
+      saFinalizedAssetCount: number | null;
+      zohoSaStatus: string | null;
     },
   ): Promise<void>;
   /**
@@ -108,12 +120,20 @@ export interface ZohoFsmRepo {
   createLink(args: {
     projectId: string;
     companyId: string;
-    zohoWorkOrderId: string;
+    // The Work Order directly associated with this Service Appointment — see
+    // InboundServiceAppointmentInput.owningWorkOrderId. Persisted in the existing
+    // zoho_work_order_id column (unchanged at the DB level; renamed only at this
+    // application/type layer to remove the "parent Work Order" ambiguity).
+    owningWorkOrderId: string;
     zohoServiceAppointmentId: string;
     zohoWorkOrderNumber: string | null;
     zohoServiceAppointmentNumber: string | null;
     zohoCompanyId: string;
     rawSnapshot: unknown;
+    parentWorkOrderId: string | null;
+    saTargetAssetCount: number | null;
+    saFinalizedAssetCount: number | null;
+    zohoSaStatus: string | null;
   }): Promise<{ id: string }>;
   logInboundEvent(args: {
     zohoWorkOrderId: string | null;
@@ -232,7 +252,7 @@ export async function resolveInboundServiceAppointment(
 ): Promise<InboundResolutionResult> {
   const log = (outcome: InboundOutcome, detail: string | null, projectId: string | null) =>
     repo.logInboundEvent({
-      zohoWorkOrderId: input.zohoWorkOrderId,
+      zohoWorkOrderId: input.owningWorkOrderId,
       zohoServiceAppointmentId: input.zohoServiceAppointmentId,
       installerSheetzCompanyValue: input.installerSheetzCompanyValue,
       zohoServiceAddressIdValue: input.zohoServiceAddressId,
@@ -247,11 +267,17 @@ export async function resolveInboundServiceAppointment(
   const existingLink = await repo.findExistingLink(input.zohoServiceAppointmentId);
   if (existingLink) {
     // Always safe: this just records the latest raw Zoho state for this SA, independent of
-    // whether our downstream identity check below still matches.
+    // whether our downstream identity check below still matches. Includes the four passive
+    // evidence fields (parentWorkOrderId, saTargetAssetCount, saFinalizedAssetCount,
+    // zohoSaStatus) — Zoho integration state, not identity, so they refresh unconditionally too.
     await repo.refreshLinkSnapshot(existingLink.id, {
       rawSnapshot: input.raw,
       zohoWorkOrderNumber: input.zohoWorkOrderNumber,
       zohoServiceAppointmentNumber: input.zohoServiceAppointmentNumber,
+      parentWorkOrderId: input.parentWorkOrderId,
+      saTargetAssetCount: input.saTargetAssetCount,
+      saFinalizedAssetCount: input.saFinalizedAssetCount,
+      zohoSaStatus: input.zohoSaStatus,
     });
 
     const incomingCompanyValue = (input.installerSheetzCompanyValue || "").trim();
@@ -374,12 +400,16 @@ export async function resolveInboundServiceAppointment(
   await repo.createLink({
     projectId: project.id,
     companyId,
-    zohoWorkOrderId: input.zohoWorkOrderId,
+    owningWorkOrderId: input.owningWorkOrderId,
     zohoServiceAppointmentId: input.zohoServiceAppointmentId,
     zohoWorkOrderNumber: input.zohoWorkOrderNumber,
     zohoServiceAppointmentNumber: input.zohoServiceAppointmentNumber,
     zohoCompanyId: input.zohoCompanyId || "",
     rawSnapshot: input.raw,
+    parentWorkOrderId: input.parentWorkOrderId,
+    saTargetAssetCount: input.saTargetAssetCount,
+    saFinalizedAssetCount: input.saFinalizedAssetCount,
+    zohoSaStatus: input.zohoSaStatus,
   });
 
   await log("created", null, project.id);
