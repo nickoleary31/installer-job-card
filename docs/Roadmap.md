@@ -63,6 +63,7 @@ Living roadmap with explicit status. Do not claim deploy when only local.
 | Drag/drop form builder | Configuration UX |
 | Configuration repository access | Broader Product Files / config sharing |
 | Typed organization / vendor model | Track B — paused historically; do not invent schema now |
+| Installer/commissioning-party branding | See below — do not substitute OEM/customer logo as app brand; do not invent schema now |
 | VIN / plate assistance | Capture aids |
 | Workflow templates | Per company/product |
 | Reporting / analytics | Manager desktop |
@@ -102,6 +103,45 @@ Outputs feed: product assignments, Product Files requirements, email defaults, o
 | Admin scale | Form admin, global users, multi-company ops |
 
 Do not hard-code pricing or entitlements in the app until product decides.
+
+---
+
+## Installer/commissioning-party branding (V2 design note)
+
+**Status: Future — captured from V1 live Preview testing (branding defect fix), not implemented**
+
+V1 hardcoded a single OEM logo (Powerfleet) across every technician-facing page header,
+regardless of which company/OEM a project actually belonged to — fixed in V1 by replacing it
+with TKP Telematics branding (the only commissioning party V1 currently serves). V2 must not
+repeat this mistake: application branding belongs to the commissioning party / installer
+organization that owns the work, never to the OEM/manufacturer/customer whose equipment is being
+installed. Depends on the typed organization/vendor model already listed above (Track B — do not
+invent schema now).
+
+Requirements for V2:
+
+- Each commissioning party / installer organization has an organization display name and an
+  optional uploaded logo.
+- Technician-facing project/job-card pages show that installer/commissioning party's branding —
+  not the OEM/manufacturer/customer's.
+- If a logo is uploaded: show logo + organization/app context, as designed.
+- If no logo is uploaded: fall back to clean text-only branding using the organization display
+  name. Never silently substitute an OEM/manufacturer/customer logo as a stand-in brand.
+- An installer/commissioning-party may optionally provide a separate dark-theme logo variant
+  (V1's TKP Telematics header logo does this — see `components/TkpLogo.tsx` for the pattern:
+  CSS-only swap on the app's real theme mechanism, no recoloring).
+- If only one logo is supplied and it isn't suitable for the active theme (e.g. a light-only
+  logo shown in dark mode), fall back to text-only organization-name branding for that theme
+  rather than algorithmically recoloring it (invert/filter/brightness tricks) or substituting an
+  OEM/manufacturer/customer logo as a stand-in.
+
+Examples:
+
+- TKP commissions the work → TKP Telematics branding.
+- A different installation company commissions the work → that company's own branding.
+- No logo uploaded for an organization → text-based organization branding.
+
+Do not create schema/migrations for this now.
 
 ---
 

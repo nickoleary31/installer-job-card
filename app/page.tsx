@@ -44,6 +44,8 @@ import {
   verifyMergedStoragePathsPresent,
 } from "@/lib/draft-photo-persistence";
 import { supabase } from "@/lib/supabase/client";
+import { mergeZohoPrefillIntoCoreJob } from "@/lib/zoho-fsm/core-job-prefill";
+import type { ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import {
   LINXUP_ASSET_TRACKER_FORM_ID,
   LINXUP_LINXCAM_FORM_ID,
@@ -1438,7 +1440,7 @@ export function SummaryRow({ label, value }: { label: string; value: string }) {
   const valueClass =
     shown === "Not Installed"
       ? "text-base font-semibold text-red-600 dark:text-red-400 sm:col-span-2"
-      : "text-base text-gray-900 dark:text-gray-100 sm:col-span-2";
+      : "whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100 sm:col-span-2";
   return (
     <div className="grid gap-1 border-b border-gray-100 py-3 last:border-b-0 dark:border-gray-700 sm:grid-cols-3 sm:gap-4">
       <div className="text-sm font-semibold text-gray-600 dark:text-gray-300">{label}</div>
@@ -2081,6 +2083,7 @@ export function NewSubmissionForm() {
   const lastSaveSucceededRef = useRef(false);
   const [localDeviceSaveError, setLocalDeviceSaveError] = useState<string | null>(null);
   const [offlineProjectDetailsWarning, setOfflineProjectDetailsWarning] = useState<string | null>(null);
+  const [zohoProjectInfo, setZohoProjectInfo] = useState<ZohoProjectInfoViewModel | null>(null);
   const [autosaveRestorePayload, setAutosaveRestorePayload] = useState<JobCardAutosavePayload | null>(() => {
     if (typeof window === "undefined") return null;
     const hasManualResumeRequest =
@@ -5772,8 +5775,33 @@ export function NewSubmissionForm() {
             contactEmail: nextContactEmail,
           };
         });
+
+        await applyZohoPrefill(selectedProjectId);
       } catch {
         // ignore project autofill errors
+      }
+    };
+
+    const applyZohoPrefill = async (projectId: string) => {
+      // No-op for manually-created projects (no Zoho link row) and while offline — the
+      // technician can still type WO#/SA# by hand exactly as they do today.
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (!accessToken) return;
+        const res = await fetch(`/api/integrations/zoho-fsm/project-info?projectId=${encodeURIComponent(projectId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) return;
+        const info = (await res.json()) as ZohoProjectInfoViewModel;
+        if (cancelled || !info.linked) return;
+        setZohoProjectInfo(info);
+        setCoreJob((prev) => {
+          if (restoredFromDraftRef.current) return prev;
+          return mergeZohoPrefillIntoCoreJob(prev, info);
+        });
+      } catch {
+        // ignore — Zoho prefill is a convenience, never blocks manual entry
       }
     };
 
@@ -6899,6 +6927,17 @@ export function NewSubmissionForm() {
         <section className={cardClassName}>
           <FormSectionHeader title="Core Job Info" tone="blue" />
 
+          {zohoProjectInfo?.linked && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-100">
+              <p className="font-semibold">Linked to Zoho FSM</p>
+              {zohoProjectInfo.workOrderNumber && <p>Work Order: {zohoProjectInfo.workOrderNumber}</p>}
+              {zohoProjectInfo.serviceAppointmentNumber && (
+                <p>Service Appointment: {zohoProjectInfo.serviceAppointmentNumber}</p>
+              )}
+              {zohoProjectInfo.summary && <p>{zohoProjectInfo.summary}</p>}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-x-6 md:gap-y-5">
             <div id="field-core-customer">
               <label className={fieldLabelClass("core-customer")}>
@@ -6919,8 +6958,9 @@ export function NewSubmissionForm() {
                 Location
                 <RequiredMark />
               </label>
-              <input
-                className={fieldInputClass("core-location")}
+              <textarea
+                className={`${fieldInputClass("core-location")} resize-y`}
+                rows={2}
                 placeholder="exp: Atlanta, GA"
                 value={coreJob.location}
                 onChange={(e) => setCoreField("location", e.target.value)}

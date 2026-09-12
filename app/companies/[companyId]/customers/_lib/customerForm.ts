@@ -1,3 +1,7 @@
+import { digitsOnly, formatPhoneNumber } from "@/lib/phone";
+
+export { digitsOnly, formatPhoneNumber };
+
 export type CustomerFormState = {
   customer_name: string;
   full_address: string;
@@ -79,16 +83,6 @@ export const toCustomerUpdatePayload = (form: CustomerFormState) => ({
   wifi_password: form.wifi_password.trim() || null,
   notes: form.notes.trim() || null,
 });
-
-export const digitsOnly = (value: string) => value.replace(/\D/g, "");
-
-export const formatPhoneNumber = (value: string) => {
-  const digits = digitsOnly(value).slice(0, 10);
-  if (digits.length === 0) return "";
-  if (digits.length < 4) return `(${digits}`;
-  if (digits.length < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-};
 
 export const formatLicenseKey = (value: string) => {
   const digits = digitsOnly(value).slice(0, 11);
