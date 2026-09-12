@@ -5,6 +5,8 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
+import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
+import { AddressActionMenu } from "@/components/AddressActionMenu";
 import { TkpLogo } from "@/components/TkpLogo";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
@@ -15,7 +17,12 @@ const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 type ProjectContext = {
   companyName: string;
   projectName: string;
+  // Site name for a Zoho-linked project, or the legacy "Customer" name for a manual/non-Zoho
+  // project — see customerAccountName below to tell which case applies.
   customerName: string;
+  // "—" for a manual/non-Zoho project (no Customer Account concept); the dealer/Customer
+  // Account name for a Zoho-linked one.
+  customerAccountName: string;
   location: string;
 };
 
@@ -32,6 +39,7 @@ type CustomerContextRow = {
   full_address: string | null;
   site_contact_name: string | null;
   contact_number: string | null;
+  contact_email: string | null;
   license_key_1: string | null;
   license_key_2: string | null;
   server_port_type: string | null;
@@ -40,6 +48,8 @@ type CustomerContextRow = {
   wifi_ssid: string | null;
   wifi_password: string | null;
   notes: string | null;
+  customer_account_id: string | null;
+  end_customer_name: string | null;
 };
 
 type SiteInfo = {
@@ -47,6 +57,7 @@ type SiteInfo = {
   full_address: string;
   site_contact_name: string;
   contact_number: string;
+  contact_email: string;
   license_key_1: string;
   license_key_2: string;
   server_port_type: string;
@@ -55,6 +66,8 @@ type SiteInfo = {
   wifi_ssid: string;
   wifi_password: string;
   notes: string;
+  true_customer_name: string;
+  end_customer_name: string;
 };
 
 type ExpenseRow = {
@@ -83,6 +96,7 @@ const emptySiteInfo: SiteInfo = {
   full_address: "—",
   site_contact_name: "—",
   contact_number: "—",
+  contact_email: "—",
   license_key_1: "—",
   license_key_2: "—",
   server_port_type: "—",
@@ -91,12 +105,15 @@ const emptySiteInfo: SiteInfo = {
   wifi_ssid: "—",
   wifi_password: "—",
   notes: "—",
+  true_customer_name: "—",
+  end_customer_name: "—",
 };
 
 const emptyProjectContext: ProjectContext = {
   companyName: "—",
   projectName: "—",
   customerName: "—",
+  customerAccountName: "—",
   location: "—",
 };
 
@@ -159,6 +176,7 @@ export default function ProjectDashboardPage() {
   const [hasProjectAccess, setHasProjectAccess] = useState(false);
   const [accessResolved, setAccessResolved] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  const [zohoInfo, setZohoInfo] = useState<ZohoProjectInfoViewModel>(UNLINKED_PROJECT_INFO);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [expenseCreatorLabels, setExpenseCreatorLabels] = useState<Record<string, string>>({});
   const [expensesLoading, setExpensesLoading] = useState(false);
@@ -245,7 +263,7 @@ export default function ProjectDashboardPage() {
           supabase
             .from("projects")
             .select(
-              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes)",
+              "project_name, customer_id, customer_name, location, customers:customer_id(customer_name, full_address, site_contact_name, contact_number, contact_email, license_key_1, license_key_2, server_port_type, server_port_number, facility_code, wifi_ssid, wifi_password, notes, customer_account_id, end_customer_name)",
             )
             .eq("id", projectId)
             .eq("company_id", companyId)
@@ -257,6 +275,7 @@ export default function ProjectDashboardPage() {
 
         let customerName = projectRow?.customer_name?.trim() || "—";
         let location = projectRow?.location?.trim() || "—";
+        let customerAccountName = "—";
         if (projectRow?.customer_id) {
           const customerLookup = Array.isArray(projectRow.customers) ? projectRow.customers[0] : projectRow.customers;
           const customerNameFromCustomer = customerLookup?.customer_name?.trim();
@@ -265,11 +284,24 @@ export default function ProjectDashboardPage() {
           if (locationFromCustomer) location = locationFromCustomer;
 
           setHasLinkedCustomer(!!customerLookup);
+
+          let trueCustomerName = "—";
+          if (customerLookup?.customer_account_id) {
+            const { data: accountRow } = await supabase
+              .from("customer_accounts")
+              .select("name")
+              .eq("id", customerLookup.customer_account_id)
+              .maybeSingle<{ name: string | null }>();
+            trueCustomerName = displayCell(accountRow?.name);
+          }
+          customerAccountName = trueCustomerName;
+
           setSiteInfo({
             customer_name: displayCell(customerLookup?.customer_name),
             full_address: displayCell(customerLookup?.full_address),
             site_contact_name: displayCell(customerLookup?.site_contact_name),
             contact_number: displayCell(customerLookup?.contact_number),
+            contact_email: displayCell(customerLookup?.contact_email),
             license_key_1: displayCell(customerLookup?.license_key_1),
             license_key_2: displayCell(customerLookup?.license_key_2),
             server_port_type: displayCell(customerLookup?.server_port_type),
@@ -278,6 +310,8 @@ export default function ProjectDashboardPage() {
             wifi_ssid: displayCell(customerLookup?.wifi_ssid),
             wifi_password: displayCell(customerLookup?.wifi_password),
             notes: displayCell(customerLookup?.notes),
+            true_customer_name: trueCustomerName,
+            end_customer_name: displayCell(customerLookup?.end_customer_name),
           });
         } else {
           setHasLinkedCustomer(false);
@@ -289,6 +323,7 @@ export default function ProjectDashboardPage() {
           companyName: companyRow?.name?.trim() || "—",
           projectName: projectRow?.project_name?.trim() || "—",
           customerName,
+          customerAccountName,
           location,
         });
         setHasProjectAccess(true);
@@ -369,6 +404,30 @@ export default function ProjectDashboardPage() {
       cancelled = true;
     };
   }, [accessResolved, companyId, hasProjectAccess, projectId, userContext.userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadZohoInfo = async () => {
+      if (!projectId || !userContext.userId || !hasProjectAccess || !accessResolved) return;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (!accessToken) return;
+        const res = await fetch(`/api/integrations/zoho-fsm/project-info?projectId=${encodeURIComponent(projectId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok || cancelled) return;
+        const info = (await res.json()) as ZohoProjectInfoViewModel;
+        if (!cancelled) setZohoInfo(info);
+      } catch {
+        // best-effort display only — never blocks the rest of the page
+      }
+    };
+    void loadZohoInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessResolved, hasProjectAccess, projectId, userContext.userId]);
 
   const expenseTotal = useMemo(
     () =>
@@ -786,13 +845,34 @@ export default function ProjectDashboardPage() {
                 <p>
                   <span className="font-semibold text-gray-600">Project:</span> {projectContext.projectName}
                 </p>
-                <p>
-                  <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
-                </p>
-                <p>
-                  <span className="font-semibold text-gray-600">Location:</span> {projectContext.location}
-                </p>
+                {projectContext.customerAccountName !== "—" ? (
+                  <>
+                    <p>
+                      <span className="font-semibold text-gray-600">Customer Account:</span>{" "}
+                      {projectContext.customerAccountName}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-gray-600">Site:</span> {projectContext.customerName}
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    <span className="font-semibold text-gray-600">Customer:</span> {projectContext.customerName}
+                  </p>
+                )}
+                <div className="sm:col-span-2">
+                  <span className="font-semibold text-gray-600">Location:</span>
+                  <AddressActionMenu address={projectContext.location} className="mt-0.5 whitespace-pre-wrap text-sm text-gray-800" />
+                </div>
               </div>
+              {zohoInfo.linked ? (
+                <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  <p className="font-semibold">Linked to Zoho FSM</p>
+                  {zohoInfo.workOrderNumber ? <p>Work Order: {zohoInfo.workOrderNumber}</p> : null}
+                  {zohoInfo.serviceAppointmentNumber ? <p>Service Appointment: {zohoInfo.serviceAppointmentNumber}</p> : null}
+                  {zohoInfo.summary ? <p>{zohoInfo.summary}</p> : null}
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
@@ -809,10 +889,33 @@ export default function ProjectDashboardPage() {
               {siteInfoExpanded ? (
                 hasLinkedCustomer ? (
                   <div className="mt-4 grid gap-3 text-sm text-gray-800 sm:grid-cols-2">
-                    <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
-                    <p><span className="font-semibold text-gray-600">Full address:</span> {siteInfo.full_address}</p>
+                    {siteInfo.true_customer_name !== "—" ? (
+                      <>
+                        <p><span className="font-semibold text-gray-600">Customer Account:</span> {siteInfo.true_customer_name}</p>
+                        <p><span className="font-semibold text-gray-600">Site:</span> {siteInfo.customer_name}</p>
+                      </>
+                    ) : (
+                      <p><span className="font-semibold text-gray-600">Customer / Site:</span> {siteInfo.customer_name}</p>
+                    )}
+                    {siteInfo.end_customer_name !== "—" ? (
+                      <p><span className="font-semibold text-gray-600">End customer:</span> {siteInfo.end_customer_name}</p>
+                    ) : null}
+                    <div className="sm:col-span-2">
+                      <p className="font-semibold text-gray-600">Full address:</p>
+                      <AddressActionMenu address={siteInfo.full_address} className="mt-1 whitespace-pre-wrap text-sm text-gray-900" />
+                    </div>
                     <p><span className="font-semibold text-gray-600">Site contact:</span> {siteInfo.site_contact_name}</p>
                     <p><span className="font-semibold text-gray-600">Contact number:</span> {siteInfo.contact_number}</p>
+                    <p>
+                      <span className="font-semibold text-gray-600">Contact email:</span>{" "}
+                      {siteInfo.contact_email !== "—" ? (
+                        <a href={`mailto:${siteInfo.contact_email}`} className="text-blue-700 hover:underline">
+                          {siteInfo.contact_email}
+                        </a>
+                      ) : (
+                        siteInfo.contact_email
+                      )}
+                    </p>
                     <p><span className="font-semibold text-gray-600">License key 1:</span> {siteInfo.license_key_1}</p>
                     <p><span className="font-semibold text-gray-600">License key 2:</span> {siteInfo.license_key_2}</p>
                     <p><span className="font-semibold text-gray-600">Server port type:</span> {siteInfo.server_port_type}</p>
