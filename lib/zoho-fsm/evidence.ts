@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeInstalledProductSystems } from "../product-devices/normalize.ts";
 import type { JobCardSubmissionPayload } from "../job-card-submission.ts";
+import { computeContentHash } from "../canonical-hash.ts";
 
 /**
  * Read-only completion-evidence for one Zoho Service Appointment's linked project — the stable
@@ -59,10 +60,27 @@ export type ZohoFsmEvidenceCompletedAsset = {
   createdAt: string;
   assetIdentifiers: ZohoFsmEvidenceAssetIdentifiers;
   installedProducts: ZohoFsmEvidenceInstalledProduct[];
+  /**
+   * SHA-256 of the canonical JSON representation of this submission's CURRENT stored payload
+   * (see lib/canonical-hash.ts) — never the generated PDF's bytes, which vary run-to-run (image
+   * re-compression, embedded timestamps) even when the underlying content hasn't changed. The
+   * standalone PDF endpoint (see app/api/integrations/zoho-fsm/evidence/pdf/route.ts) computes
+   * this exact same hash for the exact same submission and returns it as X-Content-Hash, so a
+   * caller can confirm a downloaded PDF corresponds to the evidence this field describes.
+   */
+  contentHash: string;
 };
 
 export type ZohoFsmEvidenceResponse = {
   zohoServiceAppointmentId: string;
+  /**
+   * Zoho's own human-readable Service Appointment identifier (e.g. "AP-15") — already captured
+   * locally on every inbound webhook delivery (see zoho_fsm_service_appointments.
+   * zoho_service_appointment_number / lib/zoho-fsm/field-mapping.ts's zohoServiceAppointmentNumber),
+   * so exposing it here never requires an additional Zoho API call. Null only if the row predates
+   * this column being populated or Zoho never supplied a Name for the SA.
+   */
+  zohoServiceAppointmentNumber: string | null;
   projectId: string;
   /**
    * Row count of job_card_submissions for the linked project — already revision-safe by
@@ -114,11 +132,13 @@ export function buildCompletedAsset(row: SubmissionEvidenceRow): ZohoFsmEvidence
     createdAt: row.createdAt,
     assetIdentifiers: buildAssetIdentifiers(row.payload),
     installedProducts: buildInstalledProducts(row.payload),
+    contentHash: computeContentHash(row.payload),
   };
 }
 
 export function buildEvidenceResponse(args: {
   zohoServiceAppointmentId: string;
+  zohoServiceAppointmentNumber: string | null;
   projectId: string;
   submissions: SubmissionEvidenceRow[];
   pendingDraftCount: number;
@@ -126,6 +146,7 @@ export function buildEvidenceResponse(args: {
   const completedAssets = args.submissions.map(buildCompletedAsset);
   return {
     zohoServiceAppointmentId: args.zohoServiceAppointmentId,
+    zohoServiceAppointmentNumber: args.zohoServiceAppointmentNumber,
     projectId: args.projectId,
     completedAssetCount: completedAssets.length,
     completedAssets,
@@ -134,7 +155,7 @@ export function buildEvidenceResponse(args: {
   };
 }
 
-type LinkRow = { project_id: string };
+type LinkRow = { project_id: string; zoho_service_appointment_number: string | null };
 type SubmissionDbRow = {
   submission_id: string;
   unit_number: string | null;
@@ -153,7 +174,7 @@ export async function fetchZohoFsmEvidence(
 ): Promise<ZohoFsmEvidenceResponse | null> {
   const { data: link, error: linkError } = await serviceClient
     .from("zoho_fsm_service_appointments")
-    .select("project_id")
+    .select("project_id, zoho_service_appointment_number")
     .eq("zoho_service_appointment_id", zohoServiceAppointmentId)
     .maybeSingle<LinkRow>();
   if (linkError) throw linkError;
@@ -180,6 +201,7 @@ export async function fetchZohoFsmEvidence(
 
   return buildEvidenceResponse({
     zohoServiceAppointmentId,
+    zohoServiceAppointmentNumber: link.zoho_service_appointment_number,
     projectId: link.project_id,
     submissions,
     pendingDraftCount: pendingDraftCount ?? 0,
