@@ -5,8 +5,7 @@ import { buildCidPhotoAttachments } from "@/lib/email-cid-attachments";
 import { buildProductFileEmailAttachments } from "@/lib/email-product-file-attachments";
 import { buildEmailPhotoSections } from "@/lib/email-photo-sections";
 import { buildOutboundEmailBodies } from "@/lib/email-view-model";
-import { buildJobCardPdf, type PdfImageSource } from "@/lib/email-pdf";
-import { sanitizeFilenamePart } from "@/lib/email-attachment-filenames";
+import { jobCardPdfFilename, renderJobCardPdfAttachment } from "@/lib/job-card-pdf-generation";
 import {
   resolveJobCardEmailRecipients,
   type EmailSendMode,
@@ -439,16 +438,8 @@ export async function POST(req: Request) {
   let pdfAttachment: { content: Buffer; filename: string; contentType: string } | null = null;
   const pdfPhaseStartedAt = Date.now();
   try {
-    const imagesByStoragePath = new Map<string, PdfImageSource>(
-      photoAttachments.attachments.map((a) => [
-        a.storagePath,
-        { storagePath: a.storagePath, buffer: a.content, contentType: a.contentType as "image/jpeg" | "image/png" },
-      ]),
-    );
-    const pdfBuffer = await buildJobCardPdf(outbound.layoutDocument, outbound.photoSections, imagesByStoragePath);
-    const pdfFilename = `${[sanitizeFilenamePart(filenameContext.customer, 32), sanitizeFilenamePart(filenameContext.assetNumber, 24), "JobCard"]
-      .filter(Boolean)
-      .join("_")}.pdf`;
+    const pdfBuffer = await renderJobCardPdfAttachment(outbound.layoutDocument, outbound.photoSections, photoAttachments.attachments);
+    const pdfFilename = jobCardPdfFilename(filenameContext);
     pdfAttachment = { content: pdfBuffer, filename: pdfFilename, contentType: "application/pdf" };
     console.info("[send-email] timing", { phase: "buildJobCardPdf", ms: Date.now() - pdfPhaseStartedAt, bytes: pdfBuffer.byteLength });
   } catch (err: unknown) {

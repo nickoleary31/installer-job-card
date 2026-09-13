@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildCompletedAsset, buildEvidenceResponse } from "./evidence.ts";
 import type { JobCardSubmissionPayload } from "../job-card-submission.ts";
+import { computeContentHash } from "../canonical-hash.ts";
 
 function payload(overrides: Partial<JobCardSubmissionPayload> = {}): JobCardSubmissionPayload {
   return {
@@ -172,6 +173,7 @@ describe("zoho-fsm evidence", () => {
     it("completedAssetCount equals the current job_card_submissions row count for the project — a plain count, matching the project list screen's own completedSubmissionCount logic", () => {
       const response = buildEvidenceResponse({
         zohoServiceAppointmentId: "sa-15",
+        zohoServiceAppointmentNumber: "AP-15",
         projectId: "project-1",
         submissions: [
           { submissionId: "sub-1", unitNumber: "FL-104", createdAt: "2026-09-01T00:00:00.000Z", payload: null },
@@ -186,6 +188,7 @@ describe("zoho-fsm evidence", () => {
     it("does not deduplicate by unitNumber — two distinct submissionIds always count as two completed assets, even with the same unitNumber (the narrower 'started a new job card instead of editing' case is explicitly left for a future orchestrator to review, not solved here)", () => {
       const response = buildEvidenceResponse({
         zohoServiceAppointmentId: "sa-15",
+        zohoServiceAppointmentNumber: "AP-15",
         projectId: "project-1",
         submissions: [
           { submissionId: "sub-1", unitNumber: "FL-104", createdAt: "2026-09-01T00:00:00.000Z", payload: null },
@@ -202,6 +205,7 @@ describe("zoho-fsm evidence", () => {
       // id is exactly what fetchZohoFsmEvidence's query naturally returns.
       const response = buildEvidenceResponse({
         zohoServiceAppointmentId: "sa-15",
+        zohoServiceAppointmentNumber: "AP-15",
         projectId: "project-1",
         submissions: [
           { submissionId: "sub-1", unitNumber: "FL-104", createdAt: "2026-09-01T00:00:00.000Z", payload: payload({ coreJobInfo: { ...payload().coreJobInfo, equipmentSerial: "REVISED-SERIAL" } }) },
@@ -216,6 +220,7 @@ describe("zoho-fsm evidence", () => {
     it("passes through pendingDraftCount and always sets pendingDraftCountScope to 'server_only'", () => {
       const response = buildEvidenceResponse({
         zohoServiceAppointmentId: "sa-15",
+        zohoServiceAppointmentNumber: "AP-15",
         projectId: "project-1",
         submissions: [],
         pendingDraftCount: 3,
@@ -227,12 +232,69 @@ describe("zoho-fsm evidence", () => {
     it("echoes back the identifying zohoServiceAppointmentId/projectId unchanged", () => {
       const response = buildEvidenceResponse({
         zohoServiceAppointmentId: "sa-99",
+        zohoServiceAppointmentNumber: "AP-99",
         projectId: "project-99",
         submissions: [],
         pendingDraftCount: 0,
       });
       assert.equal(response.zohoServiceAppointmentId, "sa-99");
       assert.equal(response.projectId, "project-99");
+    });
+
+    it("exposes zohoServiceAppointmentNumber verbatim, including null when the row has none stored", () => {
+      const withNumber = buildEvidenceResponse({
+        zohoServiceAppointmentId: "sa-15",
+        zohoServiceAppointmentNumber: "AP-15",
+        projectId: "project-1",
+        submissions: [],
+        pendingDraftCount: 0,
+      });
+      assert.equal(withNumber.zohoServiceAppointmentNumber, "AP-15");
+
+      const withoutNumber = buildEvidenceResponse({
+        zohoServiceAppointmentId: "sa-16",
+        zohoServiceAppointmentNumber: null,
+        projectId: "project-1",
+        submissions: [],
+        pendingDraftCount: 0,
+      });
+      assert.equal(withoutNumber.zohoServiceAppointmentNumber, null);
+    });
+  });
+
+  describe("contentHash", () => {
+    it("matches computeContentHash() of the row's stored payload — the same helper the PDF endpoint uses for X-Content-Hash", () => {
+      const row = {
+        submissionId: "sub-1",
+        unitNumber: "FL-104",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        payload: payload(),
+      };
+      const asset = buildCompletedAsset(row);
+      assert.equal(asset.contentHash, computeContentHash(row.payload));
+    });
+
+    it("changes when the underlying payload changes", () => {
+      const original = buildCompletedAsset({
+        submissionId: "sub-1",
+        unitNumber: "FL-104",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        payload: payload(),
+      });
+      const revised = buildCompletedAsset({
+        submissionId: "sub-1",
+        unitNumber: "FL-104",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        payload: payload({ coreJobInfo: { ...payload().coreJobInfo, equipmentSerial: "REVISED-SERIAL" } }),
+      });
+      assert.notEqual(original.contentHash, revised.contentHash);
+    });
+
+    it("is a deterministic, well-defined hash even when payload is null", () => {
+      const assetA = buildCompletedAsset({ submissionId: "sub-1", unitNumber: null, createdAt: "2026-09-01T00:00:00.000Z", payload: null });
+      const assetB = buildCompletedAsset({ submissionId: "sub-2", unitNumber: null, createdAt: "2026-09-01T00:00:00.000Z", payload: null });
+      assert.equal(assetA.contentHash, assetB.contentHash);
+      assert.equal(assetA.contentHash, computeContentHash(null));
     });
   });
 });
