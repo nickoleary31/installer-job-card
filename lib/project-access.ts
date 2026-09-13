@@ -3,7 +3,7 @@ import {
   createUserScopedClient,
   type RequesterProfile,
   type SupabaseServerEnv,
-} from "./company-users/admin-api";
+} from "./company-users/admin-api.ts";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 type RequesterMembership = {

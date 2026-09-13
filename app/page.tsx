@@ -4585,7 +4585,9 @@ export function NewSubmissionForm() {
     void submittedPayload;
   };
 
-  const persistSubmittedJobCard = async (submittedPayload: JobCardSubmissionPayload) => {
+  const persistSubmittedJobCard = async (
+    submittedPayload: JobCardSubmissionPayload,
+  ): Promise<DefaultContextIds> => {
     const contextIds = await resolveSelectedOrDefaultContextIds();
     const createdAt = new Date().toISOString();
     const { data: existingRow, error: existingError } = await supabase
@@ -4622,6 +4624,42 @@ export function NewSubmissionForm() {
       .eq("submission_id", submittedPayload.submissionId);
     if (deleteDraftError) throw deleteDraftError;
     await cleanupLocalDraftsAfterSubmit(submittedPayload);
+    return contextIds;
+  };
+
+  /**
+   * Phase 0B auto-publish handoff. AWAITED by the caller (not fire-and-forget) — the technician's
+   * browser may navigate away or close immediately after seeing "Submitted", so the only reliable
+   * point to hand off to the server is before that happens. This call is intentionally quick: the
+   * route only authenticates/authorizes and schedules the slow orchestrator work via next/server's
+   * after(), then returns 202 immediately — it never waits on Zoho/the orchestrator itself, so this
+   * await adds negligible latency in the normal case. Bounded by its own timeout and fully isolated
+   * in its own try/catch: by the time this runs, the job card submission/revision has ALREADY
+   * persisted successfully, so a slow/unreachable/misconfigured endpoint here must never surface as
+   * a submission failure — on any failure we simply give up and rely on the manual orchestrator
+   * fallback. The client never sees the orchestrator's base URL or admin token; those stay
+   * server-only behind this route.
+   */
+  const notifyZohoAutoPublish = async (contextIds: DefaultContextIds): Promise<void> => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) return;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        await fetch("/api/integrations/zoho-fsm/auto-publish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ companyId: contextIds.companyId, projectId: contextIds.projectId }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      // best-effort only — never block or fail the job card submission on this
+    }
   };
 
   const insertCustomerSiteFileRowOnce = async (params: {
@@ -4871,7 +4909,10 @@ export function NewSubmissionForm() {
       payload = await ensureProductFilesOnPayload(payload);
       console.log("[Job card submission]", payload);
       setPendingEmailPayload(payload);
-      await persistSubmittedJobCard(payload);
+      const submittedContextIds = await persistSubmittedJobCard(payload);
+      // Awaited, not fire-and-forget: the durable IS submission above has already succeeded by
+      // this point, and this handoff never throws (see its own doc comment above its definition).
+      await notifyZohoAutoPublish(submittedContextIds);
       setSubmissionStatus("Submitted");
       // eslint-disable-next-line react-hooks/purity -- submission completion timestamp (event handler)
       setSubmissionCompletedAt(Date.now());
