@@ -100,6 +100,12 @@ export default function HomeDashboardPage() {
                 <Link href="/admin/forms" className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-400">
                   Form Admin
                 </Link>
+                <Link
+                  href="/admin/resource-mapping"
+                  className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-400"
+                >
+                  Resource Mapping
+                </Link>
               </>
             ) : null}
           </div>
