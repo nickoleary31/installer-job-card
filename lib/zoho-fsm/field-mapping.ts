@@ -85,6 +85,26 @@ export type ZohoServiceAppointmentRecord = {
   // Cannot Complete, Cancelled, No Show), captured verbatim — never collapsed into a generic
   // "inactive"/adapter-internal state.
   Status?: string | null;
+  // Assigned Service Resources, confirmed live against the real AP-15 Service Appointment (the
+  // dollar-prefixed field is the one the API actually populates — a separate plain
+  // `Service_Resources` field was observed present-but-empty on the same live record and must be
+  // ignored). Each entry's `id` is a stable Zoho Service Resource record id — the ONLY acceptable
+  // permanent identity for mapping to an Installer Sheetz user (see lib/zoho-fsm/resource-map.ts).
+  // `parent_id` is the underlying Zoho user id — informational only, never identity. `Type` was
+  // only ever observed as "Agent" (one human resource); Crew/Group-type resources are unconfirmed
+  // for this tenant and are intentionally left unmapped by lib/zoho-fsm/resource-map.ts rather than
+  // guessed at.
+  "$Service_Resources"?: Array<{
+    id?: string | null;
+    name?: string | null;
+    Type?: string | null;
+    parent_id?: string | null;
+  }> | null;
+  // The lead resource among $Service_Resources, when 2+ resources are assigned (per Zoho's own
+  // docs, Lead may be absent on a single-resource SA). `id` matches one of the
+  // $Service_Resources[].id entries — confirmed live. Not acted upon yet (V1 is mapping-foundation
+  // only, no Site Lead concept exists in Installer Sheetz yet).
+  Lead?: { id?: string | null; name?: string | null; user?: string | null } | null;
   [key: string]: unknown;
 };
 
@@ -165,6 +185,36 @@ export function extractSaFinalizedAssetCount(sa: ZohoServiceAppointmentRecord): 
 /** This Service Appointment's own Zoho lifecycle Status, captured verbatim. */
 export function extractSaStatus(sa: ZohoServiceAppointmentRecord): string | null {
   return readTextField(sa as Record<string, unknown>, "Status");
+}
+
+export type ZohoServiceResourceRef = {
+  /** Stable Zoho Service Resource record id — the only acceptable mapping identity. */
+  zohoResourceId: string;
+  name: string | null;
+  type: string | null;
+  /** Underlying Zoho user id — informational only, never identity. */
+  zohoUserId: string | null;
+};
+
+/**
+ * Reads $Service_Resources off a raw Service Appointment record, skipping any entry missing an
+ * id (an id-less entry cannot be mapped to anything and must never be treated as "unmapped" —
+ * that would surface a resource an admin has no way to act on).
+ */
+export function extractServiceResourceRefs(sa: ZohoServiceAppointmentRecord): ZohoServiceResourceRef[] {
+  const entries = Array.isArray(sa["$Service_Resources"]) ? sa["$Service_Resources"] : [];
+  const refs: ZohoServiceResourceRef[] = [];
+  for (const entry of entries ?? []) {
+    const zohoResourceId = trimmedOrEmpty(entry?.id);
+    if (!zohoResourceId) continue;
+    refs.push({
+      zohoResourceId,
+      name: trimmedOrEmpty(entry?.name) || null,
+      type: trimmedOrEmpty(entry?.Type) || null,
+      zohoUserId: trimmedOrEmpty(entry?.parent_id) || null,
+    });
+  }
+  return refs;
 }
 
 function trimmedOrEmpty(value: unknown): string {
