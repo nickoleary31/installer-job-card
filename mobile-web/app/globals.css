@@ -1,0 +1,13 @@
+/*
+ * Tailwind's automatic content scanning only looks within this project's own
+ * directory, so it never sees class usage in shared components imported from
+ * the parent repo (e.g. components/LoginScreen.tsx). @source registers that
+ * extra path explicitly — it must live alongside `@import "tailwindcss"` to
+ * take effect (a separate CSS file with only @source has no Tailwind context
+ * to register into). Add more paths here as more shared UI is reused.
+ */
+@import "tailwindcss";
+@source "../../components";
+
+/* Shared theme variables + dark-mode overrides — same file the web app uses. */
+@import "../../app/globals.css";

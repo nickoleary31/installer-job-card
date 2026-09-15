@@ -1,0 +1,24 @@
+{
+  "name": "installer-sheetz-mobile-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1B proof: thin static Next export of the Installer Sheetz technician UI, reusing lib/ and components/ from the root app, for packaging into the Capacitor native shell. Owns no business logic — see docs/Mobile_Development.md.",
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
