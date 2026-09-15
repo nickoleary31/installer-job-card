@@ -7,6 +7,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { ACCEPT_INVITE_PATH } from "@/lib/auth/onboarding";
 import { deleteStarterDataSnapshot } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
+import { isNativeRuntime } from "@/lib/native/runtime";
 import { useAuthUserContext } from "./AuthUserContextProvider";
 
 export default function AuthStatusBar() {
@@ -36,6 +37,9 @@ export default function AuthStatusBar() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // The PWA service worker is web/PWA-only — the Capacitor native shell owns
+    // its own caching/offline story and must never pick up /sw.js by accident.
+    if (isNativeRuntime()) return;
     if (process.env.NODE_ENV !== "production") return;
     if (!("serviceWorker" in navigator)) return;
     void navigator.serviceWorker.register("/sw.js").catch((registerError) => {

@@ -13,9 +13,15 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --experimental-strip-types --test lib/address.test.ts lib/phone.test.ts lib/draft-photo-persistence.test.ts lib/email-recipients.test.ts lib/email-layout.test.ts lib/email-photo-optimize.test.ts lib/email-photo-messaging.test.ts lib/email-pdf.test.ts lib/expense-report-pdf.test.ts lib/form-registry.test.ts lib/blaxtair-email-labels.test.ts lib/canonical-hash.test.ts lib/job-card-pdf-attachment.test.ts lib/product-config/resolve-company-products.test.ts lib/product-files/product-files.test.ts lib/auth/onboarding.test.ts lib/product-devices/product-devices.test.ts lib/prototype/label-scan/blaxtair.test.ts lib/prototype/label-scan/blaxtair-bridge.test.ts lib/prototype/label-scan/blaxtair-install-registry.test.ts lib/prototype/photo-fingerprint.test.ts lib/prototype/photo-dedup-registry.test.ts lib/prototype/blaxtair-job-card.test.ts lib/prototype/blaxtair-draft-store.test.ts lib/prototype/blaxtair-submission-store.test.ts lib/prototype/blaxtair-validation-mode.test.ts supabase/tests/v1-core-schema-baseline.test.ts lib/zoho-fsm/webhook-auth.test.ts lib/zoho-fsm/field-mapping.test.ts lib/zoho-fsm/resolve.test.ts lib/zoho-fsm/project-info.test.ts lib/zoho-fsm/core-job-prefill.test.ts lib/zoho-fsm/migration-rls.test.ts lib/zoho-fsm/migration-service-address-identity.test.ts lib/zoho-fsm/migration-sa-evidence-fields.test.ts lib/zoho-fsm/env.test.ts lib/zoho-fsm/evidence.test.ts lib/zoho-fsm/evidence-pdf-access.test.ts lib/zoho-fsm/project-progress-display.test.ts lib/zoho-fsm/project-progress.test.ts lib/zoho-fsm/orchestrator-env.test.ts lib/zoho-fsm/auto-publish.test.ts lib/zoho-fsm/auto-publish-client-wiring.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cap:sync": "cap sync",
+    "cap:android": "cap open android",
+    "cap:ios": "cap open ios"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
     "@zxing/browser": "^0.2.0",
@@ -30,6 +36,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

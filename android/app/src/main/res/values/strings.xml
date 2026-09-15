@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Installer Sheetz</string>
+    <string name="title_activity_main">Installer Sheetz</string>
+    <string name="package_name">com.tkptelematics.installersheetz</string>
+    <string name="custom_url_scheme">com.tkptelematics.installersheetz</string>
+</resources>
