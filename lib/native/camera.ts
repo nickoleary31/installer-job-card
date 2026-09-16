@@ -1,4 +1,4 @@
-import { isNativeRuntime } from "./runtime";
+import { isNativeRuntime } from "./runtime.ts";
 
 /**
  * Boundary interface only (Phase 1A). Not wired into the job-card photo UI yet —

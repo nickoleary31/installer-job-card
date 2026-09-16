@@ -1,7 +1,7 @@
-import { isNativeRuntime } from "./runtime";
+import { isNativeRuntime } from "./runtime.ts";
 
 /**
- * Boundary interface only (Phase 1A). Generic blob storage by key — deliberately
+ * Boundary interface only (Phase 1A/2A). Generic blob storage by key — deliberately
  * has no knowledge of job cards, drafts, or photos. Not wired into any feature yet.
  */
 export interface AppFilesystem {
@@ -48,19 +48,64 @@ class WebOpfsFilesystem implements AppFilesystem {
   }
 }
 
-/** Phase 1B/2: back this with @capacitor/filesystem for app-private native storage. */
-class NativeFilesystemNotImplemented implements AppFilesystem {
-  writeFile(): Promise<void> {
-    throw new Error("Native filesystem is not implemented yet. Install and wire @capacitor/filesystem in a later phase.");
+/**
+ * @capacitor/filesystem accepts/returns Blob only on Web — native read/write is
+ * base64-string-only (per its own type definitions), so the native path converts.
+ * Pure, so unit-testable without a device — see lib/native/filesystem.test.ts.
+ */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+export function base64ToBlob(base64: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes]);
+}
+
+/**
+ * Dynamically imported inside each method (never at module load) — same
+ * maximally-safe pattern as the community plugins in lib/native/database.ts
+ * and lib/native/secure-storage.ts, applied uniformly rather than trusting
+ * that @capacitor/filesystem's own web implementation is import-safe
+ * everywhere this file gets pulled in (root Next build, SSR, plain browser).
+ */
+class NativeCapacitorFilesystem implements AppFilesystem {
+  async writeFile(key: string, data: Blob): Promise<void> {
+    const { Filesystem, Directory } = await import("@capacitor/filesystem");
+    await Filesystem.writeFile({
+      path: key,
+      data: await blobToBase64(data),
+      directory: Directory.Data,
+      recursive: true,
+    });
   }
-  readFile(): Promise<Blob | null> {
-    throw new Error("Native filesystem is not implemented yet. Install and wire @capacitor/filesystem in a later phase.");
+
+  async readFile(key: string): Promise<Blob | null> {
+    const { Filesystem, Directory } = await import("@capacitor/filesystem");
+    try {
+      const result = await Filesystem.readFile({ path: key, directory: Directory.Data });
+      return typeof result.data === "string" ? base64ToBlob(result.data) : result.data;
+    } catch {
+      return null;
+    }
   }
-  deleteFile(): Promise<void> {
-    throw new Error("Native filesystem is not implemented yet. Install and wire @capacitor/filesystem in a later phase.");
+
+  async deleteFile(key: string): Promise<void> {
+    const { Filesystem, Directory } = await import("@capacitor/filesystem");
+    try {
+      await Filesystem.deleteFile({ path: key, directory: Directory.Data });
+    } catch {
+      // already absent
+    }
   }
 }
 
 export function getAppFilesystem(): AppFilesystem {
-  return isNativeRuntime() ? new NativeFilesystemNotImplemented() : new WebOpfsFilesystem();
+  return isNativeRuntime() ? new NativeCapacitorFilesystem() : new WebOpfsFilesystem();
 }

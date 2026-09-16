@@ -1,4 +1,4 @@
-import { isNativeRuntime } from "./runtime";
+import { isNativeRuntime } from "./runtime.ts";
 
 /**
  * Boundary interface only (Phase 1A). Generic key/value secure storage.
@@ -25,19 +25,33 @@ class WebLocalStorageFallback implements SecureStorage {
   }
 }
 
-/** Phase 1B/2: back this with @capacitor/preferences (or a Keychain/Keystore-backed plugin) for real secure storage. */
-class NativeSecureStorageNotImplemented implements SecureStorage {
-  get(): Promise<string | null> {
-    throw new Error("Native secure storage is not implemented yet. Install and wire a secure-storage plugin in a later phase.");
+/**
+ * @aparajita/capacitor-secure-storage is genuinely OS-backed (iOS Keychain,
+ * Android Keystore-backed AES-GCM) — see its README. We use only its "low
+ * level" string methods (getItem/setItem/removeItem), which mirror this
+ * file's plain-string SecureStorage interface exactly and skip its own
+ * JSON/Date convenience layer (get/set) that this boundary doesn't need.
+ * Dynamically imported inside each method — same pattern as the other three
+ * new native packages, so this file stays safe to import from the root
+ * Next build, SSR, or the plain-browser web app.
+ */
+class NativeCapacitorSecureStorage implements SecureStorage {
+  async get(key: string): Promise<string | null> {
+    const { SecureStorage: plugin } = await import("@aparajita/capacitor-secure-storage");
+    return plugin.getItem(key);
   }
-  set(): Promise<void> {
-    throw new Error("Native secure storage is not implemented yet. Install and wire a secure-storage plugin in a later phase.");
+
+  async set(key: string, value: string): Promise<void> {
+    const { SecureStorage: plugin } = await import("@aparajita/capacitor-secure-storage");
+    await plugin.setItem(key, value);
   }
-  remove(): Promise<void> {
-    throw new Error("Native secure storage is not implemented yet. Install and wire a secure-storage plugin in a later phase.");
+
+  async remove(key: string): Promise<void> {
+    const { SecureStorage: plugin } = await import("@aparajita/capacitor-secure-storage");
+    await plugin.removeItem(key);
   }
 }
 
 export function getSecureStorage(): SecureStorage {
-  return isNativeRuntime() ? new NativeSecureStorageNotImplemented() : new WebLocalStorageFallback();
+  return isNativeRuntime() ? new NativeCapacitorSecureStorage() : new WebLocalStorageFallback();
 }
