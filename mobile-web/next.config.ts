@@ -10,6 +10,11 @@ import { join } from "node:path";
  */
 const nextConfig: NextConfig = {
   output: "export",
+  // Emit routeName/index.html instead of routeName.html — the directory+index
+  // convention virtually every static file server (including Capacitor's own
+  // local WebView asset server) resolves automatically for an extension-less
+  // path, without needing server-specific rewrite rules.
+  trailingSlash: true,
   // This project imports lib/ and components/ from the parent directory (see
   // tsconfig.json's `@/*` alias), so the workspace root must be the PARENT
   // directory, not this one — narrowing it to __dirname breaks resolution

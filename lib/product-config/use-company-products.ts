@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { apiUrl } from "@/lib/api-base";
 import {
   resolveCompanyProducts,
   type CompanyProductResolveResult,
@@ -50,7 +51,7 @@ export function useCompanyProducts(args: {
             if (!token) {
               return { rows: [], error: "Not signed in." };
             }
-            const res = await fetch(`/api/company-products?companyId=${encodeURIComponent(id)}`, {
+            const res = await fetch(apiUrl(`/api/company-products?companyId=${encodeURIComponent(id)}`), {
               headers: { Authorization: `Bearer ${token}` },
             });
             const json = (await res.json()) as {

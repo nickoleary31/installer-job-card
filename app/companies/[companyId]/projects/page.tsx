@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import { appRoutes } from "@/lib/app-routes";
+import { SELECTED_COMPANY_ID_KEY, setActiveProject } from "@/lib/active-project-context";
 import {
   type StarterDataSnapshot,
   getBestStarterSnapshotForOffline,
@@ -11,9 +13,6 @@ import {
 } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
 import { formatCompletedSubmissionCount } from "@/lib/zoho-fsm/project-progress-display";
-
-const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
-const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
 type ProjectCardRow = {
   id: string;
@@ -716,13 +715,8 @@ export default function CompanyProjectsPage() {
   };
 
   const openProjectDashboard = (projectId: string) => {
-    try {
-      window.localStorage.setItem(SELECTED_COMPANY_ID_KEY, companyId);
-      window.localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId);
-    } catch {
-      // ignore storage errors
-    }
-    router.push(`/companies/${encodeURIComponent(companyId)}/projects/${encodeURIComponent(projectId)}`);
+    setActiveProject({ companyId, projectId });
+    router.push(appRoutes.project(companyId, projectId));
   };
 
   useEffect(() => {
@@ -1207,4 +1201,3 @@ export default function CompanyProjectsPage() {
     </main>
   );
 }
-

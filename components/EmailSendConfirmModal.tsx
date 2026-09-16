@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiUrl } from "@/lib/api-base";
 import type { EmailViewModel } from "@/lib/email-view-model";
 import type { EmailSendMode } from "@/lib/email-recipients";
 import { EmailPreviewBody } from "@/components/EmailPreviewBody";
@@ -34,7 +35,7 @@ function RecipientList({ payload, sendMode }: { payload: unknown; sendMode: Emai
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch("/api/email-recipients", {
+        const res = await fetch(apiUrl("/api/email-recipients"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ payload, sendMode }),

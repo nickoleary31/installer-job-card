@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 /**
- * app/page.tsx is a giant "use client" component (offline-capable PWA — the browser writes to
+ * NewSubmissionForm (components/NewSubmissionForm.tsx — relocated from app/page.tsx in Phase 1C,
+ * see git history) is a giant "use client" component (offline-capable PWA — the browser writes to
  * Supabase directly, not via a Next.js server action). This repo has no test harness for
  * exercising a client component's runtime behavior (no jsdom/RTL, no precedent anywhere in the
  * existing test suite — see every other *.test.ts in this repo, which all test extracted lib/*
@@ -13,9 +14,9 @@ import { describe, it } from "node:test";
  * fire-and-forget (or wiring the trigger into the draft path) fails CI instead of only being
  * caught by a human re-reading the diff.
  */
-const pageSource = readFileSync(fileURLToPath(new URL("../../app/page.tsx", import.meta.url)), "utf8");
+const pageSource = readFileSync(fileURLToPath(new URL("../../components/NewSubmissionForm.tsx", import.meta.url)), "utf8");
 
-describe("app/page.tsx auto-publish wiring (source-level guard)", () => {
+describe("NewSubmissionForm auto-publish wiring (source-level guard)", () => {
   it("awaits the internal auto-publish handoff — never fire-and-forgets it", () => {
     assert.match(pageSource, /await notifyZohoAutoPublish\(/, "the handoff call must be awaited");
     assert.doesNotMatch(

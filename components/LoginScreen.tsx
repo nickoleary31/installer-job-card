@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { resolvePostLoginPath } from "@/lib/auth/onboarding";
+import { ACCEPT_INVITE_PATH } from "@/lib/auth/onboarding";
+import { appRoutes } from "@/lib/app-routes";
 import { loadCurrentAuthUserContext } from "@/lib/auth/userContext";
 import { supabase } from "@/lib/supabase/client";
 
@@ -36,7 +37,7 @@ export function LoginScreen() {
       if (signInError) throw signInError;
 
       const context = await loadCurrentAuthUserContext();
-      router.replace(resolvePostLoginPath(context.onboardingCompleted));
+      router.replace(context.onboardingCompleted ? appRoutes.home() : ACCEPT_INVITE_PATH);
       router.refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to log in";
@@ -81,7 +82,7 @@ export function LoginScreen() {
           {error ? <p className="mt-3 text-sm font-semibold text-red-700">{error}</p> : null}
 
           <div className="mt-5 flex items-center justify-between">
-            <Link href="/home" className="text-sm font-semibold text-blue-700 hover:underline">
+            <Link href={appRoutes.home()} className="text-sm font-semibold text-blue-700 hover:underline">
               Back to app
             </Link>
             <button

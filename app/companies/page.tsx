@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import { appRoutes } from "@/lib/app-routes";
+import { setActiveProject } from "@/lib/active-project-context";
 import {
   type CachedProjectItem,
   type StarterDataSnapshot,
@@ -10,9 +12,6 @@ import {
   upsertStarterDataSnapshot,
 } from "@/lib/starter-data-cache";
 import { supabase } from "@/lib/supabase/client";
-
-const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
-const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
 
 function logOfflineStarterCacheError(e: unknown): void {
   if (e instanceof Error) {
@@ -56,14 +55,7 @@ function OfflineStartJobCardLink({ companyId, projectId }: { companyId: string; 
       <a
         href="/new-submission"
         className="inline-flex rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
-        onClick={() => {
-          try {
-            window.localStorage.setItem(SELECTED_COMPANY_ID_KEY, companyId);
-            window.localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId);
-          } catch {
-            // ignore storage failures
-          }
-        }}
+        onClick={() => setActiveProject({ companyId, projectId })}
       >
         Start local job card
       </a>
@@ -531,7 +523,7 @@ export default function CompaniesPage() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       {!isOffline ? (
                         <Link
-                          href={`/companies/${encodeURIComponent(company.id)}/projects`}
+                          href={appRoutes.projects(company.id)}
                           className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
                         >
                           Projects
@@ -623,4 +615,3 @@ export default function CompaniesPage() {
     </main>
   );
 }
-
