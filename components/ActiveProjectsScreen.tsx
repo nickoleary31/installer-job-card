@@ -3,6 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
+import {
+  getActiveProjectsFieldPackage,
+  resolveActiveProjectsLoadOutcome,
+  toFieldPackageProjects,
+  type ActiveProjectCard,
+  type CompanyGroup,
+} from "@/lib/active-projects-field-package";
 import { appRoutes } from "@/lib/app-routes";
 import { setActiveProject } from "@/lib/active-project-context";
 import { filterVisibleActiveProjects } from "@/lib/active-projects-visibility";
@@ -22,21 +29,6 @@ type ActiveProjectRow = {
   customers: LinkedCustomerRow | LinkedCustomerRow[] | null;
 };
 
-type ActiveProjectCard = {
-  id: string;
-  companyId: string;
-  projectName: string;
-  displayCustomerName: string;
-  displayLocation: string;
-  completedSubmissionCount: number;
-};
-
-type CompanyGroup = {
-  companyId: string;
-  companyName: string;
-  projects: ActiveProjectCard[];
-};
-
 /**
  * The cross-company "what work is available to me" landing page — shared by
  * Production web's /installs and mobile-web's /installs. Intentionally
@@ -52,17 +44,92 @@ type CompanyGroup = {
  * unit-testable without mocking Supabase). See that file's doc comment for
  * the full rationale.
  */
+
+/**
+ * A fresh remote load and a local persistence result are deliberately
+ * separate states — a successful server response never implies the package
+ * is safely stored on this device. "online-saving"/"online-saved"/
+ * "online-save-failed" all show the SAME fresh remote groups; only the
+ * status line differs, and only "online-saved" may ever claim the package
+ * is available offline.
+ */
+type SyncStatus =
+  | { kind: "online-saving" }
+  | { kind: "online-saved"; syncedAt: string }
+  | { kind: "online-save-failed" }
+  | { kind: "offline-cached"; syncedAt: string }
+  | { kind: "unavailable" };
+
 export function ActiveProjectsScreen() {
   const router = useRouter();
   const { loading: authLoading, context } = useAuthUserContext();
   const [groups, setGroups] = useState<CompanyGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
 
   const isGlobalAdmin = context.globalRole === "admin" && context.profileIsActive;
 
   useEffect(() => {
     let cancelled = false;
+
+    /**
+     * A successful, authorized (possibly empty) online result. Renders
+     * immediately — a technician with service must see and use their
+     * projects regardless of what happens next — then attempts to persist
+     * it locally as a genuinely separate step. The UI only ever moves to
+     * "saved for offline use" once that save has actually committed;
+     * a save failure is reported honestly but never as a load error, and
+     * never blocks or retroactively hides the already-rendered online data.
+     */
+    const finishOnline = async (userId: string, nextGroups: CompanyGroup[]) => {
+      if (cancelled) return;
+      setGroups(nextGroups);
+      setSyncStatus({ kind: "online-saving" });
+      setLoadError(null);
+      setLoading(false);
+      try {
+        const { syncedAt } = await getActiveProjectsFieldPackage().saveActiveProjectsSnapshot(
+          userId,
+          toFieldPackageProjects(nextGroups),
+        );
+        if (cancelled) return;
+        setSyncStatus({ kind: "online-saved", syncedAt });
+      } catch {
+        // The previous valid local package (if any) is left untouched by a
+        // failed save — see saveActiveProjectsSnapshot's own atomic-replace
+        // contract. The fresh online result already rendered successfully,
+        // so this must never surface as a load error or block the technician.
+        if (cancelled) return;
+        setSyncStatus({ kind: "online-save-failed" });
+      }
+    };
+
+    /** Remote load failed — fall back to whatever is locally cached, per the load policy. */
+    const finishFailed = async (userId: string, error: string) => {
+      let cachedSnapshot = null;
+      try {
+        cachedSnapshot = await getActiveProjectsFieldPackage().loadActiveProjectsSnapshot(userId);
+      } catch {
+        // Local read failure is treated the same as no cache — fall through to "unavailable".
+      }
+      if (cancelled) return;
+      const outcome = resolveActiveProjectsLoadOutcome({ remote: { ok: false, error }, cachedSnapshot });
+      if (outcome.kind === "offline-cached") {
+        setGroups(outcome.groups);
+        setSyncStatus({ kind: "offline-cached", syncedAt: outcome.syncedAt });
+        setLoadError(null);
+      } else {
+        setGroups([]);
+        setSyncStatus({ kind: "unavailable" });
+        setLoadError(
+          `Could not reach the server and no projects have been saved to this device yet (${
+            outcome.kind === "unavailable" ? outcome.error : error
+          }).`,
+        );
+      }
+      setLoading(false);
+    };
 
     const load = async () => {
       if (authLoading) return;
@@ -73,6 +140,7 @@ export function ActiveProjectsScreen() {
         }
         return;
       }
+      const userId = context.userId;
 
       setLoading(true);
       setLoadError(null);
@@ -81,10 +149,7 @@ export function ActiveProjectsScreen() {
         let companiesQuery = supabase.from("companies").select("id, name").order("name", { ascending: true });
         if (!isGlobalAdmin) {
           if (context.companyIds.length === 0) {
-            if (!cancelled) {
-              setGroups([]);
-              setLoading(false);
-            }
+            await finishOnline(userId, []);
             return;
           }
           companiesQuery = companiesQuery.in("id", context.companyIds);
@@ -94,10 +159,7 @@ export function ActiveProjectsScreen() {
         const companies = (companiesData as CompanyRow[]) || [];
         const companyIds = companies.map((c) => c.id);
         if (companyIds.length === 0) {
-          if (!cancelled) {
-            setGroups([]);
-            setLoading(false);
-          }
+          await finishOnline(userId, []);
           return;
         }
 
@@ -178,16 +240,9 @@ export function ActiveProjectsScreen() {
           .filter((c) => (cardsByCompany.get(c.id) || []).length > 0)
           .map((c) => ({ companyId: c.id, companyName: c.name, projects: cardsByCompany.get(c.id) || [] }));
 
-        if (!cancelled) {
-          setGroups(nextGroups);
-          setLoading(false);
-        }
+        await finishOnline(userId, nextGroups);
       } catch (e) {
-        if (!cancelled) {
-          setLoadError(e instanceof Error ? e.message : "Failed to load active projects.");
-          setGroups([]);
-          setLoading(false);
-        }
+        await finishFailed(userId, e instanceof Error ? e.message : "Failed to load active projects.");
       }
     };
 
@@ -223,9 +278,25 @@ export function ActiveProjectsScreen() {
         </section>
       ) : null}
 
+      {syncStatus?.kind === "online-saved" ? (
+        <p className="px-1 text-xs text-gray-500 dark:text-slate-500">
+          Saved for offline use. Last synced {new Date(syncStatus.syncedAt).toLocaleString()}.
+        </p>
+      ) : null}
+
+      {syncStatus?.kind === "online-save-failed" ? (
+        <p className="px-1 text-xs text-gray-500 dark:text-slate-500">Online — could not save for offline use.</p>
+      ) : null}
+
+      {syncStatus?.kind === "offline-cached" ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          Offline — showing projects saved on this device. Last synced {new Date(syncStatus.syncedAt).toLocaleString()}.
+        </section>
+      ) : null}
+
       {loadError ? (
         <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          Could not load active projects: {loadError}
+          {loadError}
         </section>
       ) : null}
 

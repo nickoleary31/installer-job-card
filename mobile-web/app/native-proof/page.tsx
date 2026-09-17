@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getActiveProjectsFieldPackage, type FieldPackageProject } from "@/lib/active-projects-field-package";
 import { getNetworkStatus } from "@/lib/native/network-status";
 import {
   clearProofMarkers,
@@ -9,6 +10,66 @@ import {
   type ProofReadResult,
   type ProofWriteResult,
 } from "@/lib/native/persistence-proof";
+
+/**
+ * Phase 2B field-package proof — clearly synthetic user ids and project
+ * data, never written to Supabase/Production. USER_A_SET_2 deliberately
+ * drops one project from SET_1 and adds a new one, so "write set 1, then
+ * write set 2" exercises the transactional replace path (stale rows from
+ * set 1 must not survive alongside set 2's rows).
+ */
+const USER_A = "phase2b-synthetic-user-a";
+const USER_B = "phase2b-synthetic-user-b";
+
+const USER_A_SET_1: FieldPackageProject[] = [
+  {
+    projectId: "synthetic-project-1",
+    companyId: "synthetic-company-1",
+    companyName: "Synthetic Co",
+    projectName: "Synthetic Install #1",
+    displayCustomerName: "Synthetic Customer",
+    displayLocation: "1 Synthetic St",
+    completedSubmissionCount: 0,
+    active: true,
+  },
+  {
+    projectId: "synthetic-project-2",
+    companyId: "synthetic-company-1",
+    companyName: "Synthetic Co",
+    projectName: "Synthetic Install #2",
+    displayCustomerName: "Synthetic Customer",
+    displayLocation: "2 Synthetic St",
+    completedSubmissionCount: 1,
+    active: true,
+  },
+];
+
+const USER_A_SET_2: FieldPackageProject[] = [
+  USER_A_SET_1[0],
+  {
+    projectId: "synthetic-project-3",
+    companyId: "synthetic-company-1",
+    companyName: "Synthetic Co",
+    projectName: "Synthetic Install #3 (replaces #2)",
+    displayCustomerName: "Synthetic Customer",
+    displayLocation: "3 Synthetic St",
+    completedSubmissionCount: 0,
+    active: true,
+  },
+];
+
+const USER_B_SET_1: FieldPackageProject[] = [
+  {
+    projectId: "synthetic-project-b1",
+    companyId: "synthetic-company-2",
+    companyName: "Other Synthetic Co",
+    projectName: "User B Install",
+    displayCustomerName: "User B Customer",
+    displayLocation: "1 Other St",
+    completedSubmissionCount: 0,
+    active: true,
+  },
+];
 
 /**
  * Phase 2A diagnostics only — not linked from any technician navigation or
@@ -26,11 +87,14 @@ import {
  * without a live subscriber, nothing ever calls subscribe() and the cached
  * isOnline() value would stay frozen at whatever it was on first read.
  */
+type FieldPackageLogEntry = { at: string; action: string; result: unknown };
+
 export default function NativeProofPage() {
   const [writeResult, setWriteResult] = useState<ProofWriteResult | null>(null);
   const [readResult, setReadResult] = useState<ProofReadResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [liveOnline, setLiveOnline] = useState<boolean | null>(null);
+  const [fieldPackageLog, setFieldPackageLog] = useState<FieldPackageLogEntry[]>([]);
 
   useEffect(() => {
     const status = getNetworkStatus();
@@ -66,6 +130,24 @@ export default function NativeProofPage() {
       setBusy(false);
     }
   }
+
+  function logFieldPackage(action: string, result: unknown) {
+    setFieldPackageLog((prev) => [{ at: new Date().toISOString(), action, result }, ...prev].slice(0, 20));
+  }
+
+  async function runFieldPackage(action: string, fn: () => Promise<unknown>) {
+    setBusy(true);
+    try {
+      const result = await fn();
+      logFieldPackage(action, result ?? "ok");
+    } catch (e) {
+      logFieldPackage(action, { error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pkg = () => getActiveProjectsFieldPackage();
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 pb-10 pt-6 dark:bg-slate-950 sm:px-5">
@@ -122,6 +204,89 @@ export default function NativeProofPage() {
             </pre>
           </div>
         )}
+
+        <hr className="border-slate-300 dark:border-slate-700" />
+
+        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Phase 2B active-projects field package proof
+        </h1>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Synthetic user ids/projects only ({USER_A}, {USER_B}) — never written to Supabase/Production.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("save(A, set1)", () => pkg().saveActiveProjectsSnapshot(USER_A, USER_A_SET_1))}
+            className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save User A — set 1
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("save(A, set2 — replace)", () => pkg().saveActiveProjectsSnapshot(USER_A, USER_A_SET_2))}
+            className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save User A — set 2 (replace)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("load(A)", () => pkg().loadActiveProjectsSnapshot(USER_A))}
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load User A
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("metadata(A)", () => pkg().getSnapshotMetadata(USER_A))}
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Metadata User A
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("clear(A)", () => pkg().clearSnapshotForUser(USER_A))}
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear User A
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("save(B, set1)", () => pkg().saveActiveProjectsSnapshot(USER_B, USER_B_SET_1))}
+            className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save User B — set 1
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("load(B)", () => pkg().loadActiveProjectsSnapshot(USER_B))}
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load User B
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("clear(B)", () => pkg().clearSnapshotForUser(USER_B))}
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear User B
+          </button>
+        </div>
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Field package action log</h2>
+          <pre className="max-h-96 overflow-auto rounded bg-white p-3 text-xs text-slate-800 dark:bg-slate-900 dark:text-slate-200">
+            {JSON.stringify(fieldPackageLog, null, 2)}
+          </pre>
+        </div>
       </div>
     </main>
   );

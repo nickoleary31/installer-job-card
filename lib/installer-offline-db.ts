@@ -1,12 +1,14 @@
 /**
- * Single IndexedDB database shared by starter snapshot cache + offline job drafts.
- * All open() calls must use the same name/version so onupgradeneeded creates every store once.
+ * Single IndexedDB database shared by starter snapshot cache + offline job drafts
+ * + the Phase 2B active-projects field package. All open() calls must use the
+ * same name/version so onupgradeneeded creates every store once.
  */
 export const INSTALLER_OFFLINE_DB_NAME = "installer-sheetz-offline";
-export const INSTALLER_OFFLINE_DB_VERSION = 3;
+export const INSTALLER_OFFLINE_DB_VERSION = 4;
 
 export const INSTALLER_DB_STARTER_STORE = "starter-data-cache";
 export const INSTALLER_DB_OFFLINE_DRAFTS_STORE = "job-card-offline-drafts";
+export const INSTALLER_DB_FIELD_PACKAGE_STORE = "field-package-active-projects";
 
 export function ensureInstallerOfflineObjectStores(db: IDBDatabase): void {
   if (!db.objectStoreNames.contains(INSTALLER_DB_STARTER_STORE)) {
@@ -15,6 +17,9 @@ export function ensureInstallerOfflineObjectStores(db: IDBDatabase): void {
   if (!db.objectStoreNames.contains(INSTALLER_DB_OFFLINE_DRAFTS_STORE)) {
     const store = db.createObjectStore(INSTALLER_DB_OFFLINE_DRAFTS_STORE, { keyPath: "offlineDraftId" });
     store.createIndex("savedAt", "savedAt", { unique: false });
+  }
+  if (!db.objectStoreNames.contains(INSTALLER_DB_FIELD_PACKAGE_STORE)) {
+    db.createObjectStore(INSTALLER_DB_FIELD_PACKAGE_STORE, { keyPath: "userId" });
   }
 }
 
