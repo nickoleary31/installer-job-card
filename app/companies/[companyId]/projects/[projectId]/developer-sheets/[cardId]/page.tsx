@@ -10,7 +10,7 @@
  * not authorized," which is the correct, safe outcome either way.
  */
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
@@ -30,6 +30,7 @@ type UserProfileLookupRow = {
 
 export default function DeveloperSheetCardPage() {
   const params = useParams<{ companyId: string; projectId: string; cardId: string }>();
+  const router = useRouter();
   const { loading: authLoading, context: userContext } = useAuthUserContext();
   const companyId = String(params.companyId || "");
   const projectId = String(params.projectId || "");
@@ -54,6 +55,8 @@ export default function DeveloperSheetCardPage() {
   const [savingSummary, setSavingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summarySaved, setSummarySaved] = useState(false);
+
+  const [savingAndExiting, setSavingAndExiting] = useState(false);
 
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
@@ -157,14 +160,17 @@ export default function DeveloperSheetCardPage() {
     return contributorLabels[userId] || "Unknown contributor";
   };
 
-  const handleSaveProductInfo = async () => {
-    if (!card) return;
+  // Core save — shared by the standalone "Save Product Information" button and "Save and Exit".
+  // Returns whether the save succeeded; never throws. Does not touch the savingProductInfo
+  // loading flag so callers can control their own loading indicator (individual button vs.
+  // the combined Save and Exit action).
+  const saveProductInfo = async (): Promise<boolean> => {
+    if (!card) return false;
     const trimmedName = productName.trim();
     if (!trimmedName) {
       setProductInfoError("Product name is required.");
-      return;
+      return false;
     }
-    setSavingProductInfo(true);
     setProductInfoError(null);
     setProductInfoSaved(false);
     try {
@@ -184,16 +190,24 @@ export default function DeveloperSheetCardPage() {
       if (error) throw error;
       setCard(data);
       setProductInfoSaved(true);
+      return true;
     } catch (error) {
       setProductInfoError(error instanceof Error ? error.message : "Failed to save Product Information.");
-    } finally {
-      setSavingProductInfo(false);
+      return false;
     }
   };
 
-  const handleSaveSummary = async () => {
-    if (!card) return;
-    setSavingSummary(true);
+  const handleSaveProductInfo = async () => {
+    setSavingProductInfo(true);
+    await saveProductInfo();
+    setSavingProductInfo(false);
+  };
+
+  // Core save — shared by the standalone "Save Developer Summary" button and "Save and Exit".
+  // Same contract as saveProductInfo above: returns success, never throws, leaves the
+  // savingSummary loading flag to the caller.
+  const saveDeveloperSummary = async (): Promise<boolean> => {
+    if (!card) return false;
     setSummaryError(null);
     setSummarySaved(false);
     try {
@@ -208,10 +222,29 @@ export default function DeveloperSheetCardPage() {
       if (error) throw error;
       setCard(data);
       setSummarySaved(true);
+      return true;
     } catch (error) {
       setSummaryError(error instanceof Error ? error.message : "Failed to save Developer Summary.");
-    } finally {
-      setSavingSummary(false);
+      return false;
+    }
+  };
+
+  const handleSaveSummary = async () => {
+    setSavingSummary(true);
+    await saveDeveloperSummary();
+    setSavingSummary(false);
+  };
+
+  // Save Product Information + Developer Summary, wait for both, and only navigate back to the
+  // Products screen for the current company/project (route-derived, never hardcoded) if both
+  // succeed. On any failure, stay on the page — the individual save's own error message (already
+  // set by saveProductInfo/saveDeveloperSummary above) is what's shown; nothing extra to add here.
+  const handleSaveAndExit = async () => {
+    setSavingAndExiting(true);
+    const [productInfoOk, summaryOk] = await Promise.all([saveProductInfo(), saveDeveloperSummary()]);
+    setSavingAndExiting(false);
+    if (productInfoOk && summaryOk) {
+      router.push(backHref);
     }
   };
 
@@ -272,7 +305,7 @@ export default function DeveloperSheetCardPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
         <Link href={backHref} className="inline-flex text-sm font-semibold text-blue-700 hover:underline">
-          ← Back to Project
+          ← Back to Products
         </Link>
 
         {authLoading || cardLoading ? (
@@ -373,7 +406,7 @@ export default function DeveloperSheetCardPage() {
                   <button
                     type="button"
                     onClick={() => void handleSaveProductInfo()}
-                    disabled={savingProductInfo}
+                    disabled={savingProductInfo || savingSummary || savingAndExiting}
                     className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {savingProductInfo ? "Saving…" : "Save Product Information"}
@@ -504,10 +537,18 @@ export default function DeveloperSheetCardPage() {
                 <button
                   type="button"
                   onClick={() => void handleSaveSummary()}
-                  disabled={savingSummary}
+                  disabled={savingProductInfo || savingSummary || savingAndExiting}
                   className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {savingSummary ? "Saving…" : "Save Developer Summary"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveAndExit()}
+                  disabled={savingProductInfo || savingSummary || savingAndExiting}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingAndExiting ? "Saving…" : "Save and Exit"}
                 </button>
                 {summarySaved ? <span className="text-sm font-semibold text-emerald-700">Saved</span> : null}
               </div>
