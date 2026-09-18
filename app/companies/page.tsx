@@ -130,7 +130,14 @@ export default function CompaniesPage() {
       setSupportsCompanyActive(true);
       setLoadError(null);
     } catch {
-      const { data, error } = await supabase.from("companies").select("id, name").order("name", { ascending: true });
+      // Fallback for environments missing companies.active (confirmed absent on Production) —
+      // must still select workflow_type here, or every company's workflow_type reads as
+      // undefined and the Developer Sheets company silently falls back into the normal
+      // installation-company list with all its normal actions exposed.
+      const { data, error } = await supabase
+        .from("companies")
+        .select("id, name, workflow_type")
+        .order("name", { ascending: true });
       if (error) throw error;
       setCompanies((data as CompanyRow[]) || []);
       setSupportsCompanyActive(false);
