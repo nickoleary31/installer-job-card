@@ -47,6 +47,7 @@ type CompanyRow = {
   id: string;
   name: string;
   active?: boolean;
+  workflow_type?: string | null;
 };
 
 /** NewSubmissionForm reads these keys before fetching default company/project online. */
@@ -120,7 +121,10 @@ export default function CompaniesPage() {
 
   const loadCompanies = async () => {
     try {
-      const { data, error } = await supabase.from("companies").select("id, name, active").order("name", { ascending: true });
+      const { data, error } = await supabase
+        .from("companies")
+        .select("id, name, active, workflow_type")
+        .order("name", { ascending: true });
       if (error) throw error;
       setCompanies((data as CompanyRow[]) || []);
       setSupportsCompanyActive(true);
@@ -236,6 +240,18 @@ export default function CompaniesPage() {
     const allowed = new Set(context.companyIds);
     return companies.filter((company) => allowed.has(company.id));
   }, [authLoading, companies, context.companyIds, context.userId, isGlobalAdmin, isOffline, offlineSnapshot]);
+
+  // Developer Sheets is presented as its own module, not a normal installation company card —
+  // split it out of the list the user actually has access to (same access filtering above,
+  // no new/duplicated permission logic).
+  const developerSheetsCompany = useMemo(
+    () => visibleCompanies.find((company) => company.workflow_type === "developer_sheet") || null,
+    [visibleCompanies],
+  );
+  const installationCompanies = useMemo(
+    () => visibleCompanies.filter((company) => company.workflow_type !== "developer_sheet"),
+    [visibleCompanies],
+  );
 
   const handleCreateCompany = async () => {
     const name = companyNameInput.trim();
@@ -470,8 +486,21 @@ export default function CompaniesPage() {
           </section>
         ) : null}
 
+        {!loading && !loadError && developerSheetsCompany ? (
+          <section className="rounded-2xl border-2 border-violet-300 bg-violet-50/40 p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+            <h2 className="text-lg font-bold text-gray-900">Developer Sheets</h2>
+            <p className="mt-1 text-sm text-gray-600">Research and document products before building production forms.</p>
+            <Link
+              href={`/companies/${encodeURIComponent(developerSheetsCompany.id)}/projects`}
+              className="mt-3 inline-flex min-h-[44px] items-center justify-center rounded-lg border-2 border-violet-600 bg-white px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm hover:bg-violet-100"
+            >
+              Open Developer Sheets
+            </Link>
+          </section>
+        ) : null}
+
         {!loading && !loadError ? (
-          visibleCompanies.length === 0 ? (
+          installationCompanies.length === 0 ? (
             isOffline && offlineCacheMiss ? null : (
               <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
                 {isOffline && offlineSnapshot
@@ -486,7 +515,7 @@ export default function CompaniesPage() {
           ) : (
             <section className="space-y-3">
               <h2 className="px-1 text-base font-bold tracking-tight text-gray-900">Select Company</h2>
-              {visibleCompanies.map((company) => {
+              {installationCompanies.map((company) => {
                 const roleForCompany = companyRolesForDisplay[company.id];
                 const canManageCompanyUsers = isGlobalAdmin || roleForCompany === "admin";
                 return (

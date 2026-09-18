@@ -34,6 +34,7 @@ type ProjectCardRow = {
   // cache format either, which doesn't carry this (see the offline-loaded branch below).
   saTargetAssetCount: number | null;
   saFinalizedAssetCount: number | null;
+  updatedAt: string | null;
 };
 
 type LinkedCustomerAccountRow = { name: string | null };
@@ -45,6 +46,7 @@ type ProjectQueryRow = {
   location: string | null;
   customer_id: string | null;
   customer_name: string | null;
+  updated_at: string | null;
   customers:
     | {
         customer_name: string | null;
@@ -63,6 +65,7 @@ type ProjectQueryRow = {
 
 type CompanyRow = {
   name: string;
+  workflow_type: string | null;
 };
 
 type CustomerOption = {
@@ -103,6 +106,13 @@ const emptyNewCustomerForm = (): NewCustomerForm => ({
   notes: "",
 });
 
+function formatProjectUpdatedAt(value: string | null): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString();
+}
+
 export default function CompanyProjectsPage() {
   const params = useParams<{ companyId: string }>();
   const router = useRouter();
@@ -110,6 +120,9 @@ export default function CompanyProjectsPage() {
   const companyId = String(params.companyId || "");
   const [projects, setProjects] = useState<ProjectCardRow[]>([]);
   const [companyName, setCompanyName] = useState("—");
+  const [companyWorkflowType, setCompanyWorkflowType] = useState<string>("standard");
+  const isDeveloperSheets = companyWorkflowType === "developer_sheet";
+  const [productSheetCountByProjectId, setProductSheetCountByProjectId] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddProjectModal, setShowAddProjectModal] = useState(false);
@@ -167,9 +180,14 @@ export default function CompanyProjectsPage() {
         return;
       }
       try {
-        const { data, error } = await supabase.from("companies").select("name").eq("id", companyId).maybeSingle<CompanyRow>();
+        const { data, error } = await supabase
+          .from("companies")
+          .select("name, workflow_type")
+          .eq("id", companyId)
+          .maybeSingle<CompanyRow>();
         if (error || cancelled || !data?.name) return;
         setCompanyName(data.name.trim() || "—");
+        setCompanyWorkflowType(data.workflow_type?.trim() || "standard");
       } catch {
         // keep fallback
       }
@@ -185,7 +203,7 @@ export default function CompanyProjectsPage() {
     const { data: projData, error: projError } = await supabase
       .from("projects")
       .select(
-        "id, project_name, active, location, customer_id, customer_name, customers:customer_id(customer_name, full_address, customer_account_id, customer_accounts:customer_account_id(name))",
+        "id, project_name, active, location, customer_id, customer_name, updated_at, customers:customer_id(customer_name, full_address, customer_account_id, customer_accounts:customer_account_id(name))",
       )
       .eq("company_id", companyId)
       .order("project_name", { ascending: true });
@@ -254,6 +272,7 @@ export default function CompanyProjectsPage() {
         completedSubmissionCount: countByProject.get(row.id) ?? 0,
         saTargetAssetCount: progressByProjectId[row.id]?.saTargetAssetCount ?? null,
         saFinalizedAssetCount: progressByProjectId[row.id]?.saFinalizedAssetCount ?? null,
+        updatedAt: row.updated_at,
       };
     });
 
@@ -305,6 +324,7 @@ export default function CompanyProjectsPage() {
                 // displayCustomerAccountName's precedent above.
                 saTargetAssetCount: null,
                 saFinalizedAssetCount: null,
+                updatedAt: null,
               })),
             );
             setCompanyName(cachedCompany?.name?.trim() || "—");
@@ -375,6 +395,9 @@ export default function CompanyProjectsPage() {
 
   const isActiveCompanyAdmin = companyRole === "admin";
   const canManageCompanyData = isGlobalAdmin || isActiveCompanyAdmin;
+  // Developer Sheets must show an explicit loading state while a technician's assignments
+  // resolve, rather than flashing the full unfiltered list or a premature empty state.
+  const showDeveloperSheetsAssignmentsLoading = isDeveloperSheets && companyRole === "technician" && isLoadingAssignments;
 
   /** Online only: technician assignment fetch. Skip offline to avoid Supabase timeouts. */
   useEffect(() => {
@@ -404,6 +427,37 @@ export default function CompanyProjectsPage() {
     };
   }, [authLoading, companyRole, isOffline, userContext.userId]);
 
+  useEffect(() => {
+    if (!isDeveloperSheets || isOffline || projects.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setProductSheetCountByProjectId({});
+      return;
+    }
+    let cancelled = false;
+    const loadProductSheetCounts = async () => {
+      try {
+        const projectIds = projects.map((project) => project.id);
+        const { data, error } = await supabase
+          .from("developer_sheet_cards")
+          .select("project_id")
+          .in("project_id", projectIds);
+        if (error) throw error;
+        if (cancelled) return;
+        const counts: Record<string, number> = {};
+        for (const row of (data as { project_id: string }[] | null) || []) {
+          counts[row.project_id] = (counts[row.project_id] || 0) + 1;
+        }
+        setProductSheetCountByProjectId(counts);
+      } catch {
+        if (!cancelled) setProductSheetCountByProjectId({});
+      }
+    };
+    void loadProductSheetCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDeveloperSheets, isOffline, projects]);
+
   const visibleProjects = useMemo(() => {
     if (isOffline && offlineSnapshot) {
       return projects;
@@ -412,6 +466,14 @@ export default function CompanyProjectsPage() {
     if (!userContext.userId) return [];
     if (companyRole === "admin") return projects;
     if (companyRole === "technician") {
+      // Developer Sheets must fail CLOSED: an unassigned technician must never see a company
+      // (project) they have no active assignment for, even momentarily while assignments load.
+      // Standard installation companies keep their existing (looser) behavior unchanged.
+      if (isDeveloperSheets) {
+        if (isLoadingAssignments) return [];
+        const allowed = new Set(assignedProjectIds);
+        return projects.filter((project) => allowed.has(project.id));
+      }
       if (isLoadingAssignments) return projects;
       if (assignedProjectIds.length === 0) return projects;
       const allowed = new Set(assignedProjectIds);
@@ -422,6 +484,7 @@ export default function CompanyProjectsPage() {
     assignedProjectIds,
     authLoading,
     companyRole,
+    isDeveloperSheets,
     isLoadingAssignments,
     isOffline,
     offlineSnapshot,
@@ -501,7 +564,7 @@ export default function CompanyProjectsPage() {
     resetAddProjectForm();
     setCustomerLoadError(null);
     setShowAddProjectModal(true);
-    void loadCustomers();
+    if (!isDeveloperSheets) void loadCustomers();
   };
 
   const closeAddProjectModal = () => {
@@ -660,16 +723,18 @@ export default function CompanyProjectsPage() {
     const customerName = customerNameInput.trim();
     const location = locationInput.trim();
     if (!projectName) {
-      setAddProjectError("Project Name is required.");
+      setAddProjectError(isDeveloperSheets ? "Company Name is required." : "Project Name is required.");
       return;
     }
-    if (!customerName) {
-      setAddProjectError("Customer / Site is required.");
-      return;
-    }
-    if (!location) {
-      setAddProjectError("Location is required.");
-      return;
+    if (!isDeveloperSheets) {
+      if (!customerName) {
+        setAddProjectError("Customer / Site is required.");
+        return;
+      }
+      if (!location) {
+        setAddProjectError("Location is required.");
+        return;
+      }
     }
     const invalidEmail = parsedExternalEmails.find((email) => !isValidEmail(email));
     if (invalidEmail) {
@@ -680,15 +745,19 @@ export default function CompanyProjectsPage() {
     setIsSavingProject(true);
     setAddProjectError(null);
     try {
-      const { error } = await supabase.from("projects").insert({
-        company_id: companyId,
-        customer_id: selectedCustomerId,
-        project_name: projectName,
-        customer_name: customerName,
-        location,
-        external_recipient_emails: parsedExternalEmails,
-        active: true,
-      });
+      const { error } = await supabase.from("projects").insert(
+        isDeveloperSheets
+          ? { company_id: companyId, project_name: projectName, active: true }
+          : {
+              company_id: companyId,
+              customer_id: selectedCustomerId,
+              project_name: projectName,
+              customer_name: customerName,
+              location,
+              external_recipient_emails: parsedExternalEmails,
+              active: true,
+            },
+      );
       if (error) throw error;
       await loadProjects();
       closeAddProjectModal();
@@ -766,9 +835,15 @@ export default function CompanyProjectsPage() {
     <main className="min-h-screen bg-slate-50 py-6">
       <div className="mx-auto max-w-3xl space-y-4 px-4 sm:px-5">
         <header className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-          <p className="text-center text-lg font-semibold text-gray-700 dark:text-gray-300">Company: {companyName}</p>
-          <h1 className="text-2xl font-bold tracking-tight text-gray-950">Select Project</h1>
-          <p className="mt-1 text-sm text-gray-600">Choose a project for this company.</p>
+          {isDeveloperSheets ? (
+            <p className="text-center text-lg font-semibold text-gray-700 dark:text-gray-300">Developer Sheets</p>
+          ) : (
+            <p className="text-center text-lg font-semibold text-gray-700 dark:text-gray-300">Company: {companyName}</p>
+          )}
+          <h1 className="text-2xl font-bold tracking-tight text-gray-950">{isDeveloperSheets ? "Companies" : "Select Project"}</h1>
+          <p className="mt-1 text-sm text-gray-600">
+            {isDeveloperSheets ? "Choose a company to open its Products." : "Choose a project for this company."}
+          </p>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <Link href="/companies" className="inline-flex text-sm font-semibold text-blue-700 hover:underline">
@@ -800,7 +875,13 @@ export default function CompanyProjectsPage() {
                 disabled={isOffline}
                 className="inline-flex min-h-[40px] items-center justify-center rounded-lg border-2 border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-600 shadow-sm hover:bg-blue-50"
               >
-                {isOffline ? "Add New Project (online only)" : "Add New Project"}
+                {isOffline
+                  ? isDeveloperSheets
+                    ? "+ Add Company (online only)"
+                    : "Add New Project (online only)"
+                  : isDeveloperSheets
+                    ? "+ Add Company"
+                    : "Add New Project"}
               </button>
             ) : null}
           </div>
@@ -809,6 +890,11 @@ export default function CompanyProjectsPage() {
         {loading || showAuthBlockingSpinner ? (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
             {showAuthBlockingSpinner ? "Checking sign-in…" : "Loading projects…"}
+          </section>
+        ) : null}
+        {!loading && !showAuthBlockingSpinner && showDeveloperSheetsAssignmentsLoading ? (
+          <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
+            Loading your assigned companies…
           </section>
         ) : null}
         {!loading && !showAuthBlockingSpinner && isOffline && offlineSnapshot && !offlineProjectsCacheMiss ? (
@@ -828,16 +914,18 @@ export default function CompanyProjectsPage() {
           </section>
         ) : null}
 
-        {!loading && !loadError && !showAuthBlockingSpinner ? (
+        {!loading && !loadError && !showAuthBlockingSpinner && !showDeveloperSheetsAssignmentsLoading ? (
           visibleProjects.length === 0 ? (
             isOffline && offlineProjectsCacheMiss ? null : (
             <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
               <p>
-                {isOffline && offlineSnapshot
-                  ? "No projects match your cached list for this company."
-                  : !userContext.userId
-                    ? "Log in to view projects for this company."
-                    : "No projects found for this company."}
+                {isDeveloperSheets
+                  ? "No companies are currently assigned to you."
+                  : isOffline && offlineSnapshot
+                    ? "No projects match your cached list for this company."
+                    : !userContext.userId
+                      ? "Log in to view projects for this company."
+                      : "No projects found for this company."}
               </p>
               {canManageCompanyData ? (
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -853,19 +941,21 @@ export default function CompanyProjectsPage() {
                       Manage Users / Assignments
                     </Link>
                   )}
-                  <Link
-                    href={`/companies/${encodeURIComponent(companyId)}/customers`}
-                    className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                  >
-                    Customers / Sites
-                  </Link>
+                  {!isDeveloperSheets ? (
+                    <Link
+                      href={`/companies/${encodeURIComponent(companyId)}/customers`}
+                      className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                    >
+                      Customers / Sites
+                    </Link>
+                  ) : null}
                   <button
                     type="button"
                     onClick={openAddProjectModal}
                     disabled={isOffline}
                     className="inline-flex rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-100"
                   >
-                    {isOffline ? "Add Project (online only)" : "Add Project"}
+                    {isOffline ? "Add (online only)" : isDeveloperSheets ? "+ Add Company" : "Add Project"}
                   </button>
                 </div>
               ) : null}
@@ -880,30 +970,42 @@ export default function CompanyProjectsPage() {
                 className="block w-full rounded-2xl border border-indigo-200 bg-white p-5 text-left shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50"
               >
                 <h2 className="text-lg font-bold text-gray-900">{project.project_name}</h2>
-                {project.displayCustomerAccountName ? (
+                {isDeveloperSheets ? (
                   <>
                     <p className="mt-1 text-sm text-gray-700">
-                      <span className="font-semibold text-gray-600">Customer Account:</span>{" "}
-                      {project.displayCustomerAccountName}
+                      <span className="font-semibold text-gray-600">Product Sheets:</span>{" "}
+                      {productSheetCountByProjectId[project.id] ?? 0}
                     </p>
-                    <p className="mt-0.5 text-sm text-gray-700">
-                      <span className="font-semibold text-gray-600">Site:</span> {project.displayCustomerName}
-                    </p>
+                    <p className="mt-0.5 text-sm text-gray-500">Updated {formatProjectUpdatedAt(project.updatedAt)}</p>
                   </>
                 ) : (
-                  <p className="mt-1 text-sm text-gray-700">
-                    <span className="font-semibold text-gray-600">Customer:</span> {project.displayCustomerName}
-                  </p>
+                  <>
+                    {project.displayCustomerAccountName ? (
+                      <>
+                        <p className="mt-1 text-sm text-gray-700">
+                          <span className="font-semibold text-gray-600">Customer Account:</span>{" "}
+                          {project.displayCustomerAccountName}
+                        </p>
+                        <p className="mt-0.5 text-sm text-gray-700">
+                          <span className="font-semibold text-gray-600">Site:</span> {project.displayCustomerName}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-sm text-gray-700">
+                        <span className="font-semibold text-gray-600">Customer:</span> {project.displayCustomerName}
+                      </p>
+                    )}
+                    <p className="mt-0.5 text-sm text-gray-700">
+                      <span className="font-semibold text-gray-600">Completed submissions:</span>{" "}
+                      {formatCompletedSubmissionCount({
+                        completedSubmissionCount: project.completedSubmissionCount,
+                        saTargetAssetCount: project.saTargetAssetCount,
+                        saFinalizedAssetCount: project.saFinalizedAssetCount,
+                      })}
+                    </p>
+                    <p className="mt-1 text-sm text-gray-600">{project.active ? "Active project" : "Inactive project"}</p>
+                  </>
                 )}
-                <p className="mt-0.5 text-sm text-gray-700">
-                  <span className="font-semibold text-gray-600">Completed submissions:</span>{" "}
-                  {formatCompletedSubmissionCount({
-                    completedSubmissionCount: project.completedSubmissionCount,
-                    saTargetAssetCount: project.saTargetAssetCount,
-                    saFinalizedAssetCount: project.saFinalizedAssetCount,
-                  })}
-                </p>
-                <p className="mt-1 text-sm text-gray-600">{project.active ? "Active project" : "Inactive project"}</p>
               </button>
             ))
           )
@@ -923,92 +1025,99 @@ export default function CompanyProjectsPage() {
               onClick={(e) => e.stopPropagation()}
             >
               <h2 id="add-project-title" className="text-xl font-bold text-gray-950">
-                Add New Project
+                {isDeveloperSheets ? "Add Company" : "Add New Project"}
               </h2>
               <div className="mt-4 space-y-3">
                 <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-800">Project Name</label>
+                  <label className="mb-1 block text-sm font-semibold text-gray-800">
+                    {isDeveloperSheets ? "Company / Manufacturer Name" : "Project Name"}
+                  </label>
                   <input
                     value={projectNameInput}
                     onChange={(e) => setProjectNameInput(e.target.value)}
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                    placeholder="e.g. East Yard Rollout"
+                    placeholder={isDeveloperSheets ? "e.g. Litum" : "e.g. East Yard Rollout"}
+                    autoFocus={isDeveloperSheets}
                   />
                 </div>
-                <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-800">Customer / Site</label>
-                  <input
-                    value={customerSiteInput}
-                    onChange={(e) => handleCustomerSiteFieldChange(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                    placeholder="Search customers or enter a new customer / site name"
-                    disabled={isLoadingCustomers}
-                    autoComplete="off"
-                  />
-                  {isLoadingCustomers ? <p className="mt-1 text-xs text-gray-500">Loading customers...</p> : null}
-                  {customerLoadError ? <p className="mt-1 text-xs font-semibold text-amber-700">{customerLoadError}</p> : null}
-                  {!isLoadingCustomers && !customerLoadError ? (
-                    <>
-                      {filteredCustomers.length > 0 ? (
-                        <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white dark:border-slate-600 dark:bg-slate-900">
-                          {filteredCustomers.map((customer) => (
-                            <button
-                              key={customer.id}
-                              type="button"
-                              onClick={() => handleCustomerSelectionChange(customer)}
-                              className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-slate-800 ${
-                                selectedCustomerId === customer.id
-                                  ? "bg-blue-50 font-semibold text-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
-                                  : "text-gray-800 dark:text-slate-100"
-                              }`}
-                            >
-                              {customer.customer_name?.trim() || "Unnamed customer"}
-                            </button>
-                          ))}
-                          {canManageCompanyData ? (
+                {!isDeveloperSheets ? (
+                  <>
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-800">Customer / Site</label>
+                      <input
+                        value={customerSiteInput}
+                        onChange={(e) => handleCustomerSiteFieldChange(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        placeholder="Search customers or enter a new customer / site name"
+                        disabled={isLoadingCustomers}
+                        autoComplete="off"
+                      />
+                      {isLoadingCustomers ? <p className="mt-1 text-xs text-gray-500">Loading customers...</p> : null}
+                      {customerLoadError ? <p className="mt-1 text-xs font-semibold text-amber-700">{customerLoadError}</p> : null}
+                      {!isLoadingCustomers && !customerLoadError ? (
+                        <>
+                          {filteredCustomers.length > 0 ? (
+                            <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white dark:border-slate-600 dark:bg-slate-900">
+                              {filteredCustomers.map((customer) => (
+                                <button
+                                  key={customer.id}
+                                  type="button"
+                                  onClick={() => handleCustomerSelectionChange(customer)}
+                                  className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-slate-800 ${
+                                    selectedCustomerId === customer.id
+                                      ? "bg-blue-50 font-semibold text-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
+                                      : "text-gray-800 dark:text-slate-100"
+                                  }`}
+                                >
+                                  {customer.customer_name?.trim() || "Unnamed customer"}
+                                </button>
+                              ))}
+                              {canManageCompanyData ? (
+                                <button
+                                  type="button"
+                                  onClick={openAddCustomerModal}
+                                  className="block w-full border-t border-gray-200 bg-emerald-50/80 px-3 py-2 text-left text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+                                >
+                                  + Add New Customer / Site
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {canManageCompanyData && customerSiteInput.trim() && filteredCustomers.length === 0 ? (
                             <button
                               type="button"
                               onClick={openAddCustomerModal}
-                              className="block w-full border-t border-gray-200 bg-emerald-50/80 px-3 py-2 text-left text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+                              className="mt-2 inline-flex w-fit rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
                             >
                               + Add New Customer / Site
                             </button>
                           ) : null}
-                        </div>
+                        </>
                       ) : null}
-                      {canManageCompanyData && customerSiteInput.trim() && filteredCustomers.length === 0 ? (
-                        <button
-                          type="button"
-                          onClick={openAddCustomerModal}
-                          className="mt-2 inline-flex w-fit rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
-                        >
-                          + Add New Customer / Site
-                        </button>
-                      ) : null}
-                    </>
-                  ) : null}
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-800">Location</label>
-                  <input
-                    value={locationInput}
-                    onChange={(e) => setLocationInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                    placeholder="e.g. Acworth, GA"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-800">External Recipient Emails</label>
-                  <input
-                    value={externalEmailsInput}
-                    onChange={(e) => setExternalEmailsInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                    placeholder="name@company.com, ops@company.com"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <p className="mt-1 text-xs text-gray-500">Optional. Enter comma-separated emails.</p>
-                </div>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-800">Location</label>
+                      <input
+                        value={locationInput}
+                        onChange={(e) => setLocationInput(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        placeholder="e.g. Acworth, GA"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-800">External Recipient Emails</label>
+                      <input
+                        value={externalEmailsInput}
+                        onChange={(e) => setExternalEmailsInput(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        placeholder="name@company.com, ops@company.com"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <p className="mt-1 text-xs text-gray-500">Optional. Enter comma-separated emails.</p>
+                    </div>
+                  </>
+                ) : null}
               </div>
               {addProjectError ? <p className="mt-3 text-sm font-semibold text-red-700">{addProjectError}</p> : null}
               <div className="mt-5 flex flex-wrap justify-end gap-2">
@@ -1026,7 +1135,7 @@ export default function CompanyProjectsPage() {
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
                   disabled={isSavingProject}
                 >
-                  {isSavingProject ? "Saving..." : "Save Project"}
+                  {isSavingProject ? "Saving..." : isDeveloperSheets ? "Save Company" : "Save Project"}
                 </button>
               </div>
             </section>

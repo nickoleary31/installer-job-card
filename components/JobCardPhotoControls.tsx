@@ -155,11 +155,14 @@ export function PhotoThumbnailGrid({
   remotePhotos = [],
   onRemoveRemote,
   onRemoveLocal,
+  hideRemove = false,
 }: {
   files: File[];
   remotePhotos?: RemoteThumb[];
   onRemoveRemote?: (remote: RemoteThumb) => void;
   onRemoveLocal?: (file: File) => void;
+  /** Suppress the Remove button entirely — for read-mostly views with no wired removal action yet. */
+  hideRemove?: boolean;
 }) {
   const entries = useMemo(() => buildCombinedPhotoPreviews(files, remotePhotos), [files, remotePhotos]);
 
@@ -192,15 +195,17 @@ export function PhotoThumbnailGrid({
       {entries.map((e) =>
         e.kind === "remote" ? (
           <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-800">
-            <div className="mb-1 flex justify-end">
-              <button
-                type="button"
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
-                onClick={() => onRemoveRemote?.(e.remote)}
-              >
-                Remove
-              </button>
-            </div>
+            {!hideRemove ? (
+              <div className="mb-1 flex justify-end">
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                  onClick={() => onRemoveRemote?.(e.remote)}
+                >
+                  Remove
+                </button>
+              </div>
+            ) : null}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
             <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.remote.filename}>
@@ -209,15 +214,17 @@ export function PhotoThumbnailGrid({
           </div>
         ) : (
           <div key={e.key} className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-800">
-            <div className="mb-1 flex justify-end">
-              <button
-                type="button"
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
-                onClick={() => onRemoveLocal?.(e.file)}
-              >
-                Remove
-              </button>
-            </div>
+            {!hideRemove ? (
+              <div className="mb-1 flex justify-end">
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                  onClick={() => onRemoveLocal?.(e.file)}
+                >
+                  Remove
+                </button>
+              </div>
+            ) : null}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={localUrlByFile.get(e.file) || ""} alt={e.file.name} className="h-20 w-full rounded-md object-cover" />
             <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.file.name}>

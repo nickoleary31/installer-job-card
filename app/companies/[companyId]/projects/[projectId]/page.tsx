@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { supabase } from "@/lib/supabase/client";
 import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import { AddressActionMenu } from "@/components/AddressActionMenu";
 import { TkpLogo } from "@/components/TkpLogo";
+import { DeveloperSheetProjectPanel } from "@/components/developer-sheets/DeveloperSheetProjectPanel";
 
 const SELECTED_COMPANY_ID_KEY = "installer-selected-company-id";
 const SELECTED_PROJECT_ID_KEY = "installer-selected-project-id";
@@ -163,12 +164,14 @@ const getReceiptValidationError = (file: File | null) => {
 
 export default function ProjectDashboardPage() {
   const params = useParams<{ companyId: string; projectId: string }>();
+  const router = useRouter();
   const { loading: authLoading, context: userContext } = useAuthUserContext();
   const companyId = String(params.companyId || "");
   const projectId = String(params.projectId || "");
   const companyRole = userContext.companyRolesById[companyId];
   const isGlobalAdmin = userContext.globalRole === "admin";
   const [projectContext, setProjectContext] = useState<ProjectContext>(emptyProjectContext);
+  const [companyWorkflowType, setCompanyWorkflowType] = useState<string>("standard");
   const [siteInfoExpanded, setSiteInfoExpanded] = useState(false);
   const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [siteInfo, setSiteInfo] = useState<SiteInfo>(emptySiteInfo);
@@ -208,6 +211,44 @@ export default function ProjectDashboardPage() {
       // ignore storage errors
     }
   }, [companyId, projectId]);
+
+  // Independent of the access check below — companies has no RLS, and the denial message needs
+  // to know whether this is a Developer Sheets company even when access is denied.
+  useEffect(() => {
+    let cancelled = false;
+    const loadWorkflowType = async () => {
+      if (!companyId) return;
+      try {
+        const { data } = await supabase
+          .from("companies")
+          .select("workflow_type")
+          .eq("id", companyId)
+          .maybeSingle<{ workflow_type: string | null }>();
+        if (!cancelled) setCompanyWorkflowType(data?.workflow_type?.trim() || "standard");
+      } catch {
+        // keep default "standard"
+      }
+    };
+    void loadWorkflowType();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  // Developer Sheets: denial redirects back to the Companies list rather than showing an
+  // installation-flavored ("...view expenses here") message that doesn't apply to this module.
+  useEffect(() => {
+    if (
+      !authLoading &&
+      userContext.userId &&
+      accessResolved &&
+      !hasProjectAccess &&
+      !projectLoadError &&
+      companyWorkflowType === "developer_sheet"
+    ) {
+      router.replace(`/companies/${encodeURIComponent(companyId)}/projects`);
+    }
+  }, [authLoading, userContext.userId, accessResolved, hasProjectAccess, projectLoadError, companyWorkflowType, router, companyId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -259,7 +300,11 @@ export default function ProjectDashboardPage() {
         }
 
         const [{ data: companyRow, error: companyError }, { data: projectRow, error: projectError }] = await Promise.all([
-          supabase.from("companies").select("name").eq("id", companyId).maybeSingle<{ name: string }>(),
+          supabase
+            .from("companies")
+            .select("name, workflow_type")
+            .eq("id", companyId)
+            .maybeSingle<{ name: string; workflow_type: string | null }>(),
           supabase
             .from("projects")
             .select(
@@ -326,6 +371,7 @@ export default function ProjectDashboardPage() {
           customerAccountName,
           location,
         });
+        setCompanyWorkflowType(companyRow?.workflow_type?.trim() || "standard");
         setHasProjectAccess(true);
       } catch (error) {
         if (!cancelled) {
@@ -796,7 +842,7 @@ export default function ProjectDashboardPage() {
             href={`/companies/${encodeURIComponent(companyId)}/projects`}
             className="mt-3 inline-flex text-sm font-semibold text-blue-700 hover:underline"
           >
-            Back to Projects
+            {companyWorkflowType === "developer_sheet" ? "Back to Companies" : "Back to Projects"}
           </Link>
         </header>
 
@@ -830,11 +876,22 @@ export default function ProjectDashboardPage() {
 
         {!authLoading && userContext.userId && accessResolved && !hasProjectAccess && !projectLoadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
-            Only global admins, active company admins, or technicians assigned to this project can view expenses here.
+            {companyWorkflowType === "developer_sheet"
+              ? "You do not have access to this Developer Sheets company. Redirecting to Developer Sheets…"
+              : "Only global admins, active company admins, or technicians assigned to this project can view expenses here."}
           </section>
         ) : null}
 
-        {!authLoading && userContext.userId && accessResolved && hasProjectAccess ? (
+        {!authLoading && userContext.userId && accessResolved && hasProjectAccess && companyWorkflowType === "developer_sheet" ? (
+          <>
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+              <h2 className="text-xl font-bold tracking-tight text-gray-950 sm:text-2xl">{projectContext.projectName} Products</h2>
+            </section>
+            <DeveloperSheetProjectPanel companyId={companyId} projectId={projectId} />
+          </>
+        ) : null}
+
+        {!authLoading && userContext.userId && accessResolved && hasProjectAccess && companyWorkflowType !== "developer_sheet" ? (
           <>
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
               <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Current Project</h2>
