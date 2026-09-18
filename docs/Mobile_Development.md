@@ -138,3 +138,58 @@ migration before those surfaces are ported to `mobile-web`.
 instead of the shared UI/business code importing Capacitor plugins directly. As of Phase 1C these
 are still boundaries only — not wired into the job-card UI, and the native-side implementations are
 stubs that throw until a later phase backs them with real Capacitor plugins.
+
+## Phase 2C — 7-day offline access lease
+
+A technician who has successfully authenticated and been confirmed authorized/active by Installer
+Sheetz while online may keep using the **installed native app** without server connectivity for up
+to **7 days** from the most recent successful server authorization. This is deliberately a
+NATIVE-ONLY capability — the web/PWA build never gets it (see `lib/auth/auth-state.ts`'s module
+doc for the explicit `isNative()` gate and why).
+
+The lease record (`lib/auth/offline-access-lease.ts`'s `OfflineAccessLease`) is NOT a server-issued
+credential — it's a device-local record, written only after a confirmed-successful online
+authorization, stored in OS-backed secure storage (Android Keystore / iOS Keychain via
+`lib/native/secure-storage.ts`). It is bound to this specific app installation (`deviceInstallationId`,
+see `lib/native/device-installation.ts` — a random, non-hardware-derived id) and carries no
+company/project/role/Zoho data of its own; it is only the GATE. Actual offline data stays in the
+Phase 2B field package (`lib/active-projects-field-package.ts`), independently keyed by `userId`.
+
+**Trust limitation, explicit:** because the lease is created locally rather than cryptographically
+signed by the server, a device whose secure storage is itself compromised (root/jailbreak-level
+access) could in principle forge one. The blast radius is bounded to that one device's own
+already-downloaded data for one user, self-expiring in 7 days — it grants no new server-side
+authority. A server-signed lease (server holds a private key, the app embeds only a public
+verification key) is the correct long-term hardening step before broad deployment; it was not built
+in Phase 2C because no signing infrastructure (library, key management, an "issue a claim" API
+route) exists in this codebase yet, and inventing it without a deployment/ops plan was out of scope.
+
+**Clock safety:** `lastValidatedAt`/`offlineAccessExpiresAt` are still client-clock readings — there
+is no server-time endpoint to source them from. `checkLeaseValidity()` in `offline-access-lease.ts`
+applies two cheap checks (not a general anti-tamper system): the current time may never be before
+the lease's own `issuedAt`, and a ratchet (`lastObservedDeviceTime`) flags a clock rolled backward
+past any time this lease has already been checked against. Freezing the clock immediately after
+issuance, before ever letting it advance, defeats both — closing that fully needs a server time
+source (see the server-signed lease paragraph above).
+
+### Future quarantine contract (design-only — not implemented yet)
+
+Offline submissions/drafts/photos/an outbox do not exist yet in this app. Once they do, the
+following contract governs what happens when a device reconnects and Installer Sheetz determines
+the user is no longer authorized:
+
+1. Invalidate the offline access lease immediately.
+2. Lock access to cached SERVER-DERIVED data (e.g. the Phase 2B field package) — no re-upload
+   needed, it simply becomes inaccessible again until re-authorized.
+3. Do **not** discard locally-created UNSYNCED technician work (drafts/photos/submissions).
+4. Do **not** automatically merge that work into canonical project/job-card records.
+5. That unsynced work must become eligible for upload to a future server-side
+   INSPECTION/QUARANTINE QUEUE.
+6. An authorized reviewer later decides to accept, reject, or correct/reassign each item.
+
+Quarantined records should retain provenance: `originalUserId`, `deviceInstallationId`, `projectId`,
+`localSubmissionId`, `createdAtLocal`, `lastModifiedAtLocal`, `leaseIssuedAt`,
+`leaseLastValidatedAt`, `leaseExpiresAt`, `revocationDetectedAt`, payload hashes, and sync history —
+alongside the actual form/device/photo payload once those systems exist. No inspection-queue
+tables, quarantine API, outbox, submissions, or photo-upload flow exist yet; this section is a
+design contract for whoever builds that phase, not a description of current behavior.

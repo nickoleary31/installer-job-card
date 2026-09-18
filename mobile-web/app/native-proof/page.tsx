@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getActiveProjectsFieldPackage, type FieldPackageProject } from "@/lib/active-projects-field-package";
+import { clearLease, issueOrRefreshLease, loadLease } from "@/lib/auth/offline-access-lease";
 import { getNetworkStatus } from "@/lib/native/network-status";
 import {
   clearProofMarkers,
@@ -286,6 +287,59 @@ export default function NativeProofPage() {
           <pre className="max-h-96 overflow-auto rounded bg-white p-3 text-xs text-slate-800 dark:bg-slate-900 dark:text-slate-200">
             {JSON.stringify(fieldPackageLog, null, 2)}
           </pre>
+        </div>
+
+        <hr className="border-slate-300 dark:border-slate-700" />
+
+        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Phase 2C offline access lease proof
+        </h1>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Exercises the real secure-storage-backed 7-day OfflineAccessLease with the same synthetic user ids as the
+          field-package proof above ({USER_A}, {USER_B}). Leasing User A here plus saving User A&apos;s field
+          package above is what lets /installs enter offline-authorized mode for User A while offline.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("issueOrRefreshLease(A)", () =>
+                issueOrRefreshLease({ userId: USER_A, displayName: "Synthetic User A", email: "user-a@example.test" }),
+              )
+            }
+            className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Lease User A
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("issueOrRefreshLease(B)", () =>
+                issueOrRefreshLease({ userId: USER_B, displayName: "Synthetic User B", email: "user-b@example.test" }),
+              )
+            }
+            className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Lease User B
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("loadLease()", () => loadLease())}
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load lease
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => runFieldPackage("clearLease()", () => clearLease())}
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear lease
+          </button>
         </div>
       </div>
     </main>

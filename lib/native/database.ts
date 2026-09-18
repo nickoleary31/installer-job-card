@@ -55,18 +55,56 @@ const DB_NAME = "installer_sheetz_native";
 
 /**
  * One shared native SQLite connection for the app's entire lifetime.
- * @capacitor-community/sqlite's `SQLiteConnection.isConnection()` tracks
- * open connections in that JS wrapper instance's own dictionary, not in the
- * native layer — a second wrapper instance has no way to see a connection
- * the first one opened, so it re-attempts `createConnection()` and the
- * native side (which does know) rejects it as a duplicate. Confirmed via
- * Phase 2A runtime testing: a query failed with "CreateConnection:
+ * @capacitor-community/sqlite's `SQLiteConnection.isConnection()` /
+ * `.retrieveConnection()` track open connections in that JS wrapper
+ * instance's own in-memory `_connectionDict` (confirmed by reading
+ * node_modules/@capacitor-community/sqlite/dist/plugin.js), NOT in the
+ * native layer — a fresh wrapper instance's dict always starts empty, so
+ * those two methods can never see a connection an earlier wrapper opened.
+ * The native Android side (node_modules/@capacitor-community/sqlite/android/
+ * .../CapacitorSQLite.java) tracks the real, authoritative connection pool
+ * in its own `dbDict`, independent of any JS wrapper's lifetime, and rejects
+ * a second `createConnection()` for the same name as a duplicate. Confirmed
+ * via Phase 2A runtime testing: a query failed with "CreateConnection:
  * Connection installer_sheetz_native already exists" when a fresh wrapper
  * instance was created per call. Every native SQLite consumer in this app —
  * this file's own settings proof AND feature repositories like
  * lib/native/active-projects-field-package.ts — must go through
  * getNativeSqliteConnection() below, never construct their own
  * SQLiteConnection/createConnection call.
+ *
+ * FIXED (Phase 2C hard-navigation testing): a genuine hard navigation/full
+ * page reload WITHOUT an Android process death — e.g. `location.reload()`,
+ * or the OS recreating the WebView under memory pressure while the Activity
+ * survives — tears down this module's JS state (including this singleton
+ * and its SQLiteConnection instance's `_connectionDict`) but not the
+ * native `dbDict`, so a fresh page's wrapper used to hit the same "already
+ * exists" error this singleton otherwise prevents within one session. An
+ * `isConnection()`/`retrieveConnection()` fallback cannot fix this — a
+ * brand-new wrapper's `_connectionDict` is always empty at this point in
+ * the function (nothing has populated it yet), so `isConnection()` always
+ * reports false and `retrieveConnection()` would always reject with the
+ * worse, inconsistent "Connection ... does not exist".
+ *
+ * The actual supported mechanism is `checkConnectionsConsistency()`
+ * (SQLiteConnection.checkConnectionsConsistency(), no arguments — it reads
+ * this wrapper's own `_connectionDict` and sends it to the native side).
+ * Its own doc: "Check the consistency between Js Connections and Native
+ * Connections. if inconsistency all connections are removed." Reading the
+ * native implementation (CapacitorSQLite.java#checkConnectionsConsistency)
+ * confirms exactly what "removed" means here: called with this wrapper's
+ * declared set (always `[]` for a fresh instance/reload), the native side
+ * sees a mismatch against whatever it actually has open and calls its own
+ * `closeAllConnections()` — a clean `db.close()` per connection, not a
+ * process kill or data wipe; already-committed writes are durable on disk
+ * regardless of connection-handle state. That leaves the native `dbDict`
+ * empty, so the `createConnection()` immediately below always succeeds.
+ * On a genuine first launch (nothing native to reconcile) this is a
+ * harmless no-op. This is a supported plugin lifecycle call, not a
+ * timing-based retry or race-based workaround — verified against a real
+ * hard-reload-while-native-process-alive runtime test on the Android
+ * emulator (existing field package data survives, no duplicate-connection
+ * errors; see the Phase 2C completion report for the exact steps).
  *
  * Dynamically imported inside the async body, never at module load, so this
  * file stays safe to import from the root Next build, SSR, or plain-browser
@@ -79,10 +117,12 @@ function getNativeConnection() {
     nativeConnectionPromise = (async () => {
       const { CapacitorSQLite, SQLiteConnection } = await import("@capacitor-community/sqlite");
       const sqlite = new SQLiteConnection(CapacitorSQLite);
-      const alreadyOpen = (await sqlite.isConnection(DB_NAME, false)).result;
-      const db = alreadyOpen
-        ? await sqlite.retrieveConnection(DB_NAME, false)
-        : await sqlite.createConnection(DB_NAME, false, "no-encryption", 1, false);
+      // Reconcile against the native side BEFORE creating a connection —
+      // see the block comment above for why this, and not isConnection()/
+      // retrieveConnection(), is what actually closes a stale native
+      // connection left behind by a torn-down previous JS context.
+      await sqlite.checkConnectionsConsistency();
+      const db = await sqlite.createConnection(DB_NAME, false, "no-encryption", 1, false);
       await db.open();
       await db.execute(buildEnsureSettingsTableSql());
       return db;

@@ -5,8 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { ACCEPT_INVITE_PATH } from "@/lib/auth/onboarding";
-import { deleteStarterDataSnapshot } from "@/lib/starter-data-cache";
-import { supabase } from "@/lib/supabase/client";
+import { signOutAndClearOfflineState } from "@/lib/auth/sign-out";
 import { isNativeRuntime } from "@/lib/native/runtime";
 import { useAuthUserContext } from "./AuthUserContextProvider";
 
@@ -51,15 +50,7 @@ export default function AuthStatusBar() {
     setIsSigningOut(true);
     setError(null);
     try {
-      if (context.userId) {
-        try {
-          await deleteStarterDataSnapshot(context.userId);
-        } catch {
-          // ignore cache cleanup errors on logout
-        }
-      }
-      const { error: signOutError } = await supabase.auth.signOut();
-      if (signOutError) throw signOutError;
+      await signOutAndClearOfflineState(context.userId);
       router.replace("/login");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to log out";

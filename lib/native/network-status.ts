@@ -11,11 +11,26 @@ import { isNativeRuntime } from "./runtime.ts";
 export interface NetworkStatus {
   isOnline(): boolean;
   subscribe(onChange: (online: boolean) => void): () => void;
+  /**
+   * Always performs a real, awaited check rather than returning any cached
+   * value — for safety-critical one-shot decisions (e.g. Phase 2C's
+   * offline-provisioning gate in lib/auth/auth-state.ts) where reading a
+   * stale `isOnline()` snapshot before it self-corrects could misclassify
+   * a genuinely offline device as online, or vice versa. `isOnline()`
+   * remains the fast, synchronous, best-effort snapshot for everything else
+   * — a brief staleness window there is an accepted tradeoff, not here.
+   */
+  isOnlineFresh(): Promise<boolean>;
 }
 
 class BrowserNetworkStatus implements NetworkStatus {
   isOnline(): boolean {
     return typeof navigator === "undefined" ? true : navigator.onLine;
+  }
+
+  async isOnlineFresh(): Promise<boolean> {
+    // navigator.onLine has no caching layer of its own to go stale.
+    return this.isOnline();
   }
 
   subscribe(onChange: (online: boolean) => void): () => void {
@@ -43,32 +58,54 @@ class BrowserNetworkStatus implements NetworkStatus {
  * listener. Per the Phase 2 design principle, this is only ever a SYNC
  * OPPORTUNITY signal — callers must not depend on it being instantaneously
  * accurate or on a change event firing.
+ *
+ * Bug fixed here (found via Phase 2C's cold-start-while-offline testing):
+ * the constructor's one-time refreshOnce() correcting the optimistic
+ * `connected = true` default previously never notified anything already
+ * subscribed at that moment — a component reading isOnline() synchronously
+ * on mount (before that correction lands) could stay wrong for the rest of
+ * the session, since nothing re-notifies unless an actual LATER transition
+ * event fires. refreshOnce() now notifies every current subscriber too.
  */
 class NativeCapacitorNetworkStatus implements NetworkStatus {
   private connected = true;
+  private listeners = new Set<(online: boolean) => void>();
 
   constructor() {
     void this.refreshOnce();
   }
 
+  private notify(connected: boolean): void {
+    this.connected = connected;
+    for (const listener of this.listeners) listener(connected);
+  }
+
   private async refreshOnce(): Promise<void> {
     const { Network } = await import("@capacitor/network");
     const status = await Network.getStatus();
-    this.connected = status.connected;
+    this.notify(status.connected);
   }
 
   isOnline(): boolean {
     return this.connected;
   }
 
+  async isOnlineFresh(): Promise<boolean> {
+    const { Network } = await import("@capacitor/network");
+    const status = await Network.getStatus();
+    this.notify(status.connected);
+    return status.connected;
+  }
+
   subscribe(onChange: (online: boolean) => void): () => void {
+    this.listeners.add(onChange);
+
     let unsubscribed = false;
     let handle: { remove(): Promise<void> } | null = null;
     void (async () => {
       const { Network } = await import("@capacitor/network");
       const listenerHandle = await Network.addListener("networkStatusChange", (status) => {
-        this.connected = status.connected;
-        onChange(status.connected);
+        this.notify(status.connected);
       });
       if (unsubscribed) {
         await listenerHandle.remove();
@@ -78,6 +115,7 @@ class NativeCapacitorNetworkStatus implements NetworkStatus {
     })();
     return () => {
       unsubscribed = true;
+      this.listeners.delete(onChange);
       void handle?.remove();
     };
   }

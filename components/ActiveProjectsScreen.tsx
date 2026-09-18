@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import {
+  fromFieldPackageProjects,
   getActiveProjectsFieldPackage,
   resolveActiveProjectsLoadOutcome,
   toFieldPackageProjects,
@@ -11,6 +12,7 @@ import {
   type CompanyGroup,
 } from "@/lib/active-projects-field-package";
 import { appRoutes } from "@/lib/app-routes";
+import { describeLeaseExpiry } from "@/lib/auth/offline-access-lease";
 import { setActiveProject } from "@/lib/active-project-context";
 import { filterVisibleActiveProjects } from "@/lib/active-projects-visibility";
 import { supabase } from "@/lib/supabase/client";
@@ -62,7 +64,7 @@ type SyncStatus =
 
 export function ActiveProjectsScreen() {
   const router = useRouter();
-  const { loading: authLoading, context } = useAuthUserContext();
+  const { loading: authLoading, context, authMode, lease } = useAuthUserContext();
   const [groups, setGroups] = useState<CompanyGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -131,8 +133,47 @@ export function ActiveProjectsScreen() {
       setLoading(false);
     };
 
+    /**
+     * Phase 2C offline-authorized path — the auth layer has already
+     * determined (independent of this component) that the server is
+     * unreachable and this device holds a currently valid, unexpired
+     * offline access lease for this exact userId. No assignment/role logic
+     * is recomputed here and no Supabase call is attempted: the
+     * already-authorized field package is the sole source of truth for
+     * what this technician may see offline.
+     */
+    const loadOfflineAuthorized = async (userId: string) => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const snapshot = await getActiveProjectsFieldPackage().loadActiveProjectsSnapshot(userId);
+        if (cancelled) return;
+        if (snapshot) {
+          setGroups(fromFieldPackageProjects(snapshot.projects));
+          setSyncStatus({ kind: "offline-cached", syncedAt: snapshot.syncedAt });
+        } else {
+          setGroups([]);
+          setSyncStatus({ kind: "unavailable" });
+          setLoadError("Offline, and no projects have been saved to this device yet for this account.");
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setGroups([]);
+        setSyncStatus({ kind: "unavailable" });
+        setLoadError(`Offline, and the saved projects on this device could not be read (${e instanceof Error ? e.message : String(e)}).`);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
     const load = async () => {
       if (authLoading) return;
+
+      if (authMode === "offline-authorized" && context.userId) {
+        await loadOfflineAuthorized(context.userId);
+        return;
+      }
+
       if (!context.userId) {
         if (!cancelled) {
           setGroups([]);
@@ -250,7 +291,7 @@ export function ActiveProjectsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, context.companyIds, context.companyRolesById, context.userId, isGlobalAdmin]);
+  }, [authLoading, authMode, context.companyIds, context.companyRolesById, context.userId, isGlobalAdmin]);
 
   const totalProjects = useMemo(() => groups.reduce((sum, g) => sum + g.projects.length, 0), [groups]);
 
@@ -290,7 +331,13 @@ export function ActiveProjectsScreen() {
 
       {syncStatus?.kind === "offline-cached" ? (
         <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          Offline — showing projects saved on this device. Last synced {new Date(syncStatus.syncedAt).toLocaleString()}.
+          <p>Offline — showing projects saved on this device. Last synced {new Date(syncStatus.syncedAt).toLocaleString()}.</p>
+          {authMode === "offline-authorized" && lease
+            ? (() => {
+                const expiry = describeLeaseExpiry(lease, new Date().toISOString());
+                return <p className={expiry.urgent ? "mt-1 font-semibold" : "mt-1"}>{expiry.text}</p>;
+              })()
+            : null}
         </section>
       ) : null}
 
