@@ -137,4 +137,29 @@ export const MOBILE_MIGRATIONS: readonly SqlMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_local_submissions_user_project ON local_submissions(user_id, project_id)`,
     ],
   },
+  {
+    // Owner: lib/native/local-photo.ts (Phase 2G). One row per
+    // localPhotoId — metadata/association ONLY, never image bytes (those
+    // live in the app-private filesystem via lib/native/filesystem.ts,
+    // addressed by filesystem_path). See that file's own doc for why file
+    // I/O and metadata are deliberately split.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS local_photos (
+        local_photo_id TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        local_submission_id TEXT NOT NULL,
+        field_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        filesystem_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_local_photos_submission_field ON local_photos(local_submission_id, field_name)`,
+    ],
+  },
 ];

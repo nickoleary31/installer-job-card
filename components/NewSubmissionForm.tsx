@@ -55,6 +55,14 @@ import {
   type LocalSubmission,
   type LocalSubmissionStatus,
 } from "@/lib/local-submission";
+import {
+  buildLocalPhotoUri,
+  deleteLocalPhotoDurably,
+  loadLocalPhotoBlob,
+  parseLocalPhotoUri,
+  savePhotoDurably,
+  verifyDurablePhotoReferences,
+} from "@/lib/local-photo";
 import { mergeZohoPrefillIntoCoreJob } from "@/lib/zoho-fsm/core-job-prefill";
 import type { ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import {
@@ -145,6 +153,22 @@ import type { InstalledProductSystem } from "@/lib/product-devices";
 const PHOTO_BUCKET = "job-card-photos";
 
 async function deleteJobCardPhotoObject(storagePath: string) {
+  // Phase 2G — durable-local photos are identified by the local-photo:// sentinel
+  // (see lib/local-photo.ts) rather than a real Supabase storagePath. Branching here,
+  // the one shared removal choke point, means every one of this function's ~15 call
+  // sites needs zero changes to correctly remove either kind of photo.
+  const localPhotoId = parseLocalPhotoUri(storagePath);
+  if (localPhotoId) {
+    try {
+      await deleteLocalPhotoDurably(localPhotoId);
+    } catch (e) {
+      console.warn("Local photo cleanup warning:", {
+        message: e instanceof Error ? e.message : String(e),
+        localPhotoId,
+      });
+    }
+    return;
+  }
   try {
     const { error } = await supabase.storage.from(PHOTO_BUCKET).remove([storagePath]);
     if (error) {
@@ -1505,6 +1529,12 @@ function normalizePhotoFilename(name: string): string {
 function normalizePublicUrlForDedupe(url: string): string {
   const u = url.trim();
   if (!u) return "";
+  // Phase 2G — local-photo://<id> sentinels (see lib/local-photo.ts) are opaque,
+  // non-special-scheme URLs: new URL() gives every one of them the SAME empty
+  // origin+pathname ("null"), which would wrongly collapse distinct durable-local
+  // photos that happen to share an original filename. The raw lowercased sentinel
+  // is already unique per localPhotoId, so skip URL parsing for it entirely.
+  if (parseLocalPhotoUri(u)) return u.toLowerCase();
   try {
     const parsed = new URL(u);
     return `${parsed.origin}${parsed.pathname}`.toLowerCase();
@@ -1619,6 +1649,55 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
   return entries;
 }
 
+/**
+ * Phase 2G — resolves a restored durable-local photo (identified by the
+ * local-photo://<id> sentinel in RemoteThumb.publicUrl, see lib/local-photo.ts)
+ * back into a displayable image. The durable source of truth stays the
+ * app-private filesystem file; this only ever produces a short-lived object
+ * URL for rendering, revoked on unmount/id change so full-resolution bytes
+ * don't pile up in memory across many thumbnails.
+ */
+function LocalPhotoImg({ localPhotoId, alt, className }: { localPhotoId: string; alt: string; className: string }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setObjectUrl(null);
+    setFailed(false);
+    loadLocalPhotoBlob(localPhotoId)
+      .then((blob) => {
+        if (cancelled) return;
+        if (!blob) {
+          setFailed(true);
+          return;
+        }
+        createdUrl = URL.createObjectURL(blob);
+        setObjectUrl(createdUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [localPhotoId]);
+
+  if (failed) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-gray-100 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400`}>
+        Unavailable
+      </div>
+    );
+  }
+  if (!objectUrl) {
+    return <div className={`${className} animate-pulse bg-gray-100 dark:bg-gray-700`} aria-label={`Loading ${alt}`} />;
+  }
+  return <img src={objectUrl} alt={alt} className={className} />;
+}
+
 export function PhotoThumbnailGrid({
   files,
   remotePhotos = [],
@@ -1673,7 +1752,14 @@ export function PhotoThumbnailGrid({
                 Remove
               </button>
             </div>
-            <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
+            {(() => {
+              const localPhotoId = parseLocalPhotoUri(e.remote.publicUrl);
+              return localPhotoId ? (
+                <LocalPhotoImg localPhotoId={localPhotoId} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
+              ) : (
+                <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
+              );
+            })()}
             <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.remote.filename}>
               {e.remote.filename}
             </p>
@@ -3482,6 +3568,56 @@ export function NewSubmissionForm() {
         // job-site cellular/wifi is what made uploads slow and prone to failure. Compress
         // client-side first (falls back to the original file if compression fails).
         const file = await compressPhotoForUpload(originalFile);
+
+        // Phase 2G — offline-authorized native sessions never touch Supabase Storage at
+        // all: bytes go straight to the app-private filesystem via savePhotoDurably(),
+        // with a sentinel local-photo://<id> value standing in for publicUrl/storagePath
+        // (see lib/local-photo.ts's own doc). That sentinel is truthy, so every existing
+        // `.filter(m => m.publicUrl?.trim())` counting/validation site elsewhere in this
+        // file keeps working unchanged for restored-local photos exactly as it does for
+        // real uploads — this branch is this function's ONLY offline-authorized concern.
+        if (isOfflineAuthorized) {
+          const projectId =
+            typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "" : "";
+          try {
+            if (!authUserContext.userId || !projectId) {
+              throw new Error("Missing user/project context for durable local photo save");
+            }
+            const localPhoto = await savePhotoDurably({
+              userId: authUserContext.userId,
+              projectId,
+              localSubmissionId: submissionId,
+              fieldName,
+              group,
+              bytes: file,
+              originalFilename: originalFile.name,
+              mimeType: file.type || originalFile.type || "image/jpeg",
+            });
+            const sentinelUrl = buildLocalPhotoUri(localPhoto.localPhotoId);
+            uploadedUrls.push(sentinelUrl);
+            uploadedPhotos.push({
+              fieldName,
+              group,
+              label: PHOTO_FIELD_LABELS[fieldName],
+              filename: originalFile.name,
+              storagePath: sentinelUrl,
+              publicUrl: sentinelUrl,
+              uploadedAt: localPhoto.createdAt,
+            });
+          } catch (localError) {
+            failures.push({
+              error: localError,
+              storagePath: "",
+              filename: originalFile.name,
+              submissionId,
+              group,
+              fieldName,
+            });
+            ok = false;
+          }
+          continue;
+        }
+
         const safeName = originalFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         // eslint-disable-next-line react-hooks/purity -- unique storage object names (not render)
         const stampedName = `${Date.now()}-${safeName}`;
@@ -5393,6 +5529,30 @@ export function NewSubmissionForm() {
     setDraftNoticeMessage(
       restoredUploads.length > 0 ? "Draft restored." : "Draft restored. Please re-upload photos before submitting.",
     );
+
+    // Show everything the draft claims immediately (above), then confirm each durable-local
+    // reference genuinely still loads (file survives force-close/reboot in the common case —
+    // this is a truthfulness backstop for the rarer case where it doesn't: deleted/corrupted
+    // on disk between saves). A dropped reference is removed from photoMetadataByField only —
+    // never from local_photos/the filesystem — so required-photo counts/collectReviewValidationIssues
+    // (both derived from photoMetadataByField) stop treating it as present evidence, without any
+    // repair/cleanup of the underlying durable row. No-ops entirely for non-sentinel (real
+    // remote) references, so this is a no-op on every online/web restore path too.
+    const fieldsToVerify = Object.keys(restoredMetadataByField) as UploadFieldName[];
+    void (async () => {
+      for (const field of fieldsToVerify) {
+        const entries = restoredMetadataByField[field];
+        if (entries.length === 0) continue;
+        const { droppedLocalPhotoIds } = await verifyDurablePhotoReferences(entries);
+        if (droppedLocalPhotoIds.length === 0) continue;
+        setPhotoMetadataByFieldSafe((prev) => {
+          const current = prev[field];
+          const next = current.filter((m) => !droppedLocalPhotoIds.includes(parseLocalPhotoUri(m.publicUrl || "") || ""));
+          if (next.length === current.length) return prev;
+          return { ...prev, [field]: next };
+        });
+      }
+    })();
   };
 
   /**

@@ -7,6 +7,7 @@ import { getNetworkStatus } from "@/lib/native/network-status";
 import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
 import { getCompanyProductDefinitionsRepository, type CompanyFormProductRow } from "@/lib/product-config";
 import { getLocalSubmissionRepository, type LocalSubmissionInput } from "@/lib/local-submission";
+import { deleteLocalPhotoDurably, getLocalPhotoMetadataRepository, loadLocalPhotoBlob, savePhotoDurably } from "@/lib/local-photo";
 import {
   clearProofMarkers,
   readProofMarkers,
@@ -106,6 +107,24 @@ const USER_A_SET_2: FieldPackageProject[] = [
   },
 ];
 
+/** Phase 2G — a tiny (1x1 transparent) real PNG, so savePhotoDurably()/loadLocalPhotoBlob() exercise real filesystem bytes, not a fake string. */
+function syntheticPhotoBlob(): Blob {
+  const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: "image/png" });
+}
+
+/** Phase 2G cleanup pass — byte-for-byte identity check for the authorization-removal/logout preservation proofs below (SHA-256, not just size). */
+async function sha256Hex(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /** Phase 2F item 1 — simulates a successful authoritative refresh where project-1 drops out of User A's authorized set entirely (project-2 remains). */
 const USER_A_SET_WITHOUT_PROJECT_1: FieldPackageProject[] = [
   {
@@ -157,6 +176,10 @@ export default function NativeProofPage() {
   const [busy, setBusy] = useState(false);
   const [liveOnline, setLiveOnline] = useState<boolean | null>(null);
   const [fieldPackageLog, setFieldPackageLog] = useState<FieldPackageLogEntry[]>([]);
+  const [lastLocalPhotoId, setLastLocalPhotoId] = useState<string | null>(null);
+  const [secondLocalPhotoId, setSecondLocalPhotoId] = useState<string | null>(null);
+  const [queryLocalSubmissionId, setQueryLocalSubmissionId] = useState("");
+  const [queryLocalPhotoId, setQueryLocalPhotoId] = useState("");
 
   useEffect(() => {
     const status = getNetworkStatus();
@@ -753,6 +776,189 @@ export default function NativeProofPage() {
             className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
           >
             Delete local submission (synthetic-local-submission-1)
+          </button>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Phase 2G — durable local photos (real savePhotoDurably/loadLocalPhotoBlob/deleteLocalPhotoDurably, synthetic data)
+        </h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Last saved id: {lastLocalPhotoId ?? "(none yet)"} · Second saved id (different field): {secondLocalPhotoId ?? "(none yet)"}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("savePhotoDurably(A, sub-1, vehicleFront)", async () => {
+                const photo = await savePhotoDurably({
+                  userId: USER_A,
+                  projectId: "synthetic-project-1",
+                  localSubmissionId: "synthetic-local-submission-1",
+                  fieldName: "vehicleFront",
+                  group: "vehicle",
+                  bytes: syntheticPhotoBlob(),
+                  originalFilename: "synthetic.png",
+                  mimeType: "image/png",
+                });
+                setLastLocalPhotoId(photo.localPhotoId);
+                return photo;
+              })
+            }
+            className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save durable photo (A, sub-1, vehicleFront)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("savePhotoDurably(A, sub-1, vehicleSide)", async () => {
+                const photo = await savePhotoDurably({
+                  userId: USER_A,
+                  projectId: "synthetic-project-1",
+                  localSubmissionId: "synthetic-local-submission-1",
+                  fieldName: "vehicleSide",
+                  group: "vehicle",
+                  bytes: syntheticPhotoBlob(),
+                  originalFilename: "synthetic.png",
+                  mimeType: "image/png",
+                });
+                setSecondLocalPhotoId(photo.localPhotoId);
+                return photo;
+              })
+            }
+            className="rounded bg-emerald-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save second durable photo (A, sub-1, vehicleSide)
+          </button>
+          <button
+            type="button"
+            disabled={busy || !lastLocalPhotoId}
+            onClick={() =>
+              runFieldPackage(`loadLocalPhotoBlob(${lastLocalPhotoId})`, async () => {
+                if (!lastLocalPhotoId) return "no id yet";
+                const blob = await loadLocalPhotoBlob(lastLocalPhotoId);
+                return blob ? { sizeBytes: blob.size, type: blob.type } : null;
+              })
+            }
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load last durable photo blob
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("listLocalPhotosForSubmission(synthetic-local-submission-1)", () =>
+                getLocalPhotoMetadataRepository().listLocalPhotosForSubmission("synthetic-local-submission-1"),
+              )
+            }
+            className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            List photos for submission (sub-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("listLocalPhotosForField(sub-1, vehicleFront)", () =>
+                getLocalPhotoMetadataRepository().listLocalPhotosForField("synthetic-local-submission-1", "vehicleFront"),
+              )
+            }
+            className="rounded bg-purple-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            List photos for field (sub-1, vehicleFront)
+          </button>
+          <button
+            type="button"
+            disabled={busy || !lastLocalPhotoId}
+            onClick={() =>
+              runFieldPackage(`deleteLocalPhotoDurably(${lastLocalPhotoId})`, async () => {
+                if (!lastLocalPhotoId) return "no id yet";
+                await deleteLocalPhotoDurably(lastLocalPhotoId);
+                setLastLocalPhotoId(null);
+                return "deleted";
+              })
+            }
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Delete last durable photo (metadata + file)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("clearLocalPhotosForSubmission(synthetic-local-submission-1)", async () => {
+                await getLocalPhotoMetadataRepository().clearLocalPhotosForSubmission("synthetic-local-submission-1");
+                setLastLocalPhotoId(null);
+                setSecondLocalPhotoId(null);
+                return "cleared";
+              })
+            }
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear all photos for submission (sub-1)
+          </button>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Phase 2G cleanup pass — query ANY real id directly (authorization-removal/logout preservation proofs)
+        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={queryLocalSubmissionId}
+            onChange={(e) => setQueryLocalSubmissionId(e.target.value)}
+            placeholder="localSubmissionId"
+            className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+          />
+          <button
+            type="button"
+            disabled={busy || !queryLocalSubmissionId.trim()}
+            onClick={() =>
+              runFieldPackage(`listLocalPhotosForSubmission(${queryLocalSubmissionId})`, () =>
+                getLocalPhotoMetadataRepository().listLocalPhotosForSubmission(queryLocalSubmissionId.trim()),
+              )
+            }
+            className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            List photos for ANY submission id
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={queryLocalPhotoId}
+            onChange={(e) => setQueryLocalPhotoId(e.target.value)}
+            placeholder="localPhotoId"
+            className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+          />
+          <button
+            type="button"
+            disabled={busy || !queryLocalPhotoId.trim()}
+            onClick={() =>
+              runFieldPackage(`loadLocalPhotoMetadata(${queryLocalPhotoId})`, () =>
+                getLocalPhotoMetadataRepository().loadLocalPhotoMetadata(queryLocalPhotoId.trim()),
+              )
+            }
+            className="rounded bg-indigo-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load metadata for ANY photo id
+          </button>
+          <button
+            type="button"
+            disabled={busy || !queryLocalPhotoId.trim()}
+            onClick={() =>
+              runFieldPackage(`loadLocalPhotoBlob(${queryLocalPhotoId}) + sha256`, async () => {
+                const blob = await loadLocalPhotoBlob(queryLocalPhotoId.trim());
+                if (!blob) return { blob: null };
+                return { sizeBytes: blob.size, type: blob.type, sha256: await sha256Hex(blob) };
+              })
+            }
+            className="rounded bg-indigo-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load blob + SHA-256 for ANY photo id
           </button>
         </div>
       </div>

@@ -464,3 +464,211 @@ the pre-existing web draft-resume path).
 out of scope here), and `photoRestoreSupported`-style claims stay truthfully absent for native
 records. No durable native photo capture, upload, submission outbox, background sync, conflict
 reconciliation, quarantine API, or inspection queue — all left to later phases.
+
+## Phase 2G — durable native photo persistence
+
+Phase 2F closed the gap for structured *typed* work; Phase 2G closes the identical gap for *photos*.
+Before Phase 2G, `photoMetadataByField` (the in-memory record of what's been uploaded, per field) only
+became durable once a real Supabase Storage upload succeeded — if that upload failed or the app was
+force-stopped mid-session, the technician's captured photo was gone, even though Phase 2F's structured
+answers around it survived. Phase 2G makes the photo *bytes themselves* durable on native immediately
+after capture/selection, independent of network reachability.
+
+**Re-baseline first.** The full existing photo pipeline in `components/NewSubmissionForm.tsx` was
+audited before any design work: `uploadPhotosToStorage(group, fieldName, files)` (compresses via the
+existing `compressPhotoForUpload()`, then uploads to Supabase Storage) is the single choke point behind
+every one of the ~10 field-specific upload handlers (`applyVehiclePhotoUpload` and its VAC4/PPD/CP4/
+LinxUp/Blaxtair siblings); `deleteJobCardPhotoObject(storagePath)` is the equivalent single choke point
+behind every one of the ~15 removal call sites. `PhotoThumbnailGrid` (local to `NewSubmissionForm.tsx`)
+and an independent, structurally-duplicated copy of the same component in `components/
+JobCardPhotoControls.tsx` (used by the three Blaxtair product sections, which route through the exact
+same `uploadPhotosToStorage`) are the only two photo-preview render sites in the app. `@capacitor/
+camera` was confirmed NOT installed; the existing `<input type="file" accept="image/*">` mechanism
+(never actually wired to the unused Phase 1A `lib/native/camera.ts` stub) already opens the native
+Android camera/gallery chooser inside the WebView — proven live on-device in this phase without adding
+the plugin, since Phase 2G's actual success criterion (bytes become durable immediately regardless of
+source) is orthogonal to capture mechanism.
+
+**Core design principle**: the durable source of truth is the **app-private native filesystem**, reusing
+`lib/native/filesystem.ts`'s existing `getAppFilesystem()` boundary (Phase 1A/2A) completely unchanged —
+native via `@capacitor/filesystem`'s `Directory.Data`, web via the Origin Private File System. SQLite
+never stores image bytes or base64 — only metadata and associations.
+
+**`lib/local-photo.ts` / `lib/native/local-photo.ts`** — mirrors Phase 2F's shape exactly, but
+deliberately splits two concerns the phase spec required kept separate:
+- **File I/O**: the existing `getAppFilesystem()` boundary, reused as-is.
+- **Metadata/association**: a new `LocalPhotoMetadataRepository`, SQLite-backed (`local_photos`,
+  migration version 6), native-only in practice — `WebLocalPhotoMetadataNotImplemented` mirrors
+  `WebLocalSubmissionNotImplemented`'s precedent exactly.
+
+```sql
+CREATE TABLE local_photos (
+  local_photo_id TEXT PRIMARY KEY, user_id TEXT, project_id TEXT, local_submission_id TEXT,
+  field_name TEXT, group_name TEXT,             -- field/slot identity, never array position
+  original_filename TEXT, mime_type TEXT, size_bytes INTEGER,
+  filesystem_path TEXT,                          -- the getAppFilesystem() key; never the bytes
+  created_at TEXT, updated_at TEXT
+);
+CREATE INDEX idx_local_photos_submission_field ON local_photos(local_submission_id, field_name);
+```
+
+**Identity**: `localPhotoId` is a fresh `crypto.randomUUID()`, generated at save time, independent of
+filename, submission id, field index, or upload path — stable across force-close/resume and later
+mappable to a remote `storagePath` (Phase 2H) without replacing local identity.
+
+**One logical operation, ordered to make half-persisted state structurally impossible.**
+`savePhotoDurably()`/`deleteLocalPhotoDurably()` in `lib/local-photo.ts` are the only write paths a
+caller may use — `NewSubmissionForm.tsx` never issues raw SQL or `Filesystem` calls directly:
+- **Save**: filesystem write happens first; the metadata row is only ever created once that succeeded.
+  If the metadata write then fails, the just-written file is deleted (best-effort) so it never lingers
+  as an orphan nothing references. If the filesystem write itself fails, no metadata attempt is ever
+  made — a dangling row is not merely handled, it cannot occur.
+- **Delete**: the opposite order — metadata is deleted first, then the file. A failed file delete only
+  ever leaves an orphaned file (wasted disk space, a documented future-cleanup case), never a
+  `LocalPhoto` row pointing at a file that's already gone.
+- **Replace**: every existing upload handler already captures the old metadata (`prevMeta`) *before*
+  awaiting the new upload, and only deletes entries no longer present in the new result *after* the
+  upload resolves — so the new photo is already durable before the old one is ever removed, with zero
+  changes needed to any individual handler.
+
+Both functions take an optional `deps` parameter (defaulting to the real `getAppFilesystem()`/
+`getLocalPhotoMetadataRepository()`), the same dependency-injectable pure/impure split already used
+elsewhere in this codebase — this is what makes the failure-ordering guarantees above unit-testable
+without mocking modules or touching a device (`lib/local-photo.test.ts`).
+
+**The `local-photo://<id>` sentinel — near-zero-touch integration.** Rather than hunting through dozens
+of scattered `.filter(m => m.publicUrl?.trim())` counting/validation call sites across the 11,000+ line
+form component, a durable-local (not-yet-uploaded) photo's `UploadedPhotoMetadata.publicUrl` and
+`.storagePath` are both set to a synthetic `local-photo://<localPhotoId>` value. Being a non-empty
+string, it is truthy — every existing counting/validation site keeps working completely unchanged, on
+both first render and after restore. Because `photoMetadataByField` was already flowing through Phase
+2F's `buildCurrentDraftData()`/`restoreFromDraftData()` (the `photoUploads` field, `storagePath?.trim()
+→ "saved"` status flip), durable-local photo *references* round-trip through the existing draft
+persistence mechanism with **zero additional wiring** — only the integration points below needed
+touching.
+
+**Integration points** (the entire visible-behavior surface of this phase):
+- `uploadPhotosToStorage` branches internally on `isOfflineAuthorized`: offline-authorized calls
+  `savePhotoDurably()` instead of touching Supabase Storage at all; the external contract (return
+  shape, `beginPhotoUploadTracking`/`endPhotoUploadTracking` status wrapping) is unchanged, so none of
+  the ~10 upload handlers needed edits.
+- `deleteJobCardPhotoObject` branches on `parseLocalPhotoUri(storagePath)`: a sentinel routes to
+  `deleteLocalPhotoDurably()`, anything else keeps using the existing Supabase Storage `remove()` path
+  — none of the ~15 removal call sites needed edits.
+- A new `LocalPhotoImg` component (added to **both** `PhotoThumbnailGrid` copies — `NewSubmissionForm
+  .tsx`'s own and the structurally-independent one in `JobCardPhotoControls.tsx`, which the three
+  Blaxtair sections render through) resolves a sentinel back into a displayable image: reads the
+  metadata, reads the file via `loadLocalPhotoBlob()`, creates a short-lived object URL for the `<img>`,
+  revokes it on unmount/id change. This is the one place a durable-local photo needs source-aware
+  rendering.
+
+**Two bugs found and fixed during on-device verification, not present in the original design:**
+1. **Dedupe collision.** `normalizePublicUrlForDedupe()` (present as an independent copy in both
+   `NewSubmissionForm.tsx` and `JobCardPhotoControls.tsx`) routes every URL through `new URL(...).
+   origin + .pathname` to compare photos for display-dedup purposes. For a real `https://` Supabase
+   URL this is meaningfully unique per upload; for the opaque `local-photo://` scheme (a non-special
+   URL with no real origin/pathname), every sentinel normalizes to the identical string `"null"` —
+   which would silently collapse two *different* durable-local photos in the same field that happen to
+   share an original filename (e.g. two camera-default `IMG_0001.jpg`s). Fixed by special-casing the
+   sentinel scheme in both copies to use the raw lowercased URI (already unique per `localPhotoId`)
+   instead of parsing it as a real URL.
+2. **Missing MIME type on restore.** `lib/native/filesystem.ts`'s native `readFile()` round-trips
+   through base64 (`base64ToBlob`, pre-existing, unchanged) and never sets a `Blob.type` — an `<img>`
+   element cannot reliably decode an untyped blob. `loadLocalPhotoBlob()` now re-stamps the returned
+   Blob with the `mimeType` recorded in metadata at save time whenever the filesystem layer returns one
+   with an empty type, leaving an already-typed Blob (e.g. the web/OPFS path) untouched. Verified live
+   on-device: before the fix, `loadLocalPhotoBlob()` returned `{ sizeBytes: 68, type: "" }`; after,
+   `{ sizeBytes: 68, type: "image/png" }`, and the restored `<img>` decoded correctly
+   (`naturalWidth`/`naturalHeight` matching the source image, `complete: true`).
+
+**Form/photo-state integration strategy**: minimal by design. `NewSubmissionForm.tsx` still thinks in
+`File[]` arrays for the current session (unchanged) and `photoMetadataByField` for durable references
+(unchanged shape from Phase 2F); no rewrite of the form's photo state model was needed. After a
+successful durable save, the handler clears local `File` state exactly as it already did for a
+successful Supabase upload — the sentinel-bearing metadata entry is what carries the photo forward.
+
+**Authorization removal and logout lock access, they never delete local photos** — inherited
+structurally from Phase 2F's identical guarantee, not by a new special case: `deleteLocalPhotoDurably()`
+is only ever called from the explicit remove/replace-photo UI paths in `NewSubmissionForm.tsx`. Neither
+the Phase 2D/2B pruning paths nor `clearLease()` reference `lib/local-photo.ts` or `local_photos` at
+all. A `LocalPhoto` row and its file survive project de-authorization and logout exactly as a
+`LocalSubmission` row does, and become reachable again — without duplication — the moment the project
+is re-authorized or the same user re-authenticates. User isolation follows the same `user_id` scoping
+already proven for every other native table.
+
+**Live on-device verification** (Android emulator, `phase2a_proof` AVD): the full repository layer was
+exercised for real through `/native-proof`'s new Phase 2G diagnostics section (`savePhotoDurably`,
+`loadLocalPhotoBlob`, field/submission scoping via `listLocalPhotosForField`/
+`listLocalPhotosForSubmission`, `deleteLocalPhotoDurably`) against the real native SQLite connection and
+real `Directory.Data` filesystem — not a simulation. Separately, the full form-level pipeline was driven
+through the real UI (a `DataTransfer`-constructed `File` dispatched at the real hidden `<input
+type="file">`, exercising the exact same `onChange` handler a technician's tap would): capture → visible
+"✓ Saved" badge and live thumbnail on first render → **`am force-stop`, process confirmed killed,
+relaunched, resumed via the real "Resume unfinished entry?" prompt** → photo preview restored, filename
+and field association correct, `<img>` decoded successfully. One test-methodology pitfall was caught and
+corrected along the way: uploading a photo while the offline-authorized resume-choice modal is still
+showing (before the technician picks Resume/Start Another) leaves that upload's SQLite/filesystem
+durability intact but never reaches `local_submissions.payload.photoUploads`, because the periodic
+persistence interval deliberately does not run until `localSubmissionGate.kind === "ready"` — an
+inline reference-loss window that is not reachable by a real technician, since the modal is a real
+`fixed inset-0 z-[100]` backdrop that blocks pointer/touch interaction with the field underneath it;
+only a synthetic, hit-testing-bypassing DOM event (as used here) can reach it. Documented rather than
+"fixed," since there is nothing to fix — the modal already does its job.
+
+**`photoRestoreSupported` stays absent/false** for native records at this point in the phase — the
+concept exists in the codebase only as a pre-existing, currently-unread field on the unrelated legacy
+web/PWA `OfflineJobCardDraftPayload` (IndexedDB) type, not as any flag Phase 2G introduced or flips.
+
+### Phase 2G cleanup pass — authorization/logout preservation, sentinel semantics, missing-file truthfulness
+
+**`local-photo://<localPhotoId>` is explicitly a LOCAL-ONLY reference — never real remote evidence.**
+Documented directly on `LOCAL_PHOTO_URI_SCHEME` in `lib/local-photo.ts`: it is NOT a Supabase Storage
+path, NOT a server-reachable URL, NOT an upload destination, and NOT valid evidence that a server has
+ever seen the photo. A future Phase 2H is what resolves/uploads a `LocalPhoto` and maps this local
+identity to the eventual remote `storagePath`/`publicUrl` — that mapping does not exist yet. Any future
+sync/outbox/upload code MUST treat a value matching this scheme as "not yet uploaded" and must never
+forward it to Supabase Storage, a webhook, or any other server-facing API as though it were real remote
+evidence. This phase does not implement that translation — only preserves the contract for the phase
+that will.
+
+**Same-user project-authorization removal and explicit logout both LOCK durable photos, they never
+delete them** — verified live, not just inherited by absence of a call site. With User A's real lease,
+authorized Project A, a `LocalSubmission`, and a durable `LocalPhoto` attached to it all in place: the
+same real Phase 2D/2F pruning boundary (`provisionProjectWorkPackages`/`saveActiveProjectsSnapshot`
+dropping Project A from User A's authorized set) was exercised, then separately the real `clearLease()`
+path, in each case followed by a force-stop and reopen. In both cases: `/installs` no longer lists
+Project A, `/project` fails closed, and `/new-submission` cannot expose or resume the submission or its
+photo — but a direct `LocalPhotoMetadataRepository`/filesystem query afterward confirmed the metadata
+row, `localPhotoId`, and file bytes were all completely unchanged; nothing deleted anything. Legitimately
+restoring Project A's authorization (or re-authenticating the same user) afterward made the exact same
+`LocalSubmission` resumable again and the exact same `LocalPhoto` preview restore, with no duplicate row
+or file ever created. This is the direct, stronger extension of the User A/User B isolation already
+proven: not just "another user can't see it," but "losing your own authorization doesn't destroy it
+either." No code changes were needed for this — `deleteLocalPhotoDurably()` is only ever reachable from
+the explicit remove/replace-photo UI paths (see the earlier "Authorization removal and logout" paragraph
+above); this pass re-verified that guarantee live for photos specifically, the way Phase 2F's cleanup
+pass did for structured submission data.
+
+**Missing/unreadable durable file — truthfulness fix.** The `local-photo://` sentinel is deliberately
+truthy so every existing counting/validation site keeps working unchanged (see above) — but that is only
+correct for as long as the file it references genuinely still exists and reads back successfully. A new
+`verifyDurablePhotoReferences()` in `lib/local-photo.ts` (pure-ish, dependency-injectable, reusing
+`loadLocalPhotoBlob()` itself so "verified" and "actually previewable" can never silently disagree) is
+now called from `restoreFromDraftData()` immediately after a resume: the restored photos render
+immediately as before (no perceived slowdown), and shortly after, any reference whose durable file fails
+to load is removed from `photoMetadataByField` — the single state object every required-photo count and
+`collectReviewValidationIssues()` check already reads from, so this is a small, targeted fix rather than
+a redesign, and needed no changes to `PhotoThumbnailGrid`, `LocalPhotoImg`, or any of the ~50
+`<PhotoThumbnailGrid>` call sites. This performs no repair or deletion of the underlying `LocalPhoto` row
+or file — a dropped reference simply stops being counted as present evidence in this session; the
+durable row/file are left exactly as documented elsewhere in this phase (a safe, separate, future-cleanup
+concern). A source-level regression test
+(`lib/local-photo-restore-verification-boundary.test.ts`) confirms the real `restoreFromDraftData()`
+source actually calls `verifyDurablePhotoReferences()` and never calls
+`deleteLocalPhotoDurably`/`deleteJobCardPhotoObject` as part of this verification.
+
+**Scope boundary, explicit**: no photo upload, Supabase Storage sync, submission outbox, background
+sync, retry queue, conflict reconciliation, quarantine upload, or inspection queue — all left to Phase
+2H+. No aggressive/automatic garbage collection of orphaned photos — explicit discard-local-submission
+cleanup is deferred until a real "discard" UI action exists (it does not yet). The PPD JSON config file
+remains a separate file class, untouched by this phase.

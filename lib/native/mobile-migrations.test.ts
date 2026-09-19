@@ -51,6 +51,16 @@ describe("MOBILE_MIGRATIONS catalog integrity", () => {
     assert.match(allStatements, /CREATE TABLE IF NOT EXISTS local_submissions/);
     assert.match(allStatements, /CREATE INDEX IF NOT EXISTS idx_local_submissions_user_project/);
   });
+
+  it("Phase 2G's local_photos table (version 6) is present and declares no image-bytes/base64 column", () => {
+    const allStatements = MOBILE_MIGRATIONS.flatMap((m) => m.statements).join("\n");
+    assert.match(allStatements, /CREATE TABLE IF NOT EXISTS local_photos/);
+    assert.match(allStatements, /CREATE INDEX IF NOT EXISTS idx_local_photos_submission_field/);
+    const localPhotosMigration = MOBILE_MIGRATIONS.find((m) => m.version === 6);
+    const localPhotosSql = localPhotosMigration?.statements.join("\n") ?? "";
+    assert.ok(!/\bbytes\b|\bbase64\b|\bblob\b/i.test(localPhotosSql), "local_photos must never declare an image-bytes/base64/blob column");
+    assert.match(localPhotosSql, /filesystem_path TEXT NOT NULL/, "photos are referenced by filesystem path, not stored inline");
+  });
 });
 
 describe("Phase 2E migrations (version 3: contact columns, version 4: company_product_definitions)", () => {
@@ -58,7 +68,7 @@ describe("Phase 2E migrations (version 3: contact columns, version 4: company_pr
     const db = createFakeConnection();
     db.appliedVersions.push(1, 2);
     await runMigrations(db, MOBILE_MIGRATIONS);
-    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4, 5]);
+    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
     assert.ok(db.executedSql.some((sql) => sql.includes("ADD COLUMN primary_contact")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS company_product_definitions")));
     // Versions 1 and 2's statements must not be re-executed just because
@@ -82,11 +92,11 @@ describe("Phase 2E migrations (version 3: contact columns, version 4: company_pr
 });
 
 describe("Phase 2F migration (version 5: local_submissions)", () => {
-  it("applied on top of a pre-Phase-2F install (versions 1-4 already recorded) runs only 5", async () => {
+  it("applied on top of a pre-Phase-2F install (versions 1-4 already recorded) runs 5 and 6", async () => {
     const db = createFakeConnection();
     db.appliedVersions.push(1, 2, 3, 4);
     await runMigrations(db, MOBILE_MIGRATIONS);
-    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4, 5]);
+    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS local_submissions")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS idx_local_submissions_user_project")));
     assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS company_product_definitions")).length, 0);
@@ -99,6 +109,33 @@ describe("Phase 2F migration (version 5: local_submissions)", () => {
     await runMigrations(db, MOBILE_MIGRATIONS);
     assert.equal(db.appliedVersions.filter((v) => v === 5).length, 1);
     assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS local_submissions")).length, 1);
+  });
+});
+
+describe("Phase 2G migration (version 6: local_photos)", () => {
+  it("applied on top of a pre-Phase-2G install (versions 1-5 already recorded) runs only 6", async () => {
+    const db = createFakeConnection();
+    db.appliedVersions.push(1, 2, 3, 4, 5);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
+    assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS local_photos")));
+    assert.ok(db.executedSql.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS idx_local_photos_submission_field")));
+    assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS local_submissions")).length, 0);
+  });
+
+  it("is idempotent — three initializations on a fresh install record version 6 exactly once and never re-run its statements", async () => {
+    const db = createFakeConnection();
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    assert.equal(db.appliedVersions.filter((v) => v === 6).length, 1);
+    assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS local_photos")).length, 1);
+  });
+
+  it("a fresh install (no versions previously recorded) applies all six versions in order, ending with local_photos", async () => {
+    const db = createFakeConnection();
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    assert.deepEqual(db.appliedVersions, [1, 2, 3, 4, 5, 6]);
   });
 });
 
@@ -116,7 +153,7 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS); // simulates project-work-package's getSchemaReadyConnection(), later
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")));
-    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4, 5]);
+    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4, 5, 6]);
     // The second call must not re-run already-applied migrations.
     assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")).length, 1);
   });
@@ -127,7 +164,7 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS); // simulates field-package's getSchemaReadyConnection(), later
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")));
-    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4, 5]);
+    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4, 5, 6]);
   });
 
   it("repeated initialization (e.g. every screen mount re-calling getSchemaReadyConnection()) is idempotent — no duplicate CREATE TABLE, no re-recorded version", async () => {
@@ -135,7 +172,7 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS);
     await runMigrations(db, MOBILE_MIGRATIONS);
     await runMigrations(db, MOBILE_MIGRATIONS);
-    assert.equal(db.appliedVersions.length, 5, "each version recorded exactly once despite three initialization calls");
+    assert.equal(db.appliedVersions.length, 6, "each version recorded exactly once despite three initialization calls");
     assert.equal(
       db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")).length,
       1,

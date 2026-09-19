@@ -6,7 +6,8 @@
  * language as VAC4/PPD/CP4/LinxUp without importing from app/page.tsx, which would create a
  * circular import (page.tsx renders those sections).
  */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { loadLocalPhotoBlob, parseLocalPhotoUri } from "@/lib/local-photo";
 
 export function RequiredMark() {
   return (
@@ -48,6 +49,12 @@ function normalizePhotoFilename(name: string): string {
 function normalizePublicUrlForDedupe(url: string): string {
   const u = url.trim();
   if (!u) return "";
+  // Phase 2G — local-photo://<id> sentinels (see lib/local-photo.ts) are opaque,
+  // non-special-scheme URLs: new URL() gives every one of them the SAME empty
+  // origin+pathname, which would wrongly collapse distinct durable-local photos
+  // that happen to share an original filename. The raw lowercased sentinel is
+  // already unique per localPhotoId, so skip URL parsing for it entirely.
+  if (parseLocalPhotoUri(u)) return u.toLowerCase();
   try {
     const parsed = new URL(u);
     return `${parsed.origin}${parsed.pathname}`.toLowerCase();
@@ -150,6 +157,55 @@ function buildCombinedPhotoPreviews(files: File[], remotePhotos: RemoteThumb[]):
   return entries;
 }
 
+/**
+ * Phase 2G — resolves a restored durable-local photo (identified by the
+ * local-photo://<id> sentinel in RemoteThumb.publicUrl, see lib/local-photo.ts)
+ * back into a displayable image. Mirrors NewSubmissionForm.tsx's own
+ * LocalPhotoImg exactly (this file cannot import from that component without
+ * a circular import — see this file's own header comment).
+ */
+function LocalPhotoImg({ localPhotoId, alt, className }: { localPhotoId: string; alt: string; className: string }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setObjectUrl(null);
+    setFailed(false);
+    loadLocalPhotoBlob(localPhotoId)
+      .then((blob) => {
+        if (cancelled) return;
+        if (!blob) {
+          setFailed(true);
+          return;
+        }
+        createdUrl = URL.createObjectURL(blob);
+        setObjectUrl(createdUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [localPhotoId]);
+
+  if (failed) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-gray-100 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400`}>
+        Unavailable
+      </div>
+    );
+  }
+  if (!objectUrl) {
+    return <div className={`${className} animate-pulse bg-gray-100 dark:bg-gray-700`} aria-label={`Loading ${alt}`} />;
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={objectUrl} alt={alt} className={className} />;
+}
+
 export function PhotoThumbnailGrid({
   files,
   remotePhotos = [],
@@ -201,8 +257,14 @@ export function PhotoThumbnailGrid({
                 Remove
               </button>
             </div>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />
+            {(() => {
+              const localPhotoId = parseLocalPhotoUri(e.remote.publicUrl);
+              if (localPhotoId) {
+                return <LocalPhotoImg localPhotoId={localPhotoId} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />;
+              }
+              // eslint-disable-next-line @next/next/no-img-element
+              return <img src={e.remote.publicUrl} alt={e.remote.filename} className="h-20 w-full rounded-md object-cover" />;
+            })()}
             <p className="mt-1 truncate text-xs text-gray-700 dark:text-gray-300" title={e.remote.filename}>
               {e.remote.filename}
             </p>
