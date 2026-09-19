@@ -9,20 +9,24 @@ import type { ProjectWorkPackage, ProjectWorkPackageInput, ProjectWorkPackageRep
  * snapshot, so synced_at/schema_version live directly on its own row rather
  * than a second table.
  *
- * Schema (version 2) lives in mobile-migrations.ts's single canonical
+ * Schema (version 2 CREATE, version 3 ALTER adding primary_contact/
+ * contact_number/contact_email — see ProjectWorkPackage's own doc on why
+ * exactly those three) lives in mobile-migrations.ts's single canonical
  * catalog, not here — see that file's doc comment for why (version numbers
  * in mobile_schema_migrations are GLOBAL across every native repository).
  */
 const TABLE = "project_work_packages";
-const CURRENT_SCHEMA_VERSION = 1;
+/** Bumped from 1 -> 2 alongside lib/project-work-package.ts's own CURRENT_SCHEMA_VERSION. */
+const CURRENT_SCHEMA_VERSION = 2;
 
 function buildUpsertSql(): string {
   return `INSERT INTO ${TABLE} (
       user_id, project_id, company_id, company_name, project_name,
       customer_name, customer_account_name, location,
+      primary_contact, contact_number, contact_email,
       zoho_linked, zoho_work_order_number, zoho_service_appointment_number, zoho_summary,
       schema_version, synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, project_id) DO UPDATE SET
       company_id = excluded.company_id,
       company_name = excluded.company_name,
@@ -30,6 +34,9 @@ function buildUpsertSql(): string {
       customer_name = excluded.customer_name,
       customer_account_name = excluded.customer_account_name,
       location = excluded.location,
+      primary_contact = excluded.primary_contact,
+      contact_number = excluded.contact_number,
+      contact_email = excluded.contact_email,
       zoho_linked = excluded.zoho_linked,
       zoho_work_order_number = excluded.zoho_work_order_number,
       zoho_service_appointment_number = excluded.zoho_service_appointment_number,
@@ -47,15 +54,19 @@ function buildUpsertSql(): string {
  * prior Project Detail online visit already wrote would silently regress
  * the offline copy. A first-time INSERT for a never-before-seen project
  * still gets the caller's zoho_* values (i.e. the nulls), since there is
- * no existing row to preserve.
+ * no existing row to preserve. primary_contact/contact_number/contact_email
+ * are NOT treated this way — they come from the SAME bulk customers join
+ * as customer_name/location during provisioning, so they ARE always
+ * overwritten here, same as any other identity column.
  */
 function buildProvisionUpsertSql(): string {
   return `INSERT INTO ${TABLE} (
       user_id, project_id, company_id, company_name, project_name,
       customer_name, customer_account_name, location,
+      primary_contact, contact_number, contact_email,
       zoho_linked, zoho_work_order_number, zoho_service_appointment_number, zoho_summary,
       schema_version, synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, project_id) DO UPDATE SET
       company_id = excluded.company_id,
       company_name = excluded.company_name,
@@ -63,6 +74,9 @@ function buildProvisionUpsertSql(): string {
       customer_name = excluded.customer_name,
       customer_account_name = excluded.customer_account_name,
       location = excluded.location,
+      primary_contact = excluded.primary_contact,
+      contact_number = excluded.contact_number,
+      contact_email = excluded.contact_email,
       schema_version = excluded.schema_version,
       synced_at = excluded.synced_at`;
 }
@@ -79,6 +93,7 @@ function buildDeleteAllForUserSql(): string {
 
 function buildSelectSql(): string {
   return `SELECT company_id, company_name, project_name, customer_name, customer_account_name, location,
+      primary_contact, contact_number, contact_email,
       zoho_linked, zoho_work_order_number, zoho_service_appointment_number, zoho_summary,
       schema_version, synced_at
     FROM ${TABLE} WHERE user_id = ? AND project_id = ?`;
@@ -95,6 +110,9 @@ type PackageRow = {
   customer_name: string;
   customer_account_name: string | null;
   location: string;
+  primary_contact: string | null;
+  contact_number: string | null;
+  contact_email: string | null;
   zoho_linked: number;
   zoho_work_order_number: string | null;
   zoho_service_appointment_number: string | null;
@@ -136,6 +154,9 @@ export function buildUpsertStatement(pkg: ProjectWorkPackageInput, syncedAt: str
       pkg.customerName,
       pkg.customerAccountName,
       pkg.location,
+      pkg.primaryContact,
+      pkg.contactNumber,
+      pkg.contactEmail,
       pkg.zohoLinked ? 1 : 0,
       pkg.zohoWorkOrderNumber,
       pkg.zohoServiceAppointmentNumber,
@@ -187,6 +208,9 @@ export function buildProvisionStatementSet(
         pkg.customerName,
         pkg.customerAccountName,
         pkg.location,
+        pkg.primaryContact,
+        pkg.contactNumber,
+        pkg.contactEmail,
         pkg.zohoLinked ? 1 : 0,
         pkg.zohoWorkOrderNumber,
         pkg.zohoServiceAppointmentNumber,
@@ -244,6 +268,9 @@ export class NativeProjectWorkPackage implements ProjectWorkPackageRepository {
       customerName: row.customer_name,
       customerAccountName: row.customer_account_name,
       location: row.location,
+      primaryContact: row.primary_contact,
+      contactNumber: row.contact_number,
+      contactEmail: row.contact_email,
       zohoLinked: row.zoho_linked === 1,
       zohoWorkOrderNumber: row.zoho_work_order_number,
       zohoServiceAppointmentNumber: row.zoho_service_appointment_number,

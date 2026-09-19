@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiUrl } from "@/lib/api-base";
 import {
   resolveCompanyProducts,
+  getCompanyProductDefinitionsRepository,
   type CompanyProductResolveResult,
   type CompanyFormProductRow,
 } from "@/lib/product-config";
@@ -26,8 +27,17 @@ export function useCompanyProducts(args: {
   companyId: string | null | undefined;
   companyName: string | null | undefined;
   enabled: boolean;
+  /**
+   * Phase 2E — native-only authoritative offline path (see
+   * NewSubmissionForm.tsx's own authMode check). When true, fetchProducts
+   * reads the locally provisioned CompanyProductDefinitionsPackage instead
+   * of calling /api/company-products, then hands its raw rows to the SAME
+   * resolveCompanyProducts() the online path uses below — one shared
+   * view-model boundary, never a second interpretation of the rows.
+   */
+  isOfflineAuthorized?: boolean;
 }) {
-  const { companyId, companyName, enabled } = args;
+  const { companyId, companyName, enabled, isOfflineAuthorized } = args;
   const [result, setResult] = useState<CompanyProductResolveResult>(EMPTY);
   const [loading, setLoading] = useState(false);
 
@@ -43,6 +53,20 @@ export function useCompanyProducts(args: {
         companyId,
         companyName,
         fetchProducts: async (id) => {
+          if (isOfflineAuthorized) {
+            try {
+              const pkg = await getCompanyProductDefinitionsRepository().loadCompanyProductDefinitions(id);
+              if (!pkg) {
+                return { rows: [], error: "Product definitions were not synced to this device." };
+              }
+              return { rows: pkg.rows };
+            } catch (e) {
+              return {
+                rows: [],
+                error: e instanceof Error ? e.message : "Failed to load offline product definitions.",
+              };
+            }
+          }
           try {
             const {
               data: { session },
@@ -75,7 +99,7 @@ export function useCompanyProducts(args: {
     } finally {
       setLoading(false);
     }
-  }, [companyId, companyName, enabled]);
+  }, [companyId, companyName, enabled, isOfflineAuthorized]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

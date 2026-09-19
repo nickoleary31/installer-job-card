@@ -15,6 +15,7 @@ import { appRoutes } from "@/lib/app-routes";
 import { describeLeaseExpiry } from "@/lib/auth/offline-access-lease";
 import { setActiveProject } from "@/lib/active-project-context";
 import { filterVisibleActiveProjects } from "@/lib/active-projects-visibility";
+import { getCompanyProductDefinitionsRepository, type CompanyFormProductRow } from "@/lib/product-config";
 import {
   buildProvisionedProjectWorkPackages,
   getProjectWorkPackageRepository,
@@ -24,7 +25,14 @@ import { supabase } from "@/lib/supabase/client";
 
 type CompanyRow = { id: string; name: string };
 
-type LinkedCustomerRow = { customer_name: string | null; full_address: string | null; customer_account_id: string | null };
+type LinkedCustomerRow = {
+  customer_name: string | null;
+  full_address: string | null;
+  customer_account_id: string | null;
+  site_contact_name: string | null;
+  contact_number: string | null;
+  contact_email: string | null;
+};
 
 type ActiveProjectRow = {
   id: string;
@@ -75,6 +83,7 @@ export function ActiveProjectsScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [workPackageProvisioningFailed, setWorkPackageProvisioningFailed] = useState(false);
+  const [productDefinitionsProvisioningFailed, setProductDefinitionsProvisioningFailed] = useState(false);
 
   const isGlobalAdmin = context.globalRole === "admin" && context.profileIsActive;
 
@@ -99,7 +108,12 @@ export function ActiveProjectsScreen() {
      * save above — its own failure is surfaced (workPackageProvisioningFailed)
      * but never blocks or downgrades the online render either.
      */
-    const finishOnline = async (userId: string, nextGroups: CompanyGroup[], workPackages: ReturnType<typeof buildProvisionedProjectWorkPackages>) => {
+    const finishOnline = async (
+      userId: string,
+      nextGroups: CompanyGroup[],
+      workPackages: ReturnType<typeof buildProvisionedProjectWorkPackages>,
+      companyProductRowsByCompanyId: ReadonlyMap<string, CompanyFormProductRow[]>,
+    ) => {
       if (cancelled) return;
       setGroups(nextGroups);
       setSyncStatus({ kind: "online-saving" });
@@ -132,6 +146,25 @@ export function ActiveProjectsScreen() {
         if (!cancelled) setWorkPackageProvisioningFailed(false);
       } catch {
         if (!cancelled) setWorkPackageProvisioningFailed(true);
+      }
+
+      // Phase 2E — same independent, best-effort, never-blocks-online-render
+      // contract as the work-package provisioning above. Writes ONE row per
+      // authorized company (including an empty array for companies with no
+      // custom products — see company-product-definitions.ts's own doc on
+      // why that's a meaningful, distinct signal), never pruned here: a
+      // company that temporarily drops out of one sync pass may safely keep
+      // its cached definitions — actual offline USE is still gated by the
+      // (lease + authorized ProjectWorkPackage) check, not by this row's
+      // mere existence.
+      try {
+        const companyRepo = getCompanyProductDefinitionsRepository();
+        for (const [companyId, rows] of companyProductRowsByCompanyId) {
+          await companyRepo.saveCompanyProductDefinitions(companyId, rows);
+        }
+        if (!cancelled) setProductDefinitionsProvisioningFailed(false);
+      } catch {
+        if (!cancelled) setProductDefinitionsProvisioningFailed(true);
       }
     };
 
@@ -218,7 +251,7 @@ export function ActiveProjectsScreen() {
         let companiesQuery = supabase.from("companies").select("id, name").order("name", { ascending: true });
         if (!isGlobalAdmin) {
           if (context.companyIds.length === 0) {
-            await finishOnline(userId, [], []);
+            await finishOnline(userId, [], [], new Map());
             return;
           }
           companiesQuery = companiesQuery.in("id", context.companyIds);
@@ -228,19 +261,21 @@ export function ActiveProjectsScreen() {
         const companies = (companiesData as CompanyRow[]) || [];
         const companyIds = companies.map((c) => c.id);
         if (companyIds.length === 0) {
-          await finishOnline(userId, [], []);
+          await finishOnline(userId, [], [], new Map());
           return;
         }
         const companyNamesById = new Map(companies.map((c) => [c.id, c.name]));
 
-        // 2. Active projects across those companies. customer_account_id is
-        // selected alongside the existing customer fields (same bulk query,
-        // no extra round trip) specifically to provision Phase 2D's
-        // ProjectWorkPackage below without a per-project fetch.
+        // 2. Active projects across those companies. customer_account_id and
+        // the three Phase 2E contact fields are selected alongside the
+        // existing customer fields (same bulk query, no extra round trip)
+        // specifically to provision ProjectWorkPackage below without a
+        // per-project fetch. See ProjectWorkPackage's own doc for why only
+        // these three Site Info fields, and no others.
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select(
-            "id, company_id, project_name, location, customer_id, customer_name, customers:customer_id(customer_name, full_address, customer_account_id)",
+            "id, company_id, project_name, location, customer_id, customer_name, customers:customer_id(customer_name, full_address, customer_account_id, site_contact_name, contact_number, contact_email)",
           )
           .in("company_id", companyIds)
           .eq("active", true)
@@ -336,9 +371,50 @@ export function ActiveProjectsScreen() {
             customerName: fromCustomer || fromProject || "—",
             customerAccountId: linked?.customer_account_id ?? null,
             location: addressFromCustomer || fromProjectLocation || "—",
+            primaryContact: linked?.site_contact_name?.trim() || null,
+            contactNumber: linked?.contact_number?.trim() || null,
+            contactEmail: linked?.contact_email?.trim() || null,
           };
         });
         const workPackages = buildProvisionedProjectWorkPackages(userId, provisioningInputs, customerAccountNamesById);
+
+        // 6. Phase 2E — ONE bulk company_form_products query across every
+        // authorized company (not one query per company, and never one per
+        // project or product) — see lib/product-config/company-product-definitions.ts's
+        // own doc on why this is cached company-scoped rather than
+        // duplicated into every project. A row is written for EVERY
+        // authorized company, including an empty array for companies with
+        // no custom products — see that doc on why an empty-but-present
+        // package is a meaningful, distinct signal from "never checked."
+        let companyProductRowsByCompanyId = new Map<string, CompanyFormProductRow[]>();
+        try {
+          const { data: productRowsData, error: productRowsError } = await supabase
+            .from("company_form_products")
+            .select(
+              "id, company_id, product_key, display_label, base_form_id, section_key, submission_type, draft_key, allow_primary, allow_additional, active, display_order, configuration, created_at, updated_at",
+            )
+            .in("company_id", companyIds)
+            .order("display_order", { ascending: true });
+          if (productRowsError) throw productRowsError;
+          // Pre-seed EVERY authorized company with an empty array first, so
+          // a company with zero custom products still gets a row written
+          // below — that presence (not its content) is what tells the
+          // offline gate "we successfully checked this company."
+          const seeded = new Map<string, CompanyFormProductRow[]>(companyIds.map((id) => [id, []]));
+          for (const row of (productRowsData as CompanyFormProductRow[] | null) || []) {
+            const list = seeded.get(row.company_id) || [];
+            list.push(row);
+            seeded.set(row.company_id, list);
+          }
+          companyProductRowsByCompanyId = seeded;
+        } catch {
+          // Provisioning-time company_form_products read is best-effort — a
+          // failure here is surfaced (productDefinitionsProvisioningFailed)
+          // but must never block the Active Projects online render, which
+          // does not depend on this data at all. Leaving the map empty here
+          // means NOTHING gets (re)written this pass — any previously
+          // cached definitions are left exactly as they were.
+        }
 
         const cardsByCompany = new Map<string, ActiveProjectCard[]>();
         for (const row of visibleProjects) {
@@ -364,7 +440,7 @@ export function ActiveProjectsScreen() {
           .filter((c) => (cardsByCompany.get(c.id) || []).length > 0)
           .map((c) => ({ companyId: c.id, companyName: c.name, projects: cardsByCompany.get(c.id) || [] }));
 
-        await finishOnline(userId, nextGroups, workPackages);
+        await finishOnline(userId, nextGroups, workPackages, companyProductRowsByCompanyId);
       } catch (e) {
         await finishFailed(userId, e instanceof Error ? e.message : "Failed to load active projects.");
       }
@@ -412,7 +488,7 @@ export function ActiveProjectsScreen() {
         <p className="px-1 text-xs text-gray-500 dark:text-slate-500">Online — could not save for offline use.</p>
       ) : null}
 
-      {syncStatus?.kind === "online-saved" && workPackageProvisioningFailed ? (
+      {syncStatus?.kind === "online-saved" && (workPackageProvisioningFailed || productDefinitionsProvisioningFailed) ? (
         <p className="px-1 text-xs text-amber-700 dark:text-amber-400">
           Some project details may not be available offline yet — will retry next sync.
         </p>

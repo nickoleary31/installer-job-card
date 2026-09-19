@@ -83,4 +83,32 @@ export const MOBILE_MIGRATIONS: readonly SqlMigration[] = [
       )`,
     ],
   },
+  {
+    // Owner: lib/native/project-work-package.ts (Phase 2E) — adds the three
+    // site-contact fields NewSubmissionForm's blank-form prefill genuinely
+    // needs (see ProjectWorkPackage's own doc for the explicit, narrow
+    // scoping rationale — deliberately NOT the rest of Site Info).
+    version: 3,
+    statements: [
+      `ALTER TABLE project_work_packages ADD COLUMN primary_contact TEXT`,
+      `ALTER TABLE project_work_packages ADD COLUMN contact_number TEXT`,
+      `ALTER TABLE project_work_packages ADD COLUMN contact_email TEXT`,
+    ],
+  },
+  {
+    // Owner: lib/native/company-product-definitions.ts (Phase 2E). One row
+    // per company_id — deliberately NOT user-scoped (see that file's own
+    // doc): shared, reusable across every project/technician under the
+    // same company, gated for actual USE by the existing lease +
+    // ProjectWorkPackage checks rather than by a per-row ACL here.
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS company_product_definitions (
+        company_id TEXT PRIMARY KEY NOT NULL,
+        rows TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        synced_at TEXT NOT NULL
+      )`,
+    ],
+  },
 ];

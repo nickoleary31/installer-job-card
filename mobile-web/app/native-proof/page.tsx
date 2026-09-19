@@ -5,6 +5,7 @@ import { getActiveProjectsFieldPackage, type FieldPackageProject } from "@/lib/a
 import { clearLease, issueOrRefreshLease, loadLease } from "@/lib/auth/offline-access-lease";
 import { getNetworkStatus } from "@/lib/native/network-status";
 import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
+import { getCompanyProductDefinitionsRepository, type CompanyFormProductRow } from "@/lib/product-config";
 import {
   clearProofMarkers,
   readProofMarkers,
@@ -12,6 +13,29 @@ import {
   type ProofReadResult,
   type ProofWriteResult,
 } from "@/lib/native/persistence-proof";
+
+/**
+ * Phase 2E — a synthetic custom product for synthetic-company-1, same shape/pattern
+ * proven by lib/product-config/resolve-company-products.test.ts's "DB-only company"
+ * case: a company-specific product riding the "ppd" base form.
+ */
+const SYNTHETIC_COMPANY_PRODUCTS: CompanyFormProductRow[] = [
+  {
+    id: "synthetic-product-1",
+    company_id: "synthetic-company-1",
+    product_key: "synthetic_ppd",
+    display_label: "Synthetic Pedestrian Detector",
+    base_form_id: "ppd",
+    section_key: "synthetic_ppd",
+    submission_type: "synthetic_ppd",
+    draft_key: "synthetic_ppd",
+    allow_primary: true,
+    allow_additional: false,
+    active: true,
+    display_order: 1,
+    configuration: {},
+  },
+];
 
 /**
  * Phase 2B field-package proof — clearly synthetic user ids and project
@@ -378,6 +402,9 @@ export default function NativeProofPage() {
                     customerName: "Synthetic Customer",
                     customerAccountName: null,
                     location: "1 Synthetic St",
+                    primaryContact: null,
+                    contactNumber: null,
+                    contactEmail: null,
                     zohoLinked: false,
                     zohoWorkOrderNumber: null,
                     zohoServiceAppointmentNumber: null,
@@ -392,6 +419,9 @@ export default function NativeProofPage() {
                     customerName: "Synthetic Customer",
                     customerAccountName: null,
                     location: "2 Synthetic St",
+                    primaryContact: null,
+                    contactNumber: null,
+                    contactEmail: null,
                     zohoLinked: false,
                     zohoWorkOrderNumber: null,
                     zohoServiceAppointmentNumber: null,
@@ -419,6 +449,9 @@ export default function NativeProofPage() {
                     customerName: "Synthetic Customer",
                     customerAccountName: null,
                     location: "1 Synthetic St",
+                    primaryContact: null,
+                    contactNumber: null,
+                    contactEmail: null,
                     zohoLinked: false,
                     zohoWorkOrderNumber: null,
                     zohoServiceAppointmentNumber: null,
@@ -451,6 +484,9 @@ export default function NativeProofPage() {
                   customerName: "Synthetic Customer",
                   customerAccountName: null,
                   location: "1 Synthetic St",
+                  primaryContact: "Synthetic Contact",
+                  contactNumber: "555-0100",
+                  contactEmail: "contact@synthetic.example",
                   zohoLinked: true,
                   zohoWorkOrderNumber: "WO-0001",
                   zohoServiceAppointmentNumber: "SA-0001",
@@ -476,6 +512,9 @@ export default function NativeProofPage() {
                   customerName: "Synthetic Customer",
                   customerAccountName: null,
                   location: "2 Synthetic St",
+                  primaryContact: null,
+                  contactNumber: null,
+                  contactEmail: null,
                   zohoLinked: false,
                   zohoWorkOrderNumber: null,
                   zohoServiceAppointmentNumber: null,
@@ -522,6 +561,51 @@ export default function NativeProofPage() {
             className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
           >
             Clear package (A, project-1)
+          </button>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Phase 2E — company product definitions (real saveCompanyProductDefinitions, synthetic rows)
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("saveCompanyProductDefinitions(synthetic-company-1: 1 row)", () =>
+                getCompanyProductDefinitionsRepository().saveCompanyProductDefinitions(
+                  "synthetic-company-1",
+                  SYNTHETIC_COMPANY_PRODUCTS,
+                ),
+              )
+            }
+            className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Provision company products (synthetic-company-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("loadCompanyProductDefinitions(synthetic-company-1)", () =>
+                getCompanyProductDefinitionsRepository().loadCompanyProductDefinitions("synthetic-company-1"),
+              )
+            }
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load company products (synthetic-company-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("clearCompanyProductDefinitions(synthetic-company-1)", () =>
+                getCompanyProductDefinitionsRepository().clearCompanyProductDefinitions("synthetic-company-1"),
+              )
+            }
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear company products (synthetic-company-1)
           </button>
         </div>
       </div>

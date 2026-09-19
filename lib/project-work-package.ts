@@ -22,6 +22,22 @@ import { isNativeRuntime } from "./native/runtime.ts";
  * — the offline path never calls Zoho itself; a package synced before the
  * project was linked (or never re-synced since) simply omits them.
  *
+ * Phase 2E — primaryContact/contactNumber/contactEmail were added
+ * specifically (and ONLY) because components/NewSubmissionForm.tsx's blank
+ * job-card form genuinely prefills its own core fields from exactly these
+ * three (see its applyProjectAutofill effect) — this was an explicit,
+ * scoped decision, not a general "cache more of Site Info" expansion.
+ * WiFi SSID/password, license keys, general site notes, and any other
+ * Site Info field remain online-only and OUT OF SCOPE here; do not add
+ * them to this package without the same explicit review.
+ *
+ * Sensitive but genuinely required: no accompanying UI shows or exposes
+ * these three fields beyond feeding NewSubmissionForm's own core-field
+ * inputs (exactly as the online path already does) — see the module doc
+ * on scoping (userId + projectId, pruned with the rest of the package,
+ * gated by the same lease/authorization checks as every other field
+ * here).
+ *
  * IMPORTANT — `zohoLinked: false` is NOT an authoritative "this project is
  * confirmed not linked to Zoho" claim. It also covers "no cached Zoho
  * enrichment is available yet" — the state of every package written by
@@ -45,6 +61,10 @@ export type ProjectWorkPackage = {
   /** null when there is no linked Customer Account (mirrors ProjectDetailScreen's "—" case). */
   customerAccountName: string | null;
   location: string;
+  /** Site contact name — see the module doc's Phase 2E scoping note. null when never captured. */
+  primaryContact: string | null;
+  contactNumber: string | null;
+  contactEmail: string | null;
   /**
    * true only once an online Project Detail visit's own Zoho fetch
    * confirmed a link. false covers BOTH "confirmed not linked" and "not
@@ -80,14 +100,19 @@ export interface ProjectWorkPackageRepository {
    * offline), and (2) upserts every authorized package WITHOUT clobbering
    * zoho_* fields an earlier Project Detail online visit already
    * populated (see the native/web implementations' own upsert SQL/merge
-   * logic). Rejects, leaving every previous package — stale or not —
+   * logic) — primaryContact/contactNumber/contactEmail are NOT treated
+   * this way: they come from the same bulk customers join as
+   * customerName/location, so a provisioning pass always overwrites them
+   * with fresh data, same as any other identity field. Rejects, leaving
+   * every previous package — stale or not —
    * completely untouched, if the write fails partway; a caller must never
    * treat a rejection here as "some packages are now gone."
    */
   provisionProjectWorkPackages(userId: string, packages: readonly ProjectWorkPackageInput[]): Promise<{ syncedAt: string }>;
 }
 
-const CURRENT_SCHEMA_VERSION = 1;
+/** Bumped from 1 -> 2 when Phase 2E added primaryContact/contactNumber/contactEmail. */
+const CURRENT_SCHEMA_VERSION = 2;
 const STORE_NAME = INSTALLER_DB_PROJECT_WORK_PACKAGE_STORE;
 
 function openProjectWorkPackageDb(): Promise<IDBDatabase> {
@@ -264,6 +289,10 @@ export type ActiveProjectForProvisioning = {
   /** null when the project has no linked customer/customer_account_id at all. */
   customerAccountId: string | null;
   location: string;
+  /** Phase 2E — see ProjectWorkPackage's own doc on why exactly these three, and only these three, of Site Info's fields are here. */
+  primaryContact: string | null;
+  contactNumber: string | null;
+  contactEmail: string | null;
 };
 
 /**
@@ -277,9 +306,13 @@ export type ActiveProjectForProvisioning = {
  * zohoLinked:false and null WO#/SA#/summary, matching the product
  * decision that Zoho enrichment is optional display data an actual
  * Project Detail online visit fills in later, never a bulk-sync
- * dependency (which would mean one Zoho request per project). Unit-
- * testable without any Supabase/SQLite/IndexedDB I/O — see
- * project-work-package.test.ts.
+ * dependency (which would mean one Zoho request per project). Unlike Zoho,
+ * primaryContact/contactNumber/contactEmail ARE part of this same bulk
+ * customers join and so are always fresh here — see this file's
+ * provisionProjectWorkPackages() doc on why these are treated as plain
+ * identity fields (always overwritten) rather than preserve-on-conflict
+ * enrichment like the zoho_* fields. Unit-testable without any Supabase/
+ * SQLite/IndexedDB I/O — see project-work-package.test.ts.
  */
 export function buildProvisionedProjectWorkPackages(
   userId: string,
@@ -295,6 +328,9 @@ export function buildProvisionedProjectWorkPackages(
     customerName: p.customerName,
     customerAccountName: p.customerAccountId ? (customerAccountNamesById[p.customerAccountId] ?? null) : null,
     location: p.location,
+    primaryContact: p.primaryContact,
+    contactNumber: p.contactNumber,
+    contactEmail: p.contactEmail,
     zohoLinked: false,
     zohoWorkOrderNumber: null,
     zohoServiceAppointmentNumber: null,

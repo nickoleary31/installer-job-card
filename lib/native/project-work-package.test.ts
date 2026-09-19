@@ -21,6 +21,9 @@ function packageInput(overrides: Partial<ProjectWorkPackageInput> = {}): Project
     customerName: "Jane Doe",
     customerAccountName: null,
     location: "123 Main St",
+    primaryContact: null,
+    contactNumber: null,
+    contactEmail: null,
     zohoLinked: false,
     zohoWorkOrderNumber: null,
     zohoServiceAppointmentNumber: null,
@@ -43,11 +46,14 @@ describe("buildUpsertStatement (pure)", () => {
       "Jane Doe",
       null,
       "123 Main St",
+      null,
+      null,
+      null,
       0,
       null,
       null,
       null,
-      1,
+      2,
       "2026-01-01T00:00:00.000Z",
     ]);
   });
@@ -57,10 +63,20 @@ describe("buildUpsertStatement (pure)", () => {
       packageInput({ zohoLinked: true, zohoWorkOrderNumber: "WO-1", zohoServiceAppointmentNumber: "SA-1", zohoSummary: "Summary" }),
       "2026-01-01T00:00:00.000Z",
     );
-    assert.equal(values[8], 1);
-    assert.equal(values[9], "WO-1");
-    assert.equal(values[10], "SA-1");
-    assert.equal(values[11], "Summary");
+    assert.equal(values[11], 1);
+    assert.equal(values[12], "WO-1");
+    assert.equal(values[13], "SA-1");
+    assert.equal(values[14], "Summary");
+  });
+
+  it("carries primaryContact/contactNumber/contactEmail in column order right after location", () => {
+    const { values } = buildUpsertStatement(
+      packageInput({ primaryContact: "Sam Site", contactNumber: "555-1234", contactEmail: "sam@example.com" }),
+      "2026-01-01T00:00:00.000Z",
+    );
+    assert.equal(values[8], "Sam Site");
+    assert.equal(values[9], "555-1234");
+    assert.equal(values[10], "sam@example.com");
   });
 });
 
@@ -81,7 +97,25 @@ class FakeSqliteConnection implements RunQueryConnection {
       throw new Error("simulated write failure");
     }
     if (statement.startsWith("INSERT INTO project_work_packages")) {
-      const [userId, projectId, companyId, companyName, projectName, customerName, customerAccountName, location, zohoLinked, zohoWO, zohoSA, zohoSummary, schemaVersion, syncedAt] = values;
+      const [
+        userId,
+        projectId,
+        companyId,
+        companyName,
+        projectName,
+        customerName,
+        customerAccountName,
+        location,
+        primaryContact,
+        contactNumber,
+        contactEmail,
+        zohoLinked,
+        zohoWO,
+        zohoSA,
+        zohoSummary,
+        schemaVersion,
+        syncedAt,
+      ] = values;
       const key = `${userId}::${projectId}`;
       this.rows.set(key, {
         companyId,
@@ -90,6 +124,9 @@ class FakeSqliteConnection implements RunQueryConnection {
         customerName,
         customerAccountName,
         location,
+        primaryContact,
+        contactNumber,
+        contactEmail,
         zohoLinked,
         zohoWO,
         zohoSA,
@@ -196,7 +233,25 @@ class FakeExecuteSetConnection implements ExecuteSetConnection, RunQueryConnecti
   /** Simulates saveViaConnection()'s FULL upsert (including zoho_* columns) — a real SQLiteDBConnection exposes both .run() and .executeSet(), same object. */
   async run(statement: string, values: unknown[] = []): Promise<unknown> {
     if (!statement.startsWith("INSERT INTO project_work_packages")) return undefined;
-    const [userId, projectId, companyId, companyName, projectName, customerName, customerAccountName, location, zohoLinked, zohoWO, zohoSA, zohoSummary, schemaVersion, syncedAt] = values;
+    const [
+      userId,
+      projectId,
+      companyId,
+      companyName,
+      projectName,
+      customerName,
+      customerAccountName,
+      location,
+      primaryContact,
+      contactNumber,
+      contactEmail,
+      zohoLinked,
+      zohoWO,
+      zohoSA,
+      zohoSummary,
+      schemaVersion,
+      syncedAt,
+    ] = values;
     this.rows.set(`${userId}::${projectId}`, {
       companyId,
       companyName,
@@ -204,6 +259,9 @@ class FakeExecuteSetConnection implements ExecuteSetConnection, RunQueryConnecti
       customerName,
       customerAccountName,
       location,
+      primaryContact,
+      contactNumber,
+      contactEmail,
       zohoLinked,
       zohoWO,
       zohoSA,
@@ -238,7 +296,25 @@ class FakeExecuteSetConnection implements ExecuteSetConnection, RunQueryConnecti
           if (key.startsWith(`${userId}::`)) this.rows.delete(key);
         }
       } else if (entry.statement.startsWith("INSERT INTO project_work_packages")) {
-        const [userId, projectId, companyId, companyName, projectName, customerName, customerAccountName, location, zohoLinked, zohoWO, zohoSA, zohoSummary, schemaVersion, syncedAt] = entry.values;
+        const [
+          userId,
+          projectId,
+          companyId,
+          companyName,
+          projectName,
+          customerName,
+          customerAccountName,
+          location,
+          primaryContact,
+          contactNumber,
+          contactEmail,
+          zohoLinked,
+          zohoWO,
+          zohoSA,
+          zohoSummary,
+          schemaVersion,
+          syncedAt,
+        ] = entry.values;
         const key = `${userId}::${projectId}`;
         const existing = this.rows.get(key);
         this.rows.set(key, {
@@ -248,6 +324,10 @@ class FakeExecuteSetConnection implements ExecuteSetConnection, RunQueryConnecti
           customerName,
           customerAccountName,
           location,
+          // Identity columns, always overwritten by a re-provision — unlike zoho_*, never preserve-on-conflict.
+          primaryContact,
+          contactNumber,
+          contactEmail,
           // ON CONFLICT DO UPDATE never touches these — preserve whatever was already there.
           zohoLinked: existing ? existing.zohoLinked : zohoLinked,
           zohoWO: existing ? existing.zohoWO : zohoWO,
@@ -299,6 +379,20 @@ describe("provisionViaConnection (atomic bulk provisioning)", () => {
     assert.equal(row?.zohoWO, "WO-1");
     assert.equal(row?.zohoSA, "SA-1");
     assert.equal(row?.zohoSummary, "Real summary");
+  });
+
+  it("overwrites primaryContact/contactNumber/contactEmail on re-provision — always-fresh identity fields, unlike Zoho's preserve-on-conflict treatment", async () => {
+    const db = new FakeExecuteSetConnection();
+    await provisionViaConnection(db, "user-1", [
+      packageInput({ projectId: "p1", primaryContact: "Old Contact", contactNumber: "111", contactEmail: "old@example.com" }),
+    ]);
+    await provisionViaConnection(db, "user-1", [
+      packageInput({ projectId: "p1", primaryContact: "New Contact", contactNumber: "222", contactEmail: "new@example.com" }),
+    ]);
+    const row = db.rows.get("user-1::p1");
+    assert.equal(row?.primaryContact, "New Contact");
+    assert.equal(row?.contactNumber, "222");
+    assert.equal(row?.contactEmail, "new@example.com");
   });
 
   it("a failed provisioning batch leaves every previous package — stale or not — completely untouched", async () => {

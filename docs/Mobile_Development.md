@@ -201,9 +201,11 @@ Projects field package and see its identity/work-context — WITHOUT server acce
 smaller local package: `lib/project-work-package.ts`'s `ProjectWorkPackage`, one row per
 `(userId, projectId)`. It is deliberately narrower than the full (online) `ProjectDetailScreen`:
 company/project/customer/site/location plus optional Zoho WO#/SA#/summary enrichment — no
-expenses (a separate subsystem needing Supabase Storage photo uploads, out of scope) and no Site
-Info contact/license/WiFi/notes fields (reference detail, not required to view identity or start a
-submission).
+expenses (a separate subsystem needing Supabase Storage photo uploads, out of scope) and, as
+originally shipped, no Site Info fields at all. Phase 2E below narrowly added exactly three Site
+Info contact fields (`primaryContact`/`contactNumber`/`contactEmail`) once they turned out to be
+genuine blank-submission prefill requirements — every other Site Info field (license/WiFi/notes)
+remains excluded, unchanged from this paragraph's original scope.
 
 **Provisioning (Phase 2D.1) — a technician never has to open a project online first.** Right after
 a successful Active Projects sync, `ActiveProjectsScreen.tsx` calls
@@ -227,14 +229,15 @@ blocked or downgraded over it, though `ActiveProjectsScreen` does surface a smal
 project details may not be available offline yet" note when provisioning itself fails but the
 project list load succeeded.
 
-Native storage is `project_work_packages` (SQLite, migration version 2). **Migration version
+Native storage is `project_work_packages` (SQLite, migration version 2; Phase 2E's migration
+version 3 later added three columns to this same table — see below). **Migration version
 numbers turned out to be GLOBAL** across every native repository (one shared
 `mobile_schema_migrations` table on the one shared connection — see `lib/native/database.ts`), not
 scoped per file, so every native package's schema now lives in one canonical, ordered catalog,
 `lib/native/mobile-migrations.ts`'s `MOBILE_MIGRATIONS` — see that file's doc comment for the
 initialization-order and duplicate-version-number hazards this consolidation closes. Web mirrors
-the store via a new IndexedDB store, `INSTALLER_OFFLINE_DB_VERSION` 5, with an additional `userId`
-index (needed to enumerate/prune one user's packages during bulk provisioning).
+the store via an IndexedDB store, originally `INSTALLER_OFFLINE_DB_VERSION` 5, with an additional
+`userId` index (needed to enumerate/prune one user's packages during bulk provisioning).
 
 **Server-load-failure fallback**, unchanged: whenever `ProjectDetailScreen` itself loads a project
 successfully online (independent of the bulk provisioning above), it best-effort re-persists
@@ -243,17 +246,102 @@ blocks the online render. A subsequent *server* load failure with a valid local 
 exact `(userId, projectId)` renders the cached copy, truthfully tagged offline/cached; with no
 local package, an honest unavailable state.
 
-**Start New Submission while offline**: `ProjectDetailScreen` replaces the link with truthful copy
-("Submission setup is not yet available offline for this project.") when OFFLINE_AUTHORIZED, and
-`mobile-web/app/new-submission/page.tsx` carries the same guard directly (deep link / back-button
-safety) — the full form's online-only dependencies aren't part of this phase.
+**Start New Submission while offline** (superseded by Phase 2E — see below for the current guard):
+as originally shipped in Phase 2D, `ProjectDetailScreen` unconditionally replaced the link with
+"Submission setup is not yet available offline for this project." whenever OFFLINE_AUTHORIZED,
+since the full form's offline dependencies didn't exist yet.
 
 **Scope boundary, explicit**: Phase 2D provides CORE offline Project Detail (identity + optional
 Zoho display enrichment) — it does NOT mean every Project Detail panel is offline-capable. Expenses
 stay a truthful "requires an internet connection" panel (a separate subsystem needing Supabase
-Storage photo uploads). Site Info — WiFi credentials, license keys, site contact info, notes — also
-stays online-only for now, and deliberately so: those are potentially sensitive fields that
-shouldn't casually land in plain SQLite just to make one panel work offline. Whether/how to store
-Site Info locally (encryption? a narrower field subset? explicit opt-in?) is left as its own future
-local-data/security decision, not something this phase's cleanup should quietly resolve by
-omission.
+Storage photo uploads). Site Info beyond Phase 2E's three contact fields (below) — WiFi
+credentials, license keys, notes — stays online-only, and deliberately so: those are potentially
+sensitive fields that shouldn't casually land in plain SQLite just to make one panel work offline.
+Whether/how to store the REST of Site Info locally (encryption? explicit opt-in?) is left as its
+own future local-data/security decision, not something a later phase's cleanup should quietly
+resolve by omission.
+
+## Phase 2E — offline New Submission (Submission Definition Package)
+
+Once OFFLINE_AUTHORIZED with both packages described below present for the selected project, "Start
+New Submission" opens `/new-submission` and renders the exact same blank Installer Sheetz form the
+online path would, using only locally provisioned definitions — zero required Supabase/Zoho/API
+calls. Phase 2E deliberately stops at rendering a correct blank form: durable draft data, photo
+capture/upload, and submission sync remain later phases (see `NewSubmissionForm.tsx`'s own
+`navigator.onLine`/`starter-data-cache` fallback for the pre-existing, untouched web/PWA offline
+path, which this phase leaves alone).
+
+**Two packages, two owners.** Following a code-verified dependency audit of
+`NewSubmissionForm.tsx`'s blank-form startup path (company name, project/customer/contact autofill,
+Zoho prefill, and the hybrid product catalog — `useCompanyProducts()` /
+`resolveCompanyProducts()`), exactly two additions were needed, each reusing an existing owner
+rather than inventing a new one:
+
+1. **Three contact fields added to the existing `ProjectWorkPackage`** (`lib/project-work-package.ts`,
+   schema version 2; native migration version 3 — `ALTER TABLE project_work_packages ADD COLUMN
+   primary_contact/contact_number/contact_email TEXT`): `primaryContact`/`contactNumber`/
+   `contactEmail`. These are the ONLY three Site Info fields ever cached locally, added because
+   `NewSubmissionForm`'s core-job autofill genuinely requires them for offline parity — no other
+   Site Info field (WiFi, license keys, notes, other contact metadata) was added, and adding one
+   requires the same explicit review this decision went through. Unlike Zoho's `zoho_*` columns,
+   these are treated as ordinary identity fields: always overwritten by both the online save path
+   and bulk re-provisioning (never preserve-on-conflict), since they come from the exact same
+   `customers` join as `customerName`/`location`.
+
+2. **A new company-scoped `CompanyProductDefinitionsPackage`**
+   (`lib/product-config/company-product-definitions.ts` / `lib/native/company-product-definitions.ts`,
+   native migration version 4 — `CREATE TABLE company_product_definitions`): one row per
+   `companyId` (deliberately NOT per-user — the product catalog is shared by every technician under
+   a company, so caching it once avoids redundant storage and N+1 provisioning). It stores the RAW
+   `company_form_products` rows exactly as `/api/company-products` would return them — never a
+   pre-normalized shape — so `resolveCompanyProducts()` (already pure/injectable) can be reused
+   completely unchanged for both the online and offline paths; only `useCompanyProducts()`'s
+   `fetchProducts` implementation branches on `isOfflineAuthorized`, reading this package instead of
+   calling the API. A row is written EVEN WHEN a company has zero custom products (`rows: []`) —
+   that written-but-empty row is the signal distinguishing "checked, genuinely zero products,
+   registry fallback is correct" from "never checked," which the offline guard below depends on.
+
+**Provisioning** is proactive, exactly like Phase 2D.1: `ActiveProjectsScreen.tsx`, right after a
+successful sync, does ONE additional bulk query — `company_form_products` filtered `.in("company_id",
+companyIds)` — covering every authorized company in a single request (never one query per
+company/project, never through `/api/company-products`), then writes one `CompanyProductDefinitionsPackage`
+row per authorized company (empty-seeded for every company first, so a company with zero rows still
+gets its empty-array row written). The three contact fields ride along on the SAME bulk `customers`
+join `ActiveProjectsScreen` already performs for `customerName`/`location` — no new query for those.
+A technician never has to open a project or New Submission online first for any of this.
+
+**The offline guard**, evolved from Phase 2D's blanket block: both `ProjectDetailScreen.tsx`'s "New
+Submission" card and `mobile-web/app/new-submission/page.tsx` (defense in depth against a deep link
+or stale bookmark) now require BOTH a valid `ProjectWorkPackage` for the selected project AND a
+synced `CompanyProductDefinitionsPackage` for its company before allowing/rendering the form —
+package existence alone is never treated as authorization; the underlying lease/authorized-project
+checks from Phase 2C/2D still gate everything beneath this. Missing either package shows: "Submission
+setup for this project hasn't been saved to this device yet. Connect to the internet to synchronize
+it." The web/PWA `app/new-submission/page.tsx` carries no such guard — `authMode` can never be
+`"offline-authorized"` there (`resolveAuthState` gates that mode behind `isNativeRuntime()`), so the
+condition it would guard against cannot occur on web.
+
+**One shared view-model boundary.** `NewSubmissionForm.tsx` reads `authMode` from
+`useAuthUserContext()` and adds an authoritative `authMode === "offline-authorized"` branch, checked
+BEFORE the pre-existing `navigator.onLine`/`starter-data-cache` fallback (left untouched, still the
+web/PWA path), to its company-name-loading effect and its project/Zoho-autofill effect. The
+offline-authorized branch reads the local `ProjectWorkPackage` and — for Zoho fields — constructs the
+same `ZohoProjectInfoViewModel` shape and feeds it through the SAME `mergeZohoPrefillIntoCoreJob()`
+the online path uses, so there is exactly one interpretation of "what Zoho prefill means," never a
+second offline-only one.
+
+**Scope boundary, explicit**: Phase 2E renders a correct BLANK form only. It does not implement
+durable offline draft data, offline asset/progress tracking, native photo capture or file
+persistence, a submission outbox, background sync, conflict reconciliation, a quarantine API, or an
+inspection queue — all left to later phases.
+
+**Developer Sheets is not part of this**: a separate, unmerged `feature/developer-sheets` branch
+exists (collaborative product-documentation cards, not job-card submissions — deliberately its own
+domain, never counted as an installation submission). Nothing from it is ported or merged here.
+Its current design (as of that branch) is a fixed-schema record, not a dynamic field/type/options
+system, but even if it later grew one, Phase 2E's package pattern doesn't assume
+`company_form_products` is the only possible form-definition source: `CompanyProductDefinitionsPackage`
+is scoped specifically to the installer job-card product catalog. A future Developer Sheets offline
+need would get its own new package following the same proven shape (entity-scoped, raw-row caching,
+a `MOBILE_MIGRATIONS` catalog entry) — no redesign of the offline authorization/guard architecture
+required.

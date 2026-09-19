@@ -496,4 +496,41 @@ describe("product-config admin authorization expectations", () => {
   });
 });
 
+describe("Phase 2E — online vs offline-authorized view-model parity", () => {
+  // NewSubmissionForm's offline path (see lib/product-config/use-company-products.ts)
+  // hands resolveCompanyProducts() the SAME raw rows shape a locally provisioned
+  // CompanyProductDefinitionsPackage stores — only the fetchProducts implementation
+  // differs, never a second interpretation of what the rows mean.
+  it("resolving from a locally cached package's rows produces byte-identical output to resolving the same rows from a live fetch", async () => {
+    const online = await resolveCompanyProducts({
+      companyId: BLAXTAIR_COMPANY_ID,
+      companyName: BLAXTAIR_COMPANY_NAME,
+      fetchProducts: async () => ({ rows: dbBlaxtairRows() }),
+    });
+    const offlineCachedRows = dbBlaxtairRows();
+    const offline = await resolveCompanyProducts({
+      companyId: BLAXTAIR_COMPANY_ID,
+      companyName: BLAXTAIR_COMPANY_NAME,
+      fetchProducts: async () => ({ rows: offlineCachedRows }),
+    });
+    assert.deepEqual(offline, online);
+  });
+
+  it("an empty-but-synced offline package ('checked, genuinely empty') resolves identically to an empty online response", async () => {
+    const online = await resolveCompanyProducts({
+      companyId: BLAXTAIR_COMPANY_ID,
+      companyName: BLAXTAIR_COMPANY_NAME,
+      fetchProducts: async () => ({ rows: [] }),
+    });
+    const offline = await resolveCompanyProducts({
+      companyId: BLAXTAIR_COMPANY_ID,
+      companyName: BLAXTAIR_COMPANY_NAME,
+      fetchProducts: async () => ({ rows: [] }),
+    });
+    assert.deepEqual(offline, online);
+    // Both fall back to the registry, exactly as an online zero-row response already does.
+    assert.equal(online.source, "registry");
+  });
+});
+
 const authorizeGlobalAdminMarker = "authorizeGlobalAdmin";

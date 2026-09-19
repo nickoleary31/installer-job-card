@@ -7,6 +7,7 @@ import { apiUrl } from "@/lib/api-base";
 import { appRoutes } from "@/lib/app-routes";
 import { setActiveProject } from "@/lib/active-project-context";
 import { getProjectWorkPackageRepository, type ProjectWorkPackage } from "@/lib/project-work-package";
+import { getCompanyProductDefinitionsRepository } from "@/lib/product-config";
 import { supabase } from "@/lib/supabase/client";
 import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import { AddressActionMenu } from "@/components/AddressActionMenu";
@@ -185,6 +186,8 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
   const [siteInfo, setSiteInfo] = useState<SiteInfo>(emptySiteInfo);
   const [hasLinkedCustomer, setHasLinkedCustomer] = useState(false);
   const [hasProjectAccess, setHasProjectAccess] = useState(false);
+  /** Phase 2E — the OTHER half of the offline New Submission gate, alongside hasProjectAccess; see the offline guard below. */
+  const [hasOfflineSubmissionDefinitions, setHasOfflineSubmissionDefinitions] = useState(false);
   const [accessResolved, setAccessResolved] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
   const [detailSyncStatus, setDetailSyncStatus] = useState<DetailSyncStatus | null>(null);
@@ -259,6 +262,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     const loadOfflineAuthorized = async (userId: string) => {
       setAccessResolved(false);
       setProjectLoadError(null);
+      setHasOfflineSubmissionDefinitions(false);
       try {
         const pkg = await getProjectWorkPackageRepository().loadProjectWorkPackage(userId, projectId);
         if (cancelled) return;
@@ -266,6 +270,16 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
           applyPackageToState(pkg);
           setHasProjectAccess(true);
           setDetailSyncStatus({ kind: "offline-cached", syncedAt: pkg.syncedAt });
+          // Phase 2E — the New Submission guard below requires BOTH this
+          // package AND a synced product-definitions row for its company;
+          // package existence alone is never treated as authorization (see
+          // lib/product-config/company-product-definitions.ts's own doc).
+          try {
+            const productDefs = await getCompanyProductDefinitionsRepository().loadCompanyProductDefinitions(pkg.companyId);
+            if (!cancelled) setHasOfflineSubmissionDefinitions(!!productDefs);
+          } catch {
+            if (!cancelled) setHasOfflineSubmissionDefinitions(false);
+          }
         } else {
           setHasProjectAccess(false);
           setProjectContext(emptyProjectContext);
@@ -356,6 +370,12 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
         let customerName = projectRow?.customer_name?.trim() || "—";
         let location = projectRow?.location?.trim() || "—";
         let customerAccountName = "—";
+        // Sourced from the same customers join as the rest of Site Info, used below
+        // to seed the offline-parity contact fields on ProjectWorkPackage — see that
+        // module's doc for why only these three Site Info fields are cached locally.
+        let primaryContact = "—";
+        let contactNumber = "—";
+        let contactEmail = "—";
         if (projectRow?.customer_id) {
           const customerLookup = Array.isArray(projectRow.customers) ? projectRow.customers[0] : projectRow.customers;
           const customerNameFromCustomer = customerLookup?.customer_name?.trim();
@@ -375,6 +395,9 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
             trueCustomerName = displayCell(accountRow?.name);
           }
           customerAccountName = trueCustomerName;
+          primaryContact = displayCell(customerLookup?.site_contact_name);
+          contactNumber = displayCell(customerLookup?.contact_number);
+          contactEmail = displayCell(customerLookup?.contact_email);
 
           setSiteInfo({
             customer_name: displayCell(customerLookup?.customer_name),
@@ -425,6 +448,9 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
               customerName: nextProjectContext.customerName,
               customerAccountName: nextProjectContext.customerAccountName === "—" ? null : nextProjectContext.customerAccountName,
               location: nextProjectContext.location,
+              primaryContact: primaryContact === "—" ? null : primaryContact,
+              contactNumber: contactNumber === "—" ? null : contactNumber,
+              contactEmail: contactEmail === "—" ? null : contactEmail,
               zohoLinked: false,
               zohoWorkOrderNumber: null,
               zohoServiceAppointmentNumber: null,
@@ -565,6 +591,9 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
               customerName: projectContext.customerName,
               customerAccountName: projectContext.customerAccountName === "—" ? null : projectContext.customerAccountName,
               location: projectContext.location,
+              primaryContact: siteInfo.site_contact_name === "—" ? null : siteInfo.site_contact_name,
+              contactNumber: siteInfo.contact_number === "—" ? null : siteInfo.contact_number,
+              contactEmail: siteInfo.contact_email === "—" ? null : siteInfo.contact_email,
               zohoLinked: info.linked,
               zohoWorkOrderNumber: info.workOrderNumber,
               zohoServiceAppointmentNumber: info.serviceAppointmentNumber,
@@ -582,10 +611,10 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     return () => {
       cancelled = true;
     };
-    // Deliberately excludes projectContext: it's read via closure, and by
-    // the time hasProjectAccess/accessResolved flip true (this effect's
-    // real trigger) the identity effect has already committed it in the
-    // same batch — adding it here would only cause redundant re-fetches.
+    // Deliberately excludes projectContext/siteInfo: both are read via closure,
+    // and by the time hasProjectAccess/accessResolved flip true (this effect's
+    // real trigger) the identity effect has already committed them in the
+    // same batch — adding them here would only cause redundant re-fetches.
   }, [accessResolved, companyId, hasProjectAccess, isOfflineAuthorized, projectId, userContext.userId]);
 
   const expenseTotal = useMemo(
@@ -1509,14 +1538,15 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
             )}
 
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {isOfflineAuthorized ? (
+              {isOfflineAuthorized && !hasOfflineSubmissionDefinitions ? (
                 <div
                   className="rounded-2xl border border-gray-200 bg-gray-50 p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6"
                   aria-disabled="true"
                 >
                   <h2 className="text-lg font-bold text-gray-500">New Submission</h2>
                   <p className="mt-1 text-sm text-gray-500">
-                    Submission setup is not yet available offline for this project.
+                    Submission setup for this project hasn&apos;t been saved to this device yet. Connect to the
+                    internet to synchronize it.
                   </p>
                 </div>
               ) : (

@@ -37,6 +37,42 @@ describe("MOBILE_MIGRATIONS catalog integrity", () => {
     assert.match(allStatements, /CREATE TABLE IF NOT EXISTS field_package_projects/);
     assert.match(allStatements, /CREATE TABLE IF NOT EXISTS project_work_packages/);
   });
+
+  it("Phase 2E's contact columns (version 3) and company_product_definitions table (version 4) are present", () => {
+    const allStatements = MOBILE_MIGRATIONS.flatMap((m) => m.statements).join("\n");
+    assert.match(allStatements, /ALTER TABLE project_work_packages ADD COLUMN primary_contact TEXT/);
+    assert.match(allStatements, /ALTER TABLE project_work_packages ADD COLUMN contact_number TEXT/);
+    assert.match(allStatements, /ALTER TABLE project_work_packages ADD COLUMN contact_email TEXT/);
+    assert.match(allStatements, /CREATE TABLE IF NOT EXISTS company_product_definitions/);
+  });
+});
+
+describe("Phase 2E migrations (version 3: contact columns, version 4: company_product_definitions)", () => {
+  it("applied on top of a pre-Phase-2E install (versions 1 and 2 already recorded) runs only 3 and 4, once each, in order", async () => {
+    const db = createFakeConnection();
+    db.appliedVersions.push(1, 2);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    assert.deepEqual(db.appliedVersions.sort((a, b) => a - b), [1, 2, 3, 4]);
+    assert.ok(db.executedSql.some((sql) => sql.includes("ADD COLUMN primary_contact")));
+    assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS company_product_definitions")));
+    // Versions 1 and 2's statements must not be re-executed just because
+    // they were already recorded as applied.
+    assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")).length, 0);
+  });
+
+  it("is idempotent — three initializations on a fresh install record each version exactly once and never re-run 3/4's statements", async () => {
+    const db = createFakeConnection();
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    await runMigrations(db, MOBILE_MIGRATIONS);
+    assert.equal(db.appliedVersions.filter((v) => v === 3).length, 1);
+    assert.equal(db.appliedVersions.filter((v) => v === 4).length, 1);
+    assert.equal(db.executedSql.filter((sql) => sql.includes("ADD COLUMN primary_contact")).length, 1);
+    assert.equal(
+      db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS company_product_definitions")).length,
+      1,
+    );
+  });
 });
 
 describe("native repository initialization order cannot corrupt/skip migrations", () => {
@@ -53,7 +89,7 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS); // simulates project-work-package's getSchemaReadyConnection(), later
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")));
-    assert.deepEqual(db.appliedVersions.sort(), [1, 2]);
+    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4]);
     // The second call must not re-run already-applied migrations.
     assert.equal(db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")).length, 1);
   });
@@ -64,7 +100,7 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS); // simulates field-package's getSchemaReadyConnection(), later
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")));
     assert.ok(db.executedSql.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS field_package_projects")));
-    assert.deepEqual(db.appliedVersions.sort(), [1, 2]);
+    assert.deepEqual(db.appliedVersions.sort(), [1, 2, 3, 4]);
   });
 
   it("repeated initialization (e.g. every screen mount re-calling getSchemaReadyConnection()) is idempotent — no duplicate CREATE TABLE, no re-recorded version", async () => {
@@ -72,8 +108,12 @@ describe("native repository initialization order cannot corrupt/skip migrations"
     await runMigrations(db, MOBILE_MIGRATIONS);
     await runMigrations(db, MOBILE_MIGRATIONS);
     await runMigrations(db, MOBILE_MIGRATIONS);
-    assert.equal(db.appliedVersions.length, 2, "each version recorded exactly once despite three initialization calls");
-    assert.equal(db.executedSql.filter((sql) => sql.includes("project_work_packages")).length, 1);
+    assert.equal(db.appliedVersions.length, 4, "each version recorded exactly once despite three initialization calls");
+    assert.equal(
+      db.executedSql.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_work_packages")).length,
+      1,
+    );
+    assert.equal(db.executedSql.filter((sql) => sql.includes("ADD COLUMN primary_contact")).length, 1);
   });
 });
 

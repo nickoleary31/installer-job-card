@@ -18,6 +18,9 @@ function packageInput(overrides: Partial<ProjectWorkPackageInput> = {}): Project
     customerName: "Jane Doe",
     customerAccountName: null,
     location: "123 Main St",
+    primaryContact: null,
+    contactNumber: null,
+    contactEmail: null,
     zohoLinked: false,
     zohoWorkOrderNumber: null,
     zohoServiceAppointmentNumber: null,
@@ -68,6 +71,9 @@ function activeProject(overrides: Partial<ActiveProjectForProvisioning> = {}): A
     customerName: "Jane Doe",
     customerAccountId: null,
     location: "123 Main St",
+    primaryContact: null,
+    contactNumber: null,
+    contactEmail: null,
     ...overrides,
   };
 }
@@ -85,11 +91,25 @@ describe("buildProvisionedProjectWorkPackages (pure, Phase 2D.1 proactive provis
       customerName: "Jane Doe",
       customerAccountName: null,
       location: "123 Main St",
+      primaryContact: null,
+      contactNumber: null,
+      contactEmail: null,
       zohoLinked: false,
       zohoWorkOrderNumber: null,
       zohoServiceAppointmentNumber: null,
       zohoSummary: null,
     });
+  });
+
+  it("maps primaryContact/contactNumber/contactEmail through verbatim — always-overwritten identity fields, not preserve-on-conflict", () => {
+    const packages = buildProvisionedProjectWorkPackages(
+      "user-1",
+      [activeProject({ primaryContact: "Sam Site", contactNumber: "555-1234", contactEmail: "sam@example.com" })],
+      {},
+    );
+    assert.equal(packages[0].primaryContact, "Sam Site");
+    assert.equal(packages[0].contactNumber, "555-1234");
+    assert.equal(packages[0].contactEmail, "sam@example.com");
   });
 
   it("resolves customerAccountName from the provided map when customerAccountId is set", () => {

@@ -47,6 +47,7 @@ import {
   verifyMergedStoragePathsPresent,
 } from "@/lib/draft-photo-persistence";
 import { supabase } from "@/lib/supabase/client";
+import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
 import { mergeZohoPrefillIntoCoreJob } from "@/lib/zoho-fsm/core-job-prefill";
 import type { ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import {
@@ -1731,7 +1732,9 @@ export function PhotoFieldError({ message }: { message: string | null }) {
 
 export function NewSubmissionForm() {
   const router = useRouter();
-  const { loading: authLoading, context: authUserContext } = useAuthUserContext();
+  const { loading: authLoading, context: authUserContext, authMode } = useAuthUserContext();
+  /** Phase 2E — authoritative offline path (native-only); see lib/auth/offline-access-lease.ts and ProjectDetailScreen.tsx's identical check. */
+  const isOfflineAuthorized = authMode === "offline-authorized";
   const [submissionId, setSubmissionId] = useState<string>(() => generateSubmissionId());
   const [step, setStep] = useState<"form" | "review">("form");
   const [coreJob, setCoreJob] = useState<CoreJobFields>({
@@ -2128,6 +2131,7 @@ export function NewSubmissionForm() {
     companyId: selectedCompanyId,
     companyName: selectedCompanyName,
     enabled: companyContextReady,
+    isOfflineAuthorized,
   });
 
   const productLookup = useMemo(
@@ -5614,6 +5618,7 @@ export function NewSubmissionForm() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (authLoading) return;
     let cancelled = false;
     const loadCompanyName = async () => {
       setCompanyContextReady(false);
@@ -5627,6 +5632,33 @@ export function NewSubmissionForm() {
         return;
       }
       if (!cancelled) setSelectedCompanyId(companyId);
+
+      // Phase 2E — authoritative offline-authorized path (native-only), checked
+      // before the legacy navigator.onLine/starter-data-cache fallback below,
+      // which stays untouched for the web/PWA path. See lib/project-work-package.ts.
+      if (isOfflineAuthorized) {
+        const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+        if (!authUserContext.userId || !selectedProjectId) {
+          if (!cancelled) {
+            setSelectedCompanyName(null);
+            setCompanyContextReady(true);
+          }
+          return;
+        }
+        try {
+          const pkg = await getProjectWorkPackageRepository().loadProjectWorkPackage(authUserContext.userId, selectedProjectId);
+          if (cancelled) return;
+          setSelectedCompanyName(pkg?.companyName?.trim() || null);
+          setCompanyContextReady(true);
+        } catch {
+          if (!cancelled) {
+            setSelectedCompanyName(null);
+            setCompanyContextReady(true);
+          }
+        }
+        return;
+      }
+
       if (!window.navigator.onLine) {
         try {
           const snap = await getBestStarterSnapshotForOffline();
@@ -5666,13 +5698,16 @@ export function NewSubmissionForm() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading, authUserContext.userId, isOfflineAuthorized]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (typeof window === "undefined") return;
-      if (!selectedIncludeEffective(selectedSections, "PPD") || isOffline) {
+      // isOfflineAuthorized alongside the raw isOffline check: authMode is the authoritative
+      // offline signal (can be true even while navigator.onLine still reports true — e.g. on a
+      // network with no route to Supabase) — see NewSubmissionForm's other Phase 2E effects.
+      if (!selectedIncludeEffective(selectedSections, "PPD") || isOffline || isOfflineAuthorized) {
         if (!cancelled) setPpdProjectCustomerId(null);
         return;
       }
@@ -5700,20 +5735,90 @@ export function NewSubmissionForm() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSections, isOffline, selectedIncludeEffective]);
+  }, [selectedSections, isOffline, isOfflineAuthorized, selectedIncludeEffective]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (restoredFromDraftRef.current) return;
+    if (authLoading) return;
 
     let cancelled = false;
     const offlineCacheWarning =
       "Project details were not cached. Open this project online once before using offline.";
 
+    // Phase 2E — authoritative offline-authorized path (native-only), reading
+    // the same locally provisioned ProjectWorkPackage ProjectDetailScreen.tsx
+    // uses, including its Zoho fields (merged via the SAME pure
+    // mergeZohoPrefillIntoCoreJob() the online path below uses) — one shared
+    // view-model boundary, no second interpretation of "what Zoho prefill
+    // means." See lib/project-work-package.ts.
+    const applyProjectAutofillOfflineAuthorized = async (selectedProjectId: string) => {
+      if (!authUserContext.userId) {
+        if (!cancelled) setOfflineProjectDetailsWarning(offlineCacheWarning);
+        return;
+      }
+      try {
+        const pkg = await getProjectWorkPackageRepository().loadProjectWorkPackage(authUserContext.userId, selectedProjectId);
+        if (cancelled) return;
+        if (!pkg) {
+          setOfflineProjectDetailsWarning(offlineCacheWarning);
+          return;
+        }
+        setOfflineProjectDetailsWarning(null);
+        setCoreJob((prev) => {
+          if (restoredFromDraftRef.current) return prev;
+          const nextCustomer = prev.customer.trim() ? prev.customer : pkg.customerName?.trim() || "";
+          const nextLocation = prev.location.trim() ? prev.location : pkg.location?.trim() || "";
+          const nextPrimaryContact =
+            (prev.primaryContact ?? "").trim() ? (prev.primaryContact ?? "") : pkg.primaryContact?.trim() || "";
+          const nextContactNumber =
+            (prev.contactNumber ?? "").trim() ? (prev.contactNumber ?? "") : pkg.contactNumber?.trim() || "";
+          const nextContactEmail =
+            (prev.contactEmail ?? "").trim() ? (prev.contactEmail ?? "") : pkg.contactEmail?.trim() || "";
+          if (
+            nextCustomer === prev.customer &&
+            nextLocation === prev.location &&
+            nextPrimaryContact === (prev.primaryContact ?? "") &&
+            nextContactNumber === (prev.contactNumber ?? "") &&
+            nextContactEmail === (prev.contactEmail ?? "")
+          )
+            return prev;
+          return {
+            ...prev,
+            customer: nextCustomer,
+            location: nextLocation,
+            primaryContact: nextPrimaryContact,
+            contactNumber: nextContactNumber,
+            contactEmail: nextContactEmail,
+          };
+        });
+        if (pkg.zohoLinked) {
+          const info: ZohoProjectInfoViewModel = {
+            linked: true,
+            workOrderNumber: pkg.zohoWorkOrderNumber,
+            serviceAppointmentNumber: pkg.zohoServiceAppointmentNumber,
+            summary: pkg.zohoSummary,
+          };
+          if (!cancelled) setZohoProjectInfo(info);
+          setCoreJob((prev) => {
+            if (restoredFromDraftRef.current) return prev;
+            return mergeZohoPrefillIntoCoreJob(prev, info);
+          });
+        }
+      } catch {
+        if (!cancelled) setOfflineProjectDetailsWarning(offlineCacheWarning);
+      }
+    };
+
     const applyProjectAutofill = async () => {
       const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
       const selectedCompanyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
       if (!selectedProjectId) return;
+
+      if (isOfflineAuthorized) {
+        await applyProjectAutofillOfflineAuthorized(selectedProjectId);
+        return;
+      }
 
       if (!window.navigator.onLine) {
         try {
@@ -5851,13 +5956,15 @@ export function NewSubmissionForm() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading, authUserContext.userId, isOfflineAuthorized]);
 
   useEffect(() => {
     let cancelled = false;
     const loadProjectExternalRecipients = async () => {
       try {
-        if (typeof window !== "undefined" && !window.navigator.onLine) {
+        // isOfflineAuthorized alongside the raw navigator.onLine check — see the PPD
+        // effect above for why authMode, not navigator.onLine alone, is authoritative.
+        if ((typeof window !== "undefined" && !window.navigator.onLine) || isOfflineAuthorized) {
           if (!cancelled) setProjectExternalRecipientEmails([]);
           return;
         }
@@ -5878,7 +5985,7 @@ export function NewSubmissionForm() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOfflineAuthorized]);
 
   const saveDraftLocally = (nextDraft: StoredJobCardDraft) => {
     const currentDrafts = readMigratedDraftsFromStorage();
