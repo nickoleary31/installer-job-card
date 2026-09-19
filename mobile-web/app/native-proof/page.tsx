@@ -6,6 +6,7 @@ import { clearLease, issueOrRefreshLease, loadLease } from "@/lib/auth/offline-a
 import { getNetworkStatus } from "@/lib/native/network-status";
 import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
 import { getCompanyProductDefinitionsRepository, type CompanyFormProductRow } from "@/lib/product-config";
+import { getLocalSubmissionRepository, type LocalSubmissionInput } from "@/lib/local-submission";
 import {
   clearProofMarkers,
   readProofMarkers,
@@ -47,6 +48,27 @@ const SYNTHETIC_COMPANY_PRODUCTS: CompanyFormProductRow[] = [
 const USER_A = "phase2b-synthetic-user-a";
 const USER_B = "phase2b-synthetic-user-b";
 
+/** Phase 2F — synthetic structured payload, same StoredJobCardDraft["data"] shape NewSubmissionForm.tsx produces. */
+const SYNTHETIC_LOCAL_SUBMISSION_INPUT: LocalSubmissionInput<{
+  coreJob: { customer: string; unitNumber: string };
+  hardwareSelection: { primary: string; hasAdditional: string; additional: string[] };
+}> = {
+  localSubmissionId: "synthetic-local-submission-1",
+  userId: USER_A,
+  projectId: "synthetic-project-1",
+  companyId: "synthetic-company-1",
+  status: "working",
+  formId: "vac4",
+  submissionType: "VAC4",
+  definitionSchemaVersion: 1,
+  selectedSections: ["VAC4"],
+  payload: {
+    coreJob: { customer: "Synthetic Customer", unitNumber: "UNIT-001" },
+    hardwareSelection: { primary: "VAC4", hasAdditional: "No", additional: [] },
+  },
+  serverSubmissionId: null,
+};
+
 const USER_A_SET_1: FieldPackageProject[] = [
   {
     projectId: "synthetic-project-1",
@@ -80,6 +102,20 @@ const USER_A_SET_2: FieldPackageProject[] = [
     displayCustomerName: "Synthetic Customer",
     displayLocation: "3 Synthetic St",
     completedSubmissionCount: 0,
+    active: true,
+  },
+];
+
+/** Phase 2F item 1 — simulates a successful authoritative refresh where project-1 drops out of User A's authorized set entirely (project-2 remains). */
+const USER_A_SET_WITHOUT_PROJECT_1: FieldPackageProject[] = [
+  {
+    projectId: "synthetic-project-2",
+    companyId: "synthetic-company-1",
+    companyName: "Synthetic Co",
+    projectName: "Synthetic Install #2",
+    displayCustomerName: "Synthetic Customer",
+    displayLocation: "2 Synthetic St",
+    completedSubmissionCount: 1,
     active: true,
   },
 ];
@@ -255,6 +291,18 @@ export default function NativeProofPage() {
             className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
           >
             Save User A — set 2 (replace)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("save(A, set WITHOUT project-1 — authorization removed)", () =>
+                pkg().saveActiveProjectsSnapshot(USER_A, USER_A_SET_WITHOUT_PROJECT_1),
+              )
+            }
+            className="rounded bg-red-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save User A — drop project-1 (Phase 2F item 1)
           </button>
           <button
             type="button"
@@ -464,6 +512,36 @@ export default function NativeProofPage() {
           >
             Re-provision (A: project-1 ONLY — drops project-2)
           </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("provisionProjectWorkPackages(A: project-2 ONLY — drops project-1, Phase 2F item 1)", () =>
+                getProjectWorkPackageRepository().provisionProjectWorkPackages(USER_A, [
+                  {
+                    userId: USER_A,
+                    projectId: "synthetic-project-2",
+                    companyId: "synthetic-company-1",
+                    companyName: "Synthetic Co",
+                    projectName: "Synthetic Install #2",
+                    customerName: "Synthetic Customer",
+                    customerAccountName: null,
+                    location: "2 Synthetic St",
+                    primaryContact: null,
+                    contactNumber: null,
+                    contactEmail: null,
+                    zohoLinked: false,
+                    zohoWorkOrderNumber: null,
+                    zohoServiceAppointmentNumber: null,
+                    zohoSummary: null,
+                  },
+                ]),
+              )
+            }
+            className="rounded bg-red-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Re-provision (A: project-2 ONLY — drops project-1, Phase 2F item 1)
+          </button>
         </div>
 
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
@@ -606,6 +684,75 @@ export default function NativeProofPage() {
             className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
           >
             Clear company products (synthetic-company-1)
+          </button>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Phase 2F — local submissions (real saveLocalSubmission/findWorkingLocalSubmissions, synthetic data)
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("saveLocalSubmission(A, project-1, working)", () =>
+                getLocalSubmissionRepository().saveLocalSubmission(SYNTHETIC_LOCAL_SUBMISSION_INPUT),
+              )
+            }
+            className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save local submission (A, project-1, working)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("saveLocalSubmission(A, project-1, locally-complete)", () =>
+                getLocalSubmissionRepository().saveLocalSubmission({
+                  ...SYNTHETIC_LOCAL_SUBMISSION_INPUT,
+                  status: "locally-complete",
+                }),
+              )
+            }
+            className="rounded bg-emerald-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Mark locally-complete (A, project-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("loadLocalSubmission(synthetic-local-submission-1)", () =>
+                getLocalSubmissionRepository().loadLocalSubmission("synthetic-local-submission-1"),
+              )
+            }
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load local submission (synthetic-local-submission-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("findWorkingLocalSubmissions(A, project-1)", () =>
+                getLocalSubmissionRepository().findWorkingLocalSubmissions(USER_A, "synthetic-project-1"),
+              )
+            }
+            className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Find working submissions (A, project-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("deleteLocalSubmission(synthetic-local-submission-1)", () =>
+                getLocalSubmissionRepository().deleteLocalSubmission("synthetic-local-submission-1"),
+              )
+            }
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Delete local submission (synthetic-local-submission-1)
           </button>
         </div>
       </div>

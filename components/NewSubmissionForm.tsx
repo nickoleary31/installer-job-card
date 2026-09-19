@@ -48,6 +48,13 @@ import {
 } from "@/lib/draft-photo-persistence";
 import { supabase } from "@/lib/supabase/client";
 import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
+import { getCompanyProductDefinitionsRepository } from "@/lib/product-config";
+import {
+  getLocalSubmissionRepository,
+  resolveLocalSubmissionResumeOutcome,
+  type LocalSubmission,
+  type LocalSubmissionStatus,
+} from "@/lib/local-submission";
 import { mergeZohoPrefillIntoCoreJob } from "@/lib/zoho-fsm/core-job-prefill";
 import type { ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import {
@@ -1736,6 +1743,26 @@ export function NewSubmissionForm() {
   /** Phase 2E — authoritative offline path (native-only); see lib/auth/offline-access-lease.ts and ProjectDetailScreen.tsx's identical check. */
   const isOfflineAuthorized = authMode === "offline-authorized";
   const [submissionId, setSubmissionId] = useState<string>(() => generateSubmissionId());
+  /**
+   * Phase 2F — gates the offline-authorized (native-only) durable local
+   * submission flow. "checking" while resolving whether a resumable
+   * working submission already exists for (userId, projectId);
+   * "choose" shows the inline Resume/Start Another prompt below; "ready"
+   * means the normal form renders (either freshly created or resumed).
+   * Never applies to the online/web path — see the resolution effect's own
+   * guard, which sets this straight to "ready" when !isOfflineAuthorized.
+   */
+  const [localSubmissionGate, setLocalSubmissionGate] = useState<
+    | { kind: "checking" }
+    | { kind: "choose"; options: LocalSubmission<StoredJobCardDraft["data"]>[] }
+    | { kind: "ready" }
+  >({ kind: "checking" });
+  /** Guards against re-resolving/re-creating the local submission on every re-render of the gate effect. */
+  const localSubmissionResolvedRef = useRef(false);
+  /** The CompanyProductDefinitionsPackage.schemaVersion in effect when this local submission was created/resumed — diagnostic only, see lib/local-submission.ts's own doc. */
+  const localSubmissionDefinitionVersionRef = useRef<number | null>(null);
+  /** Dedupes redundant SQLite writes from the interval-poll safety net when nothing has actually changed since the last persisted snapshot. */
+  const lastPersistedLocalSubmissionSnapshotRef = useRef<string | null>(null);
   const [step, setStep] = useState<"form" | "review">("form");
   const [coreJob, setCoreJob] = useState<CoreJobFields>({
     customer: "",
@@ -4350,6 +4377,25 @@ export function NewSubmissionForm() {
     setReviewHighlights(new Set());
     setReviewBlockMessage(null);
     setStep("review");
+    // Phase 2F — "locally-complete" means EXACTLY: the technician has passed
+    // collectReviewValidationIssues() — the SAME full validation gate the
+    // online path already enforces (every required core/vehicle/product
+    // field, and every required photo slot has at least one locally-selected
+    // file) — and the local work is ready for a FUTURE sync phase to pick up.
+    // It does NOT mean, and must never be read to mean, "submitted" or
+    // "accepted by the server" — no such event exists yet (serverSubmissionId
+    // stays null; the Confirm & Submit buttons stay disabled/guarded below
+    // whenever isOfflineAuthorized). It is also not a durability guarantee
+    // about photo BYTES specifically: a required photo slot only needs a
+    // local File selected at the moment of this transition (Phase 2F never
+    // persists that File — see the photo boundary in
+    // lib/local-submission-photo-boundary.test.ts) — if the technician force-
+    // stops and the in-memory File selection is lost, status stays
+    // "locally-complete" (a truthful record of what was true when it was
+    // set) but the visible form would show that slot as empty again on
+    // resume. Reverts to "working" automatically if the technician returns
+    // to Edit (see the structural-flush effect, which fires on `step`).
+    if (isOfflineAuthorized) void persistLocalSubmissionNow("locally-complete");
   };
 
   const buildSubmissionPayload = async (): Promise<JobCardSubmissionPayload> => {
@@ -6169,6 +6215,155 @@ export function NewSubmissionForm() {
     });
   });
 
+  /**
+   * Phase 2F — the ONE write path for the durable native local_submissions
+   * row, reused for creation, every ongoing save, and the locally-complete
+   * transition. Reuses buildAutosaveBaseRef.current() (kept fresh every
+   * render by the useLayoutEffect above) rather than its own dependency
+   * list — same "always current via ref" pattern the existing localStorage
+   * autosave interval below already relies on. No-op (never throws, never
+   * blocks the caller) outside the offline-authorized path or without a
+   * resolved project/company context. Deduped against the last persisted
+   * snapshot for "working" saves so the interval-poll safety net below
+   * doesn't issue a SQLite write every tick when nothing actually changed;
+   * a status change (e.g. into "locally-complete") always writes through.
+   */
+  const persistLocalSubmissionNow = async (status: LocalSubmissionStatus = "working"): Promise<void> => {
+    if (!isOfflineAuthorized) return;
+    if (!authUserContext.userId) return;
+    if (typeof window === "undefined") return;
+    const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+    const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+    if (!projectId || !companyId) return;
+    const base = buildAutosaveBaseRef.current();
+    const snapshotKey = JSON.stringify({ id: base.submissionId, data: base.data, sections: base.selectedSections, status });
+    if (status === "working" && snapshotKey === lastPersistedLocalSubmissionSnapshotRef.current) return;
+    try {
+      await getLocalSubmissionRepository().saveLocalSubmission<StoredJobCardDraft["data"]>({
+        localSubmissionId: base.submissionId,
+        userId: authUserContext.userId,
+        projectId,
+        companyId,
+        status,
+        formId: (base.data.formId || "").trim() || null,
+        submissionType: (base.data.submissionType || "").trim() || null,
+        definitionSchemaVersion: localSubmissionDefinitionVersionRef.current,
+        selectedSections: base.selectedSections,
+        payload: base.data,
+        serverSubmissionId: null,
+      });
+      lastPersistedLocalSubmissionSnapshotRef.current = snapshotKey;
+    } catch {
+      // Best-effort — the next trigger (interval tick, structural change, or an
+      // explicit flush) retries; a transient failure here must never surface as
+      // a blocking error to a technician who is actively working offline.
+    }
+  };
+
+  const handleResumeLocalSubmission = (chosen: LocalSubmission<StoredJobCardDraft["data"]>) => {
+    restoreFromDraftData(chosen.payload, chosen.localSubmissionId);
+    localSubmissionDefinitionVersionRef.current = chosen.definitionSchemaVersion;
+    localSubmissionResolvedRef.current = true;
+    setLocalSubmissionGate({ kind: "ready" });
+  };
+
+  const handleStartAnotherLocalSubmission = () => {
+    localSubmissionResolvedRef.current = true;
+    setLocalSubmissionGate({ kind: "ready" });
+    void persistLocalSubmissionNow("working");
+  };
+
+  /**
+   * Phase 2F — resolves the offline-authorized resume gate on mount: is
+   * there already a "working" local submission for this exact
+   * (userId, projectId)? None -> eagerly create+persist immediately (before
+   * the technician has typed anything — see the module's crash-loss-window
+   * design). One or more -> surface the inline Resume/Start Another choice
+   * below rather than silently overwriting unsaved work. Never touches the
+   * online/web path: !isOfflineAuthorized resolves straight to "ready",
+   * identical to every render before this phase existed.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (authLoading) return;
+    if (!isOfflineAuthorized) {
+      setLocalSubmissionGate({ kind: "ready" });
+      return;
+    }
+    if (localSubmissionResolvedRef.current) return;
+    let cancelled = false;
+    const resolve = async () => {
+      const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
+      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
+      if (!authUserContext.userId || !projectId || !companyId) {
+        if (!cancelled) setLocalSubmissionGate({ kind: "ready" });
+        return;
+      }
+      try {
+        const working = await getLocalSubmissionRepository().findWorkingLocalSubmissions<StoredJobCardDraft["data"]>(
+          authUserContext.userId,
+          projectId,
+        );
+        if (cancelled) return;
+        const outcome = resolveLocalSubmissionResumeOutcome(working);
+        if (outcome.kind === "none") {
+          try {
+            const defs = await getCompanyProductDefinitionsRepository().loadCompanyProductDefinitions(companyId);
+            localSubmissionDefinitionVersionRef.current = defs?.schemaVersion ?? null;
+          } catch {
+            localSubmissionDefinitionVersionRef.current = null;
+          }
+          if (cancelled) return;
+          localSubmissionResolvedRef.current = true;
+          setLocalSubmissionGate({ kind: "ready" });
+          await persistLocalSubmissionNow("working");
+        } else if (outcome.kind === "single") {
+          if (!cancelled) setLocalSubmissionGate({ kind: "choose", options: [outcome.submission] });
+        } else {
+          if (!cancelled) setLocalSubmissionGate({ kind: "choose", options: outcome.submissions });
+        }
+      } catch {
+        // Could not check for a resumable submission — fail closed to "ready" with
+        // a fresh blank form rather than blocking the technician from working at
+        // all; this entry still gets durability going forward via the normal
+        // interval/structural/review-complete write triggers below.
+        if (!cancelled) setLocalSubmissionGate({ kind: "ready" });
+      }
+    };
+    void resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, isOfflineAuthorized, authUserContext.userId]);
+
+  /**
+   * Phase 2F — the periodic safety-net writer for free-text edits. Reuses
+   * the same buildAutosaveBaseRef.current() the localStorage autosave below
+   * relies on; persistLocalSubmissionNow() itself dedupes against the last
+   * persisted snapshot, so an idle form issues no SQLite writes at all
+   * between ticks. A 1.5s cadence bounds the maximum crash-loss window for
+   * typed text to roughly that long — structural changes (product/section)
+   * flush immediately via the effect below instead of waiting for this.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!isOfflineAuthorized) return;
+    if (localSubmissionGate.kind !== "ready") return;
+    const id = window.setInterval(() => {
+      if (submissionStatusAutosaveRef.current === "Submitted") return;
+      void persistLocalSubmissionNow("working");
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [isOfflineAuthorized, localSubmissionGate.kind]);
+
+  /** Phase 2F — immediate durable write for structural/progression events, never left to the periodic poll above. */
+  useEffect(() => {
+    if (!isOfflineAuthorized) return;
+    if (localSubmissionGate.kind !== "ready") return;
+    void persistLocalSubmissionNow("working");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOfflineAuthorized, localSubmissionGate.kind, effectivePrimary, hasAdditional, JSON.stringify(selectedAdditional), step]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const id = window.setInterval(() => {
@@ -6256,7 +6451,11 @@ export function NewSubmissionForm() {
 
   const handleSaveDraft = async (): Promise<boolean> => {
     lastSaveSucceededRef.current = false;
-    if (isOffline) {
+    // isOfflineAuthorized alongside the raw isOffline check: authMode is the
+    // authoritative offline signal (can be true even while navigator.onLine
+    // still reports true — e.g. on a network with no route to Supabase) — see
+    // NewSubmissionForm's other Phase 2E/2F offline-authorized guards.
+    if (isOffline || isOfflineAuthorized) {
       setDraftSaveStage("failed");
       setDraftNoticeMessage("Offline mode: cloud draft save disabled. Use 'Save to this device'.");
       return false;
@@ -6658,6 +6857,11 @@ export function NewSubmissionForm() {
     event?.preventDefault();
     event?.stopPropagation();
     console.log("[offline-save] clicked");
+    // Phase 2F — an explicit technician "save now" action always flushes the
+    // durable native record immediately, on top of (never instead of) this
+    // function's own existing IndexedDB write below (left completely
+    // unchanged, still the mechanism the web/PWA path relies on).
+    if (isOfflineAuthorized) void persistLocalSubmissionNow("working");
     const generation = ++saveToDeviceGenerationRef.current;
     setLocalDeviceSaveError(null);
     const photoSnapshot = getPhotoPersistenceSnapshot();
@@ -6741,7 +6945,18 @@ export function NewSubmissionForm() {
     }
   };
 
-  const handleExitToHome = () => {
+  const handleExitToHome = async () => {
+    // Phase 2F — an explicit flush opportunity before navigating away, never the
+    // sole durability mechanism (the interval/structural/review-complete
+    // triggers above already keep this current); a slow/failed write here must
+    // never block the technician from leaving the page.
+    if (isOfflineAuthorized) {
+      try {
+        await persistLocalSubmissionNow("working");
+      } catch {
+        // ignore — best-effort flush only
+      }
+    }
     if (typeof window !== "undefined") {
       const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
       const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
@@ -6912,7 +7127,14 @@ export function NewSubmissionForm() {
           </div>
         ) : null}
 
-        {autosaveRestorePayload ? (
+        {/* Phase 2F — offline-authorized has its own authoritative resume prompt
+            below (the SQLite-backed local submission, not this localStorage
+            autosave snapshot); suppressed here to avoid showing two competing
+            "resume?" prompts for the same underlying edits. The detection/
+            state itself is untouched — this only affects whether the banner
+            renders — so the web/PWA path (which can never be
+            isOfflineAuthorized) keeps this exact existing behavior. */}
+        {autosaveRestorePayload && !isOfflineAuthorized ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             <p className="font-semibold">Resume your previous job card?</p>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -10898,10 +11120,10 @@ export function NewSubmissionForm() {
             type="button"
             className={btnSecondaryClassName}
             onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
-            disabled={isOffline}
+            disabled={isOffline || isOfflineAuthorized}
           >
               <IconFloppy className="h-5 w-5" />
-            {hasCoreOrVehicleInfo ? (isOffline ? "Save Draft (online only)" : "Save Draft and Exit") : "Exit"}
+            {hasCoreOrVehicleInfo ? (isOffline || isOfflineAuthorized ? "Save Draft (online only)" : "Save Draft and Exit") : "Exit"}
           </button>
           {hasCoreOrVehicleInfo ? (
             <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingRequest}>
@@ -11511,16 +11733,23 @@ export function NewSubmissionForm() {
             type="button"
             className={btnPrimaryClassName}
             onClick={handleFinalSubmit}
-            disabled={isOffline || submitPersistStatus === "saving"}
+            disabled={isOffline || isOfflineAuthorized || submitPersistStatus === "saving"}
           >
             <IconSend className="h-5 w-5" />
             {isOffline
               ? "Offline — Submit Disabled"
-              : submitPersistStatus === "saving"
-                ? "Submitting…"
-                : "Confirm & Submit"}
+              : isOfflineAuthorized
+                ? "Saved on this device"
+                : submitPersistStatus === "saving"
+                  ? "Submitting…"
+                  : "Confirm & Submit"}
           </button>
         </div>
+        {isOfflineAuthorized ? (
+          <p className="hidden text-right text-xs text-gray-500 dark:text-gray-400 md:block">
+            Will be ready to sync when synchronization is enabled.
+          </p>
+        ) : null}
         </>
         ))}
       </div>
@@ -11548,11 +11777,15 @@ export function NewSubmissionForm() {
                     type="button"
                     className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
                     onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
-                    disabled={isOffline}
+                    disabled={isOffline || isOfflineAuthorized}
                   >
                     <IconFloppy className="h-5 w-5 shrink-0" />
                     <span className="truncate">
-                      {hasCoreOrVehicleInfo ? (isOffline ? "Save Draft (online only)" : "Save Draft and Exit") : "Exit"}
+                      {hasCoreOrVehicleInfo
+                        ? isOffline || isOfflineAuthorized
+                          ? "Save Draft (online only)"
+                          : "Save Draft and Exit"
+                        : "Exit"}
                     </span>
                   </button>
                   <button
@@ -11584,19 +11817,26 @@ export function NewSubmissionForm() {
                   type="button"
                   className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
                   onClick={handleFinalSubmit}
-                  disabled={isOffline || submitPersistStatus === "saving"}
+                  disabled={isOffline || isOfflineAuthorized || submitPersistStatus === "saving"}
                 >
                   <IconSend className="h-5 w-5 shrink-0" />
                   <span className="line-clamp-2 text-left leading-tight">
                     {isOffline
                       ? "Offline — Submit Disabled"
-                      : submitPersistStatus === "saving"
-                        ? "Submitting…"
-                        : "Confirm & Submit"}
+                      : isOfflineAuthorized
+                        ? "Saved on this device"
+                        : submitPersistStatus === "saving"
+                          ? "Submitting…"
+                          : "Confirm & Submit"}
                   </span>
                 </button>
               </>
             )}
+            {isOfflineAuthorized && step === "review" ? (
+              <p className="text-center text-xs text-gray-500 dark:text-gray-400">
+                Will be ready to sync when synchronization is enabled.
+              </p>
+            ) : null}
           </div>
         </div>
       )}
@@ -11638,6 +11878,53 @@ export function NewSubmissionForm() {
               </button>
               <button type="button" className={btnExitWithoutSaveClassName} onClick={handleExitWithoutSavingConfirm}>
                 Leave
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {localSubmissionGate.kind === "choose" ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 p-4 sm:items-center"
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="resume-local-submission-title"
+            className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-600 dark:bg-gray-900 sm:p-6"
+          >
+            <h2 id="resume-local-submission-title" className="text-lg font-bold text-gray-950 dark:text-gray-100">
+              {localSubmissionGate.options.length === 1 ? "Resume unfinished entry?" : "Resume an unfinished entry?"}
+            </h2>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+              {localSubmissionGate.options.length === 1
+                ? "You have unsaved work for this project on this device."
+                : `You have ${localSubmissionGate.options.length} unfinished entries for this project on this device.`}
+            </p>
+            <div className="mt-4 space-y-2">
+              {localSubmissionGate.options.map((option) => {
+                const customer = option.payload.coreJob?.customer?.trim() || "—";
+                const unit = option.payload.coreJob?.unitNumber?.trim() || "—";
+                return (
+                  <button
+                    key={option.localSubmissionId}
+                    type="button"
+                    onClick={() => handleResumeLocalSubmission(option)}
+                    className="w-full rounded-xl border border-blue-200 bg-blue-50 p-3 text-left text-sm hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/30 dark:hover:bg-blue-950/50"
+                  >
+                    <p className="font-semibold text-gray-900 dark:text-gray-100">{customer}</p>
+                    <p className="text-gray-600 dark:text-gray-300">
+                      Unit: {unit} · Last saved {new Date(option.updatedAt).toLocaleString()}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button type="button" className={btnSecondaryClassName} onClick={handleStartAnotherLocalSubmission}>
+                Start Another Submission
               </button>
             </div>
           </div>

@@ -345,3 +345,122 @@ is scoped specifically to the installer job-card product catalog. A future Devel
 need would get its own new package following the same proven shape (entity-scoped, raw-row caching,
 a `MOBILE_MIGRATIONS` catalog entry) — no redesign of the offline authorization/guard architecture
 required.
+
+## Phase 2F — durable local submission/draft state
+
+Once a technician opens a blank offline form (Phase 2E), Phase 2F makes the STRUCTURED work they
+type into it durable on native — surviving force-stop/reopen and a full emulator restart — without
+depending on the network as a durability boundary. It does not touch photo files, upload,
+synchronization, or the future outbox; see the scope boundary below.
+
+**Re-baseline first.** Before designing anything, the existing `buildCurrentDraftData()` function in
+`components/NewSubmissionForm.tsx` was audited end to end: it already assembles nearly the entire
+structured-work state (coreJob, hardwareSelection, the per-product field bags — `vac4`/`ppd`/`cp4`/
+`linxup`/`sscSpeed` — and `installedProductSystems`) into one coherent JSON-shaped object, already
+reused by the Cloud Draft save, the manual "Save to this device" IndexedDB draft, and the 4-second
+`localStorage` autosave. Phase 2F reuses this exact shape rather than inventing a new one. Also
+confirmed: no "Next Asset"/multi-asset-within-one-submission concept exists anywhere in the app —
+one submission is one vehicle/unit; multiple assets for a project means multiple independent
+submissions, which the new architecture below handles as multiple independent rows. Also confirmed:
+`/drafts`, `/offline-drafts`, `/submitted` exist only in the root web app, not in `mobile-web/` — the
+native shell has no drafts-list page, which is why the resume choice below is inline rather than a
+separate page.
+
+**`lib/local-submission.ts` / `lib/native/local-submission.ts`** — a new `LocalSubmissionRepository`,
+mirroring every other Phase 2B–2E repository's native/web dispatch shape, but native-only in its
+actual integration: `NewSubmissionForm.tsx` only ever calls it on the authoritative
+`authMode === "offline-authorized"` branch, which can never be true on web (`isNativeRuntime()`
+gate). Web's implementation therefore throws — mirroring `lib/native/database.ts`'s
+`WebDatabaseNotImplemented` precedent exactly — rather than duplicating a redundant, never-used
+IndexedDB store; web keeps its existing IndexedDB draft mechanism, `localStorage` autosave, and Cloud
+Draft entirely unchanged. **No IndexedDB version bump was needed.**
+
+Native storage is one table, `local_submissions` (SQLite, migration version 5 in
+`MOBILE_MIGRATIONS`), deliberately not over-normalized: the structured per-product field bags live in
+one JSON `payload` column (nothing in that shape needs independent SQL querying — no cross-submission
+photo/device queries exist), while identity/status columns are normalized because
+`(user_id, project_id, status)` genuinely needs to be queried for the resume flow:
+
+```sql
+CREATE TABLE local_submissions (
+  local_submission_id TEXT PRIMARY KEY, user_id TEXT, project_id TEXT, company_id TEXT,
+  status TEXT,               -- 'working' | 'locally-complete'
+  form_id TEXT, submission_type TEXT, definition_schema_version INTEGER,
+  selected_sections TEXT,    -- JSON array
+  payload TEXT,              -- JSON: same StoredJobCardDraft["data"] shape
+  server_submission_id TEXT, -- always NULL in Phase 2F; future sync only
+  created_at TEXT, updated_at TEXT
+);
+```
+
+**Identity**: `localSubmissionId` reuses the EXISTING `submissionId`/`generateSubmissionId()`
+(already `crypto.randomUUID()`-based, already what `job_card_submissions.submission_id` uses as its
+idempotency key) — not a third parallel ID. What changed is durability timing: it's now persisted
+immediately on mount (offline-authorized, no existing resumable submission) instead of only once some
+save action fires.
+
+**Resume flow**: on mount, offline-authorized, `findWorkingLocalSubmissions(userId, projectId)` runs
+against the new table. Zero results → create+persist immediately, render the blank form. One or more
+→ an inline "Resume unfinished entry?" prompt (mirroring the existing `/offline-drafts` Resume
+concept, scoped to this project) lists each by customer/unit/last-saved, with a "Start Another
+Submission" fallback — never a silent overwrite of unsaved work.
+
+**Write policy**: `persistLocalSubmissionNow()` is the one write path, reused for creation, ongoing
+saves, and status transitions. A 1.5s interval safety net covers free-text edits (deduped against the
+last-persisted snapshot, so an idle form issues zero SQLite writes between ticks); product/section/
+step changes flush immediately, not on the interval; explicit actions ("Save to this device", leaving
+the page) flush as an additional opportunity, never the sole mechanism. **Maximum expected crash-loss
+window: ~1.5 seconds** of the most recent keystroke burst — anything structural is already zero-loss.
+
+**Lifecycle**: `working` = the technician is actively editing structured local work.
+`locally-complete` = the local structured form passed `collectReviewValidationIssues()` — the SAME
+full validation gate the online path already enforces (every required core/vehicle/product field,
+every required photo slot has at least one *locally-selected* file) — at that point in time, while
+offline-authorized. Reverts to `working` automatically if the technician returns to Edit.
+
+**`locally-complete` does NOT mean** — and must never be read by any future code as meaning —
+submitted to the server, accepted by the server, queued for upload, that photos are durably
+available, or that the record is safe for automatic synchronization. `serverSubmissionId` stays
+`null` throughout Phase 2F regardless of status. It is also not a durability guarantee about photo
+*bytes*: a required photo slot only needs a local `File` selected at the moment of the transition
+(never persisted — see the photo boundary below); if that in-memory selection is lost to a later
+force-stop, status stays `locally-complete` (a truthful record of what was true when it was set) even
+though the visible form would show that slot empty again on resume. **Until native photo persistence
+exists, any future outbox/sync logic MUST NOT treat `locally-complete` alone as "ready to upload."**
+
+**Offline completion, not offline submission**: both "Confirm & Submit" buttons now disable on
+`isOfflineAuthorized` (not just raw `isOffline` — the same "connected but server-unreachable" edge
+case Phase 2E's audit surfaced) and show truthful copy — *"Saved on this device"* / *"Will be ready to
+sync when synchronization is enabled."* The Cloud Draft save (`handleSaveDraft`) and "Save Draft and
+Exit" got the identical `isOfflineAuthorized` guard extension. No outbox is built; no offline
+completion is ever sent to the server in this phase.
+
+**Authorization removal and logout lock access, they never delete local work.** A `LocalSubmission`
+row is technician-created data, not a cache — nothing in this phase ever deletes one because a
+project drops out of the user's authorized `ProjectWorkPackage`/`ActiveProjectsFieldPackage` set, or
+because the `OfflineAccessLease` is cleared (explicit logout) or expires. Neither pruning path
+(`provisionProjectWorkPackages`, `saveActiveProjectsSnapshot`) nor `clearLease()` touches
+`local_submissions` at all — they're entirely separate tables/stores. What changes is reachability:
+with the project no longer authorized (or no valid lease at all), `/installs` won't list it, `/project`
+fails closed ("hasn't been saved to this device yet"), and `/new-submission`'s own guard means
+`NewSubmissionForm` never mounts — so the resume-detection effect that would surface the local
+submission never runs. The row itself, verified live via direct `LocalSubmissionRepository` queries,
+survives byte-for-byte (same id, same timestamps, same payload) through both scenarios, and becomes
+normally resumable again — without creating a duplicate — the moment the project is re-authorized or
+the same user re-authenticates. This is required groundwork for a future quarantine/recovery model;
+there is deliberately no hidden UI path that would let a technician bypass normal authorization to
+reach an unauthorized project's local work — a `LocalSubmission` row's mere existence is never itself
+treated as authorization, the same principle `CompanyProductDefinitionsPackage` already established.
+
+**Definition-version handling**: each local submission records the `CompanyProductDefinitionsPackage`
+schema version in effect at creation, for diagnostics only — Phase 2F does not implement
+definition-version migration. A resumed submission always keeps showing its own entered values;
+prefill from `ProjectWorkPackage`/definitions applies only at creation (`restoredFromDraftRef`
+already suppresses every prefill effect once a submission is resumed, exactly as it already did for
+the pre-existing web draft-resume path).
+
+**Scope boundary, explicit**: no photo/file Blob bytes ever enter `local_submissions.payload` —
+`photoUploads`/`productFiles` stay storage-path references only (empty until a real online upload,
+out of scope here), and `photoRestoreSupported`-style claims stay truthfully absent for native
+records. No durable native photo capture, upload, submission outbox, background sync, conflict
+reconciliation, quarantine API, or inspection queue — all left to later phases.

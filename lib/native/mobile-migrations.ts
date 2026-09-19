@@ -111,4 +111,30 @@ export const MOBILE_MIGRATIONS: readonly SqlMigration[] = [
       )`,
     ],
   },
+  {
+    // Owner: lib/native/local-submission.ts (Phase 2F). One row per
+    // localSubmissionId — a technician's own durable structured working
+    // submission. See that file's own doc for why the bulk of the
+    // structured work is one JSON payload column while identity/status are
+    // normalized for the (user_id, project_id) resume query.
+    version: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS local_submissions (
+        local_submission_id TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        company_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        form_id TEXT,
+        submission_type TEXT,
+        definition_schema_version INTEGER,
+        selected_sections TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        server_submission_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_local_submissions_user_project ON local_submissions(user_id, project_id)`,
+    ],
+  },
 ];
