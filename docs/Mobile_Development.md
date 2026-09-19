@@ -193,3 +193,67 @@ Quarantined records should retain provenance: `originalUserId`, `deviceInstallat
 alongside the actual form/device/photo payload once those systems exist. No inspection-queue
 tables, quarantine API, outbox, submissions, or photo-upload flow exist yet; this section is a
 design contract for whoever builds that phase, not a description of current behavior.
+
+## Phase 2D — offline Project Detail (Project Work Package)
+
+Once OFFLINE_AUTHORIZED, a technician can open a project already cached in the Phase 2B Active
+Projects field package and see its identity/work-context — WITHOUT server access — via a second,
+smaller local package: `lib/project-work-package.ts`'s `ProjectWorkPackage`, one row per
+`(userId, projectId)`. It is deliberately narrower than the full (online) `ProjectDetailScreen`:
+company/project/customer/site/location plus optional Zoho WO#/SA#/summary enrichment — no
+expenses (a separate subsystem needing Supabase Storage photo uploads, out of scope) and no Site
+Info contact/license/WiFi/notes fields (reference detail, not required to view identity or start a
+submission).
+
+**Provisioning (Phase 2D.1) — a technician never has to open a project online first.** Right after
+a successful Active Projects sync, `ActiveProjectsScreen.tsx` calls
+`provisionProjectWorkPackages(userId, packages)` with a minimal package for EVERY currently-
+authorized project — not just ones previously visited. This costs exactly one additional bulk
+query (`customer_accounts`, for the optional `customerAccountName` field) beyond what
+ActiveProjectsScreen already fetches for the project list itself — no per-project queries, and no
+Zoho request at all (every provisioned package starts `zohoLinked: false` with null WO#/SA#/
+summary; an actual online Project Detail visit later enriches it — see `saveProjectWorkPackage()`,
+called separately from `ProjectDetailScreen`'s own online success/Zoho-fetch effects).
+
+Provisioning is atomic and set-based (`provisionProjectWorkPackages` → native: one `executeSet`
+transaction; web: one IndexedDB readwrite transaction): it prunes any package for that user whose
+`projectId` is no longer in the authorized set (a project the technician can no longer see stops
+being reachable offline after the NEXT successful sync — never immediately, never on a failed
+one), and upserts every authorized package WITHOUT clobbering `zoho_*` fields an earlier Project
+Detail visit already wrote (the native upsert's `ON CONFLICT` clause simply omits those columns;
+web does an explicit read-merge-write). A partial failure — network or local-write — leaves every
+previous package, stale or not, completely untouched; the technician's online render is never
+blocked or downgraded over it, though `ActiveProjectsScreen` does surface a small truthful "some
+project details may not be available offline yet" note when provisioning itself fails but the
+project list load succeeded.
+
+Native storage is `project_work_packages` (SQLite, migration version 2). **Migration version
+numbers turned out to be GLOBAL** across every native repository (one shared
+`mobile_schema_migrations` table on the one shared connection — see `lib/native/database.ts`), not
+scoped per file, so every native package's schema now lives in one canonical, ordered catalog,
+`lib/native/mobile-migrations.ts`'s `MOBILE_MIGRATIONS` — see that file's doc comment for the
+initialization-order and duplicate-version-number hazards this consolidation closes. Web mirrors
+the store via a new IndexedDB store, `INSTALLER_OFFLINE_DB_VERSION` 5, with an additional `userId`
+index (needed to enumerate/prune one user's packages during bulk provisioning).
+
+**Server-load-failure fallback**, unchanged: whenever `ProjectDetailScreen` itself loads a project
+successfully online (independent of the bulk provisioning above), it best-effort re-persists
+(upserts, WITH real Zoho fields this time) that project's package. A local save failure never
+blocks the online render. A subsequent *server* load failure with a valid local package for that
+exact `(userId, projectId)` renders the cached copy, truthfully tagged offline/cached; with no
+local package, an honest unavailable state.
+
+**Start New Submission while offline**: `ProjectDetailScreen` replaces the link with truthful copy
+("Submission setup is not yet available offline for this project.") when OFFLINE_AUTHORIZED, and
+`mobile-web/app/new-submission/page.tsx` carries the same guard directly (deep link / back-button
+safety) — the full form's online-only dependencies aren't part of this phase.
+
+**Scope boundary, explicit**: Phase 2D provides CORE offline Project Detail (identity + optional
+Zoho display enrichment) — it does NOT mean every Project Detail panel is offline-capable. Expenses
+stay a truthful "requires an internet connection" panel (a separate subsystem needing Supabase
+Storage photo uploads). Site Info — WiFi credentials, license keys, site contact info, notes — also
+stays online-only for now, and deliberately so: those are potentially sensitive fields that
+shouldn't casually land in plain SQLite just to make one panel work offline. Whether/how to store
+Site Info locally (encryption? a narrower field subset? explicit opt-in?) is left as its own future
+local-data/security decision, not something this phase's cleanup should quietly resolve by
+omission.

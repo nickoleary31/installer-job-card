@@ -15,11 +15,16 @@ import { appRoutes } from "@/lib/app-routes";
 import { describeLeaseExpiry } from "@/lib/auth/offline-access-lease";
 import { setActiveProject } from "@/lib/active-project-context";
 import { filterVisibleActiveProjects } from "@/lib/active-projects-visibility";
+import {
+  buildProvisionedProjectWorkPackages,
+  getProjectWorkPackageRepository,
+  type ActiveProjectForProvisioning,
+} from "@/lib/project-work-package";
 import { supabase } from "@/lib/supabase/client";
 
 type CompanyRow = { id: string; name: string };
 
-type LinkedCustomerRow = { customer_name: string | null; full_address: string | null };
+type LinkedCustomerRow = { customer_name: string | null; full_address: string | null; customer_account_id: string | null };
 
 type ActiveProjectRow = {
   id: string;
@@ -69,6 +74,7 @@ export function ActiveProjectsScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [workPackageProvisioningFailed, setWorkPackageProvisioningFailed] = useState(false);
 
   const isGlobalAdmin = context.globalRole === "admin" && context.profileIsActive;
 
@@ -83,8 +89,17 @@ export function ActiveProjectsScreen() {
      * "saved for offline use" once that save has actually committed;
      * a save failure is reported honestly but never as a load error, and
      * never blocks or retroactively hides the already-rendered online data.
+     *
+     * Phase 2D.1 — `workPackages` is the SAME authorized project set,
+     * proactively provisioned via lib/project-work-package.ts's
+     * provisionProjectWorkPackages() right alongside the Active Projects
+     * snapshot itself, so a technician never has to have manually opened
+     * Project Detail online before it becomes available offline. This is a
+     * genuinely separate local-persistence concern from the field-package
+     * save above — its own failure is surfaced (workPackageProvisioningFailed)
+     * but never blocks or downgrades the online render either.
      */
-    const finishOnline = async (userId: string, nextGroups: CompanyGroup[]) => {
+    const finishOnline = async (userId: string, nextGroups: CompanyGroup[], workPackages: ReturnType<typeof buildProvisionedProjectWorkPackages>) => {
       if (cancelled) return;
       setGroups(nextGroups);
       setSyncStatus({ kind: "online-saving" });
@@ -104,6 +119,19 @@ export function ActiveProjectsScreen() {
         // so this must never surface as a load error or block the technician.
         if (cancelled) return;
         setSyncStatus({ kind: "online-save-failed" });
+      }
+
+      // Deliberately a SEPARATE try/catch from the field-package save above:
+      // a Project Work Package provisioning failure must never downgrade or
+      // block the Active Projects online render, and must never be
+      // reported as a "load error" — see provisionProjectWorkPackages()'s
+      // own atomic/preserve-previous contract for why the old packages are
+      // always safe even when this rejects.
+      try {
+        await getProjectWorkPackageRepository().provisionProjectWorkPackages(userId, workPackages);
+        if (!cancelled) setWorkPackageProvisioningFailed(false);
+      } catch {
+        if (!cancelled) setWorkPackageProvisioningFailed(true);
       }
     };
 
@@ -190,7 +218,7 @@ export function ActiveProjectsScreen() {
         let companiesQuery = supabase.from("companies").select("id, name").order("name", { ascending: true });
         if (!isGlobalAdmin) {
           if (context.companyIds.length === 0) {
-            await finishOnline(userId, []);
+            await finishOnline(userId, [], []);
             return;
           }
           companiesQuery = companiesQuery.in("id", context.companyIds);
@@ -200,15 +228,19 @@ export function ActiveProjectsScreen() {
         const companies = (companiesData as CompanyRow[]) || [];
         const companyIds = companies.map((c) => c.id);
         if (companyIds.length === 0) {
-          await finishOnline(userId, []);
+          await finishOnline(userId, [], []);
           return;
         }
+        const companyNamesById = new Map(companies.map((c) => [c.id, c.name]));
 
-        // 2. Active projects across those companies.
+        // 2. Active projects across those companies. customer_account_id is
+        // selected alongside the existing customer fields (same bulk query,
+        // no extra round trip) specifically to provision Phase 2D's
+        // ProjectWorkPackage below without a per-project fetch.
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select(
-            "id, company_id, project_name, location, customer_id, customer_name, customers:customer_id(customer_name, full_address)",
+            "id, company_id, project_name, location, customer_id, customer_name, customers:customer_id(customer_name, full_address, customer_account_id)",
           )
           .in("company_id", companyIds)
           .eq("active", true)
@@ -257,6 +289,57 @@ export function ActiveProjectsScreen() {
           },
         ).map((entry) => entry.row);
 
+        // 5. One bulk customer_accounts lookup across every distinct
+        // customer_account_id in the authorized set — never one query per
+        // project, and never a Zoho request at all (Zoho enrichment stays
+        // an online-Project-Detail-visit concern; see
+        // buildProvisionedProjectWorkPackages()'s own doc). A failure here
+        // degrades to no customer-account names rather than blocking the
+        // Active Projects render, which does not depend on this data.
+        const customerAccountIds = Array.from(
+          new Set(
+            visibleProjects
+              .map((row) => (Array.isArray(row.customers) ? row.customers[0] : row.customers)?.customer_account_id ?? null)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        );
+        let customerAccountNamesById: Record<string, string> = {};
+        if (customerAccountIds.length > 0) {
+          try {
+            const { data: accountsData, error: accountsError } = await supabase
+              .from("customer_accounts")
+              .select("id, name")
+              .in("id", customerAccountIds);
+            if (accountsError) throw accountsError;
+            customerAccountNamesById = ((accountsData as { id: string; name: string | null }[] | null) || []).reduce<
+              Record<string, string>
+            >((acc, row) => {
+              if (row.name?.trim()) acc[row.id] = row.name.trim();
+              return acc;
+            }, {});
+          } catch {
+            // customerAccountName is optional enrichment on the work package — leave it empty rather than failing the whole load.
+          }
+        }
+
+        const provisioningInputs: ActiveProjectForProvisioning[] = visibleProjects.map((row) => {
+          const linked = Array.isArray(row.customers) ? row.customers[0] : row.customers;
+          const fromCustomer = linked?.customer_name?.trim() || "";
+          const fromProject = row.customer_name?.trim() || "";
+          const addressFromCustomer = linked?.full_address?.trim() || "";
+          const fromProjectLocation = row.location?.trim() || "";
+          return {
+            projectId: row.id,
+            companyId: row.company_id,
+            companyName: companyNamesById.get(row.company_id) || "—",
+            projectName: row.project_name,
+            customerName: fromCustomer || fromProject || "—",
+            customerAccountId: linked?.customer_account_id ?? null,
+            location: addressFromCustomer || fromProjectLocation || "—",
+          };
+        });
+        const workPackages = buildProvisionedProjectWorkPackages(userId, provisioningInputs, customerAccountNamesById);
+
         const cardsByCompany = new Map<string, ActiveProjectCard[]>();
         for (const row of visibleProjects) {
           const linked = Array.isArray(row.customers) ? row.customers[0] : row.customers;
@@ -281,7 +364,7 @@ export function ActiveProjectsScreen() {
           .filter((c) => (cardsByCompany.get(c.id) || []).length > 0)
           .map((c) => ({ companyId: c.id, companyName: c.name, projects: cardsByCompany.get(c.id) || [] }));
 
-        await finishOnline(userId, nextGroups);
+        await finishOnline(userId, nextGroups, workPackages);
       } catch (e) {
         await finishFailed(userId, e instanceof Error ? e.message : "Failed to load active projects.");
       }
@@ -327,6 +410,12 @@ export function ActiveProjectsScreen() {
 
       {syncStatus?.kind === "online-save-failed" ? (
         <p className="px-1 text-xs text-gray-500 dark:text-slate-500">Online — could not save for offline use.</p>
+      ) : null}
+
+      {syncStatus?.kind === "online-saved" && workPackageProvisioningFailed ? (
+        <p className="px-1 text-xs text-amber-700 dark:text-amber-400">
+          Some project details may not be available offline yet — will retry next sync.
+        </p>
       ) : null}
 
       {syncStatus?.kind === "offline-cached" ? (

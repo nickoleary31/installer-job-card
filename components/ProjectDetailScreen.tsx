@@ -6,6 +6,7 @@ import { useAuthUserContext } from "@/app/providers/AuthUserContextProvider";
 import { apiUrl } from "@/lib/api-base";
 import { appRoutes } from "@/lib/app-routes";
 import { setActiveProject } from "@/lib/active-project-context";
+import { getProjectWorkPackageRepository, type ProjectWorkPackage } from "@/lib/project-work-package";
 import { supabase } from "@/lib/supabase/client";
 import { UNLINKED_PROJECT_INFO, type ZohoProjectInfoViewModel } from "@/lib/zoho-fsm/project-info";
 import { AddressActionMenu } from "@/components/AddressActionMenu";
@@ -161,10 +162,23 @@ const getReceiptValidationError = (file: File | null) => {
   return null;
 };
 
+/**
+ * Phase 2D — a fresh remote load and a local persistence result are kept
+ * separate, same rationale as ActiveProjectsScreen's SyncStatus: a
+ * successful server response never implies the package is safely stored
+ * on this device, and "offline-cached" must never be presented as fresh.
+ */
+type DetailSyncStatus =
+  | { kind: "online-saved"; syncedAt: string }
+  | { kind: "online-save-failed" }
+  | { kind: "offline-cached"; syncedAt: string }
+  | { kind: "unavailable" };
+
 export function ProjectDetailScreen({ companyId, projectId }: { companyId: string; projectId: string }) {
-  const { loading: authLoading, context: userContext } = useAuthUserContext();
+  const { loading: authLoading, context: userContext, authMode } = useAuthUserContext();
   const companyRole = userContext.companyRolesById[companyId];
   const isGlobalAdmin = userContext.globalRole === "admin";
+  const isOfflineAuthorized = authMode === "offline-authorized";
   const [projectContext, setProjectContext] = useState<ProjectContext>(emptyProjectContext);
   const [siteInfoExpanded, setSiteInfoExpanded] = useState(false);
   const [showWifiPassword, setShowWifiPassword] = useState(false);
@@ -173,6 +187,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
   const [hasProjectAccess, setHasProjectAccess] = useState(false);
   const [accessResolved, setAccessResolved] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  const [detailSyncStatus, setDetailSyncStatus] = useState<DetailSyncStatus | null>(null);
   const [zohoInfo, setZohoInfo] = useState<ZohoProjectInfoViewModel>(UNLINKED_PROJECT_INFO);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [expenseCreatorLabels, setExpenseCreatorLabels] = useState<Record<string, string>>({});
@@ -202,8 +217,74 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     if (companyId && projectId) setActiveProject({ companyId, projectId });
   }, [companyId, projectId]);
 
+  /** Phase 2D — maps a locally provisioned package onto the same state the online path populates, for both the offline-authorized path and the server-load-failure fallback below. Never touches Site Info/expenses — those stay empty/unexpanded offline (see the render section). */
+  const applyPackageToState = (pkg: ProjectWorkPackage) => {
+    setProjectContext({
+      companyName: pkg.companyName,
+      projectName: pkg.projectName,
+      customerName: pkg.customerName,
+      customerAccountName: pkg.customerAccountName ?? "—",
+      location: pkg.location,
+    });
+    setZohoInfo(
+      pkg.zohoLinked
+        ? {
+            linked: true,
+            workOrderNumber: pkg.zohoWorkOrderNumber,
+            serviceAppointmentNumber: pkg.zohoServiceAppointmentNumber,
+            summary: pkg.zohoSummary,
+          }
+        : UNLINKED_PROJECT_INFO,
+    );
+    setHasLinkedCustomer(false);
+    setSiteInfo(emptySiteInfo);
+    setShowWifiPassword(false);
+  };
+
   useEffect(() => {
     let cancelled = false;
+
+    /**
+     * Phase 2D offline-authorized path — bypasses every server fetch
+     * entirely (this component's own expense/Zoho effects below also skip
+     * themselves via the same authMode check) and loads the locally
+     * provisioned Project Work Package for this exact (userId, projectId)
+     * instead. No assignment/role logic is recomputed locally — the
+     * package's mere existence for this lease's userId IS the offline
+     * authorization evidence, since it was only ever written after a
+     * successful online access check (see lib/project-work-package.ts).
+     * A missing/wrong-project package fails closed with an honest
+     * "not available offline" message, never a guessed render.
+     */
+    const loadOfflineAuthorized = async (userId: string) => {
+      setAccessResolved(false);
+      setProjectLoadError(null);
+      try {
+        const pkg = await getProjectWorkPackageRepository().loadProjectWorkPackage(userId, projectId);
+        if (cancelled) return;
+        if (pkg) {
+          applyPackageToState(pkg);
+          setHasProjectAccess(true);
+          setDetailSyncStatus({ kind: "offline-cached", syncedAt: pkg.syncedAt });
+        } else {
+          setHasProjectAccess(false);
+          setProjectContext(emptyProjectContext);
+          setDetailSyncStatus({ kind: "unavailable" });
+          setProjectLoadError("This project hasn't been saved to this device yet. Connect to the internet to view it.");
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setHasProjectAccess(false);
+        setProjectContext(emptyProjectContext);
+        setDetailSyncStatus({ kind: "unavailable" });
+        setProjectLoadError(
+          `Offline, and the saved project on this device could not be read (${e instanceof Error ? e.message : String(e)}).`,
+        );
+      } finally {
+        if (!cancelled) setAccessResolved(true);
+      }
+    };
+
     const loadPageData = async () => {
       if (!companyId || !projectId) return;
       if (authLoading) return;
@@ -216,7 +297,13 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
           setSiteInfo(emptySiteInfo);
           setShowWifiPassword(false);
           setProjectLoadError(null);
+          setDetailSyncStatus(null);
         }
+        return;
+      }
+
+      if (isOfflineAuthorized) {
+        await loadOfflineAuthorized(userContext.userId);
         return;
       }
 
@@ -312,21 +399,63 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
           setShowWifiPassword(false);
         }
 
-        setProjectContext({
+        const nextProjectContext: ProjectContext = {
           companyName: companyRow?.name?.trim() || "—",
           projectName: projectRow?.project_name?.trim() || "—",
           customerName,
           customerAccountName,
           location,
-        });
+        };
+        setProjectContext(nextProjectContext);
         setHasProjectAccess(true);
+
+        // Best-effort local persistence for later offline access — never
+        // blocks or fails the online render (see the Phase 2D save-failure
+        // policy). Zoho fields aren't known yet on this first pass (that
+        // effect runs separately, below) — its own success handler
+        // re-saves this same package once they resolve.
+        if (userContext.userId) {
+          try {
+            const { syncedAt } = await getProjectWorkPackageRepository().saveProjectWorkPackage({
+              userId: userContext.userId,
+              projectId,
+              companyId,
+              companyName: nextProjectContext.companyName,
+              projectName: nextProjectContext.projectName,
+              customerName: nextProjectContext.customerName,
+              customerAccountName: nextProjectContext.customerAccountName === "—" ? null : nextProjectContext.customerAccountName,
+              location: nextProjectContext.location,
+              zohoLinked: false,
+              zohoWorkOrderNumber: null,
+              zohoServiceAppointmentNumber: null,
+              zohoSummary: null,
+            });
+            if (!cancelled) setDetailSyncStatus({ kind: "online-saved", syncedAt });
+          } catch {
+            if (!cancelled) setDetailSyncStatus({ kind: "online-save-failed" });
+          }
+        }
       } catch (error) {
-        if (!cancelled) {
+        if (cancelled) return;
+        // Server load failed — fall back to a valid local package for this
+        // exact (userId, projectId) if one exists, per the Phase 2D
+        // online-load-failure policy; never destroy or hide a good cache.
+        const cachedPkg = userContext.userId
+          ? await getProjectWorkPackageRepository().loadProjectWorkPackage(userContext.userId, projectId).catch(() => null)
+          : null;
+        if (cancelled) return;
+        if (cachedPkg) {
+          applyPackageToState(cachedPkg);
+          setHasProjectAccess(true);
+          setProjectLoadError(null);
+          setDetailSyncStatus({ kind: "offline-cached", syncedAt: cachedPkg.syncedAt });
+        } else {
           setProjectLoadError(error instanceof Error ? error.message : "Failed to load project.");
           setHasProjectAccess(false);
           setProjectContext(emptyProjectContext);
           setHasLinkedCustomer(false);
           setSiteInfo(emptySiteInfo);
+          setDetailSyncStatus({ kind: "unavailable" });
         }
       } finally {
         if (!cancelled) setAccessResolved(true);
@@ -337,11 +466,15 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     return () => {
       cancelled = true;
     };
-  }, [authLoading, companyId, companyRole, isGlobalAdmin, projectId, userContext.userId]);
+  }, [authLoading, companyId, companyRole, isGlobalAdmin, isOfflineAuthorized, projectId, userContext.userId]);
 
   useEffect(() => {
     let cancelled = false;
     const loadExpenses = async () => {
+      // Phase 2D: expenses are a separate, online-only subsystem (Supabase
+      // Storage receipt uploads) — OFFLINE_AUTHORIZED must bypass every
+      // server fetch, not just Zoho's.
+      if (isOfflineAuthorized) return;
       if (!companyId || !projectId || !userContext.userId || !hasProjectAccess || !accessResolved) return;
       setExpensesLoading(true);
       setExpensesError(null);
@@ -396,11 +529,16 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     return () => {
       cancelled = true;
     };
-  }, [accessResolved, companyId, hasProjectAccess, projectId, userContext.userId]);
+  }, [accessResolved, companyId, hasProjectAccess, isOfflineAuthorized, projectId, userContext.userId]);
 
   useEffect(() => {
     let cancelled = false;
     const loadZohoInfo = async () => {
+      // Phase 2D — OFFLINE RENDERING must never call Zoho, even indirectly
+      // via the server route; the offline-authorized branch above already
+      // populated zohoInfo from the local package (if any Zoho fields were
+      // captured during a prior online sync).
+      if (isOfflineAuthorized) return;
       if (!projectId || !userContext.userId || !hasProjectAccess || !accessResolved) return;
       try {
         const { data: sessionData } = await supabase.auth.getSession();
@@ -411,7 +549,31 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
         });
         if (!res.ok || cancelled) return;
         const info = (await res.json()) as ZohoProjectInfoViewModel;
-        if (!cancelled) setZohoInfo(info);
+        if (cancelled) return;
+        setZohoInfo(info);
+
+        // Enrich the just-saved identity package with these Zoho fields —
+        // best-effort, never blocks the (already-rendered) display.
+        if (userContext.userId) {
+          try {
+            await getProjectWorkPackageRepository().saveProjectWorkPackage({
+              userId: userContext.userId,
+              projectId,
+              companyId,
+              companyName: projectContext.companyName,
+              projectName: projectContext.projectName,
+              customerName: projectContext.customerName,
+              customerAccountName: projectContext.customerAccountName === "—" ? null : projectContext.customerAccountName,
+              location: projectContext.location,
+              zohoLinked: info.linked,
+              zohoWorkOrderNumber: info.workOrderNumber,
+              zohoServiceAppointmentNumber: info.serviceAppointmentNumber,
+              zohoSummary: info.summary,
+            });
+          } catch {
+            // Zoho enrichment is a nice-to-have for the offline copy — never surfaced as an error.
+          }
+        }
       } catch {
         // best-effort display only — never blocks the rest of the page
       }
@@ -420,7 +582,11 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
     return () => {
       cancelled = true;
     };
-  }, [accessResolved, hasProjectAccess, projectId, userContext.userId]);
+    // Deliberately excludes projectContext: it's read via closure, and by
+    // the time hasProjectAccess/accessResolved flip true (this effect's
+    // real trigger) the identity effect has already committed it in the
+    // same batch — adding it here would only cause redundant re-fetches.
+  }, [accessResolved, companyId, hasProjectAccess, isOfflineAuthorized, projectId, userContext.userId]);
 
   const expenseTotal = useMemo(
     () =>
@@ -817,7 +983,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
 
         {projectLoadError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
-            Could not load project: {projectLoadError}
+            {isOfflineAuthorized ? projectLoadError : `Could not load project: ${projectLoadError}`}
           </section>
         ) : null}
 
@@ -829,6 +995,13 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
 
         {!authLoading && userContext.userId && accessResolved && hasProjectAccess ? (
           <>
+            {detailSyncStatus?.kind === "offline-cached" ? (
+              <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+                Offline — showing this project saved on this device. Last synced{" "}
+                {new Date(detailSyncStatus.syncedAt).toLocaleString()}.
+              </section>
+            ) : null}
+
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
               <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Current Project</h2>
               <div className="mt-3 grid gap-2 text-sm text-gray-800 sm:grid-cols-2">
@@ -858,6 +1031,10 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
                   <AddressActionMenu address={projectContext.location} className="mt-0.5 whitespace-pre-wrap text-sm text-gray-800" />
                 </div>
               </div>
+              {/* Simply omitted when false — never rendered as "Not linked to Zoho," since
+                  false also covers "no cached enrichment yet" for a proactively provisioned
+                  package that has never had an online Zoho fetch run against it. See
+                  lib/project-work-package.ts's ProjectWorkPackage.zohoLinked doc. */}
               {zohoInfo.linked ? (
                 <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
                   <p className="font-semibold">Linked to Zoho FSM</p>
@@ -938,11 +1115,24 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-gray-600">No linked customer/site record found for this project.</p>
+                  <p className="mt-3 text-sm text-gray-600">
+                    {isOfflineAuthorized
+                      ? "Site details require an internet connection and aren't available offline for this project."
+                      : "No linked customer/site record found for this project."}
+                  </p>
                 )
               ) : null}
             </section>
 
+            {isOfflineAuthorized ? (
+              <section className="rounded-2xl border-2 border-emerald-200/80 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+                <h2 className="text-base font-bold tracking-tight text-gray-900 sm:text-lg">Expenses</h2>
+                <p className="mt-2 text-sm text-gray-600">
+                  Expense tracking requires an internet connection and isn&apos;t available offline for this project.
+                </p>
+              </section>
+            ) : (
+              <>
             <section className="rounded-2xl border-2 border-emerald-200/80 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -1315,15 +1505,29 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
                 })}
               </div>
             </section>
+              </>
+            )}
 
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Link
-                href={appRoutes.newSubmission()}
-                className="rounded-2xl border border-blue-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-blue-300 hover:bg-blue-50/50 sm:p-6"
-              >
-                <h2 className="text-lg font-bold text-gray-900">New Submission</h2>
-                <p className="mt-1 text-sm text-gray-600">Start a new installer job card.</p>
-              </Link>
+              {isOfflineAuthorized ? (
+                <div
+                  className="rounded-2xl border border-gray-200 bg-gray-50 p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6"
+                  aria-disabled="true"
+                >
+                  <h2 className="text-lg font-bold text-gray-500">New Submission</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Submission setup is not yet available offline for this project.
+                  </p>
+                </div>
+              ) : (
+                <Link
+                  href={appRoutes.newSubmission()}
+                  className="rounded-2xl border border-blue-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-blue-300 hover:bg-blue-50/50 sm:p-6"
+                >
+                  <h2 className="text-lg font-bold text-gray-900">New Submission</h2>
+                  <p className="mt-1 text-sm text-gray-600">Start a new installer job card.</p>
+                </Link>
+              )}
 
               <Link
                 href="/drafts"

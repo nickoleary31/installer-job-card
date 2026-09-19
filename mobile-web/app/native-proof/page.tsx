@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getActiveProjectsFieldPackage, type FieldPackageProject } from "@/lib/active-projects-field-package";
 import { clearLease, issueOrRefreshLease, loadLease } from "@/lib/auth/offline-access-lease";
 import { getNetworkStatus } from "@/lib/native/network-status";
+import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
 import {
   clearProofMarkers,
   readProofMarkers,
@@ -339,6 +340,188 @@ export default function NativeProofPage() {
             className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
           >
             Clear lease
+          </button>
+        </div>
+
+        <hr className="border-slate-300 dark:border-slate-700" />
+
+        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Phase 2D project work package proof
+        </h1>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Exercises the real SQLite-backed Project Work Package for synthetic-project-1 (already present in User
+          A&apos;s Active Projects field package above), plus a second synthetic project to prove per-project
+          isolation.
+        </p>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Phase 2D.1 — proactive provisioning proof
+        </h2>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Calls provisionProjectWorkPackages() directly — the exact SAME production function
+          ActiveProjectsScreen.tsx calls right after a successful Active Projects sync — NOT the single-package
+          saveProjectWorkPackage() below. Neither project&apos;s Project Detail screen is ever opened here.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("provisionProjectWorkPackages(A: project-1 + project-2)", () =>
+                getProjectWorkPackageRepository().provisionProjectWorkPackages(USER_A, [
+                  {
+                    userId: USER_A,
+                    projectId: "synthetic-project-1",
+                    companyId: "synthetic-company-1",
+                    companyName: "Synthetic Co",
+                    projectName: "Synthetic Install #1",
+                    customerName: "Synthetic Customer",
+                    customerAccountName: null,
+                    location: "1 Synthetic St",
+                    zohoLinked: false,
+                    zohoWorkOrderNumber: null,
+                    zohoServiceAppointmentNumber: null,
+                    zohoSummary: null,
+                  },
+                  {
+                    userId: USER_A,
+                    projectId: "synthetic-project-2",
+                    companyId: "synthetic-company-1",
+                    companyName: "Synthetic Co",
+                    projectName: "Synthetic Install #2",
+                    customerName: "Synthetic Customer",
+                    customerAccountName: null,
+                    location: "2 Synthetic St",
+                    zohoLinked: false,
+                    zohoWorkOrderNumber: null,
+                    zohoServiceAppointmentNumber: null,
+                    zohoSummary: null,
+                  },
+                ]),
+              )
+            }
+            className="rounded bg-emerald-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Provision (A: project-1 + project-2)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("provisionProjectWorkPackages(A: project-1 ONLY)", () =>
+                getProjectWorkPackageRepository().provisionProjectWorkPackages(USER_A, [
+                  {
+                    userId: USER_A,
+                    projectId: "synthetic-project-1",
+                    companyId: "synthetic-company-1",
+                    companyName: "Synthetic Co",
+                    projectName: "Synthetic Install #1",
+                    customerName: "Synthetic Customer",
+                    customerAccountName: null,
+                    location: "1 Synthetic St",
+                    zohoLinked: false,
+                    zohoWorkOrderNumber: null,
+                    zohoServiceAppointmentNumber: null,
+                    zohoSummary: null,
+                  },
+                ]),
+              )
+            }
+            className="rounded bg-amber-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Re-provision (A: project-1 ONLY — drops project-2)
+          </button>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Single-package save/load/clear (simulates an online Project Detail visit&apos;s own enrichment save)
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("saveProjectWorkPackage(A, project-1)", () =>
+                getProjectWorkPackageRepository().saveProjectWorkPackage({
+                  userId: USER_A,
+                  projectId: "synthetic-project-1",
+                  companyId: "synthetic-company-1",
+                  companyName: "Synthetic Co",
+                  projectName: "Synthetic Install #1",
+                  customerName: "Synthetic Customer",
+                  customerAccountName: null,
+                  location: "1 Synthetic St",
+                  zohoLinked: true,
+                  zohoWorkOrderNumber: "WO-0001",
+                  zohoServiceAppointmentNumber: "SA-0001",
+                  zohoSummary: "Synthetic install summary",
+                }),
+              )
+            }
+            className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save package (A, project-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("saveProjectWorkPackage(A, project-2)", () =>
+                getProjectWorkPackageRepository().saveProjectWorkPackage({
+                  userId: USER_A,
+                  projectId: "synthetic-project-2",
+                  companyId: "synthetic-company-1",
+                  companyName: "Synthetic Co",
+                  projectName: "Synthetic Install #2",
+                  customerName: "Synthetic Customer",
+                  customerAccountName: null,
+                  location: "2 Synthetic St",
+                  zohoLinked: false,
+                  zohoWorkOrderNumber: null,
+                  zohoServiceAppointmentNumber: null,
+                  zohoSummary: null,
+                }),
+              )
+            }
+            className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Save package (A, project-2)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("loadProjectWorkPackage(A, project-1)", () =>
+                getProjectWorkPackageRepository().loadProjectWorkPackage(USER_A, "synthetic-project-1"),
+              )
+            }
+            className="rounded bg-slate-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load package (A, project-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("loadProjectWorkPackage(B, project-1)", () =>
+                getProjectWorkPackageRepository().loadProjectWorkPackage(USER_B, "synthetic-project-1"),
+              )
+            }
+            className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Load package (B, project-1)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("clearProjectWorkPackage(A, project-1)", () =>
+                getProjectWorkPackageRepository().clearProjectWorkPackage(USER_A, "synthetic-project-1"),
+              )
+            }
+            className="rounded bg-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:opacity-50 dark:bg-slate-700 dark:text-slate-100"
+          >
+            Clear package (A, project-1)
           </button>
         </div>
       </div>

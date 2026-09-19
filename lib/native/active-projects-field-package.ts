@@ -1,4 +1,5 @@
-import { getNativeSqliteConnection, runMigrations, type SqlMigration } from "./database.ts";
+import { getNativeSqliteConnection, runMigrations } from "./database.ts";
+import { MOBILE_MIGRATIONS } from "./mobile-migrations.ts";
 import type {
   ActiveProjectsFieldPackage,
   ActiveProjectsSnapshot,
@@ -13,36 +14,13 @@ import type {
  * so future incremental sync can update individual rows without rewriting
  * the whole package; see lib/active-projects-field-package.ts for the
  * shared interface, DTOs, and web (IndexedDB) implementation.
+ *
+ * Schema (version 1) lives in mobile-migrations.ts's single canonical
+ * catalog, not here — see that file's doc comment for why.
  */
 const PROJECTS_TABLE = "field_package_projects";
 const METADATA_TABLE = "field_package_metadata";
 const CURRENT_SCHEMA_VERSION = 1;
-
-const MIGRATIONS: readonly SqlMigration[] = [
-  {
-    version: 1,
-    statements: [
-      `CREATE TABLE IF NOT EXISTS ${METADATA_TABLE} (
-        user_id TEXT PRIMARY KEY NOT NULL,
-        synced_at TEXT NOT NULL,
-        schema_version INTEGER NOT NULL
-      )`,
-      `CREATE TABLE IF NOT EXISTS ${PROJECTS_TABLE} (
-        user_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        company_id TEXT NOT NULL,
-        company_name TEXT NOT NULL,
-        project_name TEXT NOT NULL,
-        display_customer_name TEXT NOT NULL,
-        display_location TEXT NOT NULL,
-        completed_submission_count INTEGER NOT NULL,
-        active INTEGER NOT NULL,
-        PRIMARY KEY (user_id, project_id)
-      )`,
-      `CREATE INDEX IF NOT EXISTS idx_field_package_projects_user ON ${PROJECTS_TABLE}(user_id)`,
-    ],
-  },
-];
 
 function buildDeleteUserProjectsSql(): string {
   return `DELETE FROM ${PROJECTS_TABLE} WHERE user_id = ?`;
@@ -142,7 +120,7 @@ export async function saveViaConnection(
 
 async function getSchemaReadyConnection() {
   const db = await getNativeSqliteConnection();
-  await runMigrations(db, MIGRATIONS);
+  await runMigrations(db, MOBILE_MIGRATIONS);
   return db;
 }
 
