@@ -80,6 +80,27 @@ export function LoginScreen() {
     }
   };
 
+  // While auth resolution is genuinely pending (including the fast native
+  // definitively-offline path — see lib/auth/userContext.ts's
+  // UserContextDeps doc — which still needs a moment to read the local
+  // session/lease), never fall through to the login form below: that would
+  // falsely suggest a login is required right before the app silently
+  // authenticates offline without any user action. A password form the app
+  // hasn't yet determined is even needed is exactly the misleading UX this
+  // guards against.
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-slate-50 py-10">
+        <div className="mx-auto max-w-md space-y-4 px-4">
+          <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+            <h1 className="text-2xl font-bold tracking-tight text-gray-950">Checking access…</h1>
+            <p className="mt-2 text-sm text-gray-600">Restoring your session…</p>
+          </header>
+        </div>
+      </main>
+    );
+  }
+
   // Offline (or the server is unavailable) with no usable lease: a
   // password form would just fail on submit, so say so honestly instead of
   // pretending it might work. Distinguishes an EXPIRED lease (truthful,

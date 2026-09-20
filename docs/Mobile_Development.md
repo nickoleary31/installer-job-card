@@ -672,3 +672,61 @@ sync, retry queue, conflict reconciliation, quarantine upload, or inspection que
 2H+. No aggressive/automatic garbage collection of orphaned photos — explicit discard-local-submission
 cleanup is deferred until a real "discard" UI action exists (it does not yet). The PPD JSON config file
 remains a separate file class, untouched by this phase.
+
+## iOS offline-auth latency fix
+
+Verified on iOS through Phase 2E, but Phases 2F/2G not yet iOS-runtime-verified when this fix landed:
+a reproducible ~10s delay on iOS between app launch (or a live online→offline transition) and the app
+correctly resolving `offline-authorized`, during which `LoginScreen` misleadingly showed the actual
+login form.
+
+**Root cause, confirmed by code trace (not the original hypothesis's literal shape, but the same
+underlying defect)**: `lib/auth/userContext.ts`'s `resolveAuthUser()` gated its branch selection on
+`appearsOffline()` — `navigator.onLine`, a browser API well-documented as unreliable inside a WKWebView
+(iOS). `lib/auth/auth-state.ts` already used the correct, native-aware `getNetworkStatus().isOnlineFresh()`
+(backed by `@capacitor/network`'s `Network.getStatus()`, an OS-level query with no network I/O of its
+own) — but only *after* `AuthUserContextProvider.refresh()` had already awaited
+`resolveAuthUserContext()` to completion. When `navigator.onLine` wrongly reported `true` on a genuinely
+offline device, `resolveAuthUser()` called `supabase.auth.getUser()` — a real network request with no
+client-side timeout anywhere in this codebase — which simply hung until the OS-level connection attempt
+failed. Android wasn't materially affected because its WebView's `navigator.onLine` tracks real
+connectivity closely enough that the bad branch was rarely taken; confirmed here on the Android emulator
+by measuring the *old* logic's timing wasn't materially slow there either — the fix targets the false
+branch, not a platform-specific hack.
+
+**Fix**: `resolveAuthUserContext()` now takes an optional `deps: UserContextDeps` (mirrors
+`auth-state.ts`'s own `AuthStateDeps` pattern) and, when `isNative()` is true, checks
+`isOnlineFresh()` *first*. If definitively offline: resolves the user from the local Supabase session
+only (`getSession()`, never `getUser()`'s network call) and goes straight to the same
+cached-starter-snapshot-then-minimal-context fallback (`resolveOfflineFallbackContext()`, extracted
+from the pre-existing catch-block logic, now shared by both paths) the online path already falls back
+to on a genuine network failure — just without waiting for one first. A throwing/ambiguous connectivity
+check falls through to the unchanged normal path (never skips positive evidence, only a doomed network
+attempt when the evidence is already conclusive). Web is unaffected: the fast path is gated on
+`isNative()`, so `resolveAuthUserContext()`'s behavior for `isNative() === false` is byte-for-byte
+unchanged. `decideAuthMode()`'s pure decision logic (`lib/auth/auth-state.ts`) was not touched at all —
+denial handling, lease-clearing on denial, expired/invalid/missing-lease lock-out, and the "unknown
+category online must not grant offline access" safety rule all remain exactly as before; only how fast
+(and from what local evidence) the `AuthUserContextResult` fed into that decision is produced changed.
+
+Two smaller, related fixes: `components/LoginScreen.tsx` now renders "Checking access…" while
+`authLoading` is true instead of falling through to the actual login form (previously the ONLY
+loading-state gap in that component — the `offline-locked` branch already correctly checked
+`!authLoading`, this one didn't check it at all). `app/providers/AuthUserContextProvider.tsx`'s network
+subscriber previously only re-triggered `refresh()` on regaining connectivity (`online && !wasOnline`)
+— asymmetric, so a live online→offline drop while the app stayed open was never promptly re-evaluated
+at all. Now symmetric (`online !== wasOnline`), letting the now-fast native definitively-offline path
+take over immediately on a live drop rather than waiting for some unrelated trigger.
+
+**Measured on the Android emulator** (internal `resolveAuthUserContext()`→`resolveAuthState()` duration,
+captured via a permanent one-line `elapsedMs` field added to the existing `[auth-context]` console log
+— deliberately just the one number, not a full trace, since that's what's actionable if iOS support
+ever needs to check "is it still slow"): cold launch while offline, valid lease → 103ms; force-stop
++ reopen while offline, valid lease → 101ms; live online→offline network drop while the app stayed
+open → 34ms internal resolution (384ms including the OS/WebView network-event propagation delay before
+the app's own listener even fires); offline + no lease → 67ms, correctly `offline-locked` (not
+`offline-authorized` — the missing-lease/expired-lease/invalid-lease safety rules are entirely
+`decideAuthMode()`'s concern and were not touched by this fix).
+
+**Not yet verified**: the actual iOS ~10s delay itself. This fix cannot be claimed fixed on iOS until
+retested on the real iPhone — see the after-implementation report for the exact retest checklist.

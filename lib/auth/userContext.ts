@@ -1,9 +1,10 @@
 import type { User } from "@supabase/supabase-js";
 
-import { classifySupabaseFailure } from "@/lib/auth/classify-supabase-error";
-import { isOnboardingComplete } from "@/lib/auth/onboarding";
-import { supabase } from "@/lib/supabase/client";
-import { getStarterDataSnapshot } from "@/lib/starter-data-cache";
+import { classifySupabaseFailure } from "./classify-supabase-error.ts";
+import { isOnboardingComplete } from "./onboarding.ts";
+import { supabase } from "../supabase/client.ts";
+import { getNetworkStatus } from "../native/network-status.ts";
+import { isNativeRuntime } from "../native/runtime.ts";
 
 /**
  * @supabase/postgrest-js's PostgrestError carries no HTTP status of its own
@@ -90,13 +91,22 @@ function isMissingOnboardingColumnError(error: { message?: string } | null | und
 }
 
 /**
+ * Reads only Supabase's own local session storage — never a network call.
+ * The fast native-definitively-offline path below uses this exclusively so
+ * a genuinely offline device never attempts a request that can only stall.
+ */
+async function getLocalSessionUser(): Promise<User | null> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  return sessionData.session?.user ?? null;
+}
+
+/**
  * Prefer server-validated user when online; use persisted session locally when offline so guards can still match IndexedDB starter snapshots.
  * Uses Supabase's built-in session storage only — no extra token caching.
  */
-async function resolveAuthUser(): Promise<User | null> {
+async function resolveOnlineUser(): Promise<User | null> {
   if (appearsOffline()) {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const fromSession = sessionData.session?.user ?? null;
+    const fromSession = await getLocalSessionUser();
     if (fromSession) return fromSession;
     const { data: getUserData } = await supabase.auth.getUser();
     return getUserData.user ?? null;
@@ -105,8 +115,7 @@ async function resolveAuthUser(): Promise<User | null> {
   const { data: getUserData, error: getUserError } = await supabase.auth.getUser();
   if (!getUserError && getUserData.user) return getUserData.user;
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  return sessionData.session?.user ?? null;
+  return getLocalSessionUser();
 }
 
 async function loadProfileRow(userId: string): Promise<{
@@ -172,8 +181,120 @@ export type AuthUserContextResult = {
   context: AuthUserContext;
 };
 
-export async function resolveAuthUserContext(): Promise<AuthUserContextResult> {
-  const user = await resolveAuthUser();
+/**
+ * Shared by both (a) the fast native-definitively-offline path below, which
+ * never attempts the network-bound profile/membership request at all, and
+ * (b) the existing catch block, reached when that request WAS attempted but
+ * genuinely failed — the exact same cached-snapshot-then-minimal-context
+ * fallback either way, so "we already knew we were offline" and "we found
+ * out the hard way" produce identical results, just at different speeds.
+ */
+async function resolveOfflineFallbackContext(
+  user: User,
+  category: "unavailable" | "offline-transport" | "unknown",
+): Promise<AuthUserContextResult> {
+  if (isBrowser()) {
+    try {
+      // Dynamically imported — never at module load, matching lib/native/*.ts's
+      // established pattern for environment-gated dependencies — so a plain
+      // Node test run (isBrowser() false, no window) never needs to resolve
+      // starter-data-cache.ts's own module graph at all.
+      const { getStarterDataSnapshot } = await import("../starter-data-cache.ts");
+      const snap = await getStarterDataSnapshot(user.id);
+      if (snap?.userId === user.id) {
+        return {
+          source: { kind: category },
+          context: {
+            userId: user.id,
+            displayName: snap.profile.displayName?.trim() || null,
+            email: snap.profile.email?.trim() || user.email?.trim() || null,
+            phone: snap.profile.phone?.trim() || null,
+            jobTitle: snap.profile.jobTitle?.trim() || null,
+            globalRole: snap.profile.globalRole,
+            profileIsActive: snap.profile.profileIsActive !== false,
+            onboardingCompleted: snap.profile.onboardingCompleted !== false,
+            companyIds: [...snap.profile.companyIds],
+            companyRolesById: { ...snap.profile.companyRolesById },
+          },
+        };
+      }
+    } catch {
+      // ignore IndexedDB errors
+    }
+  }
+
+  if (category === "unavailable" || category === "offline-transport") {
+    return {
+      source: { kind: category },
+      context: {
+        userId: user.id,
+        displayName: null,
+        email: user.email?.trim() || null,
+        phone: null,
+        jobTitle: null,
+        globalRole: null,
+        profileIsActive: false,
+        onboardingCompleted: true,
+        companyIds: [],
+        companyRolesById: {},
+      },
+    };
+  }
+
+  // "unknown" with no cached data to fall back on — fail closed with an
+  // empty context rather than synthesizing a partial one.
+  return { source: { kind: "unknown" }, context: emptyContext() };
+}
+
+/**
+ * Injectable so lib/auth/userContext.test.ts can prove the native
+ * cold-start/offline-transition latency fix (see docs/Mobile_Development.md's
+ * "iOS offline-auth latency fix" section) actually skips the network-bound
+ * path when definitively offline, without mocking Supabase's client module
+ * itself. `getLocalSessionUser`/`resolveOnlineUser` default to the real
+ * functions above — production behavior is unchanged; a test can swap
+ * `resolveOnlineUser` for a fake that throws "should not have been called"
+ * to directly prove it every time the fast path is taken.
+ */
+export type UserContextDeps = {
+  isNative: () => boolean;
+  isOnlineFresh: () => Promise<boolean>;
+  getLocalSessionUser: () => Promise<User | null>;
+  resolveOnlineUser: () => Promise<User | null>;
+};
+
+const defaultUserContextDeps: UserContextDeps = {
+  isNative: isNativeRuntime,
+  isOnlineFresh: () => getNetworkStatus().isOnlineFresh(),
+  getLocalSessionUser,
+  resolveOnlineUser,
+};
+
+export async function resolveAuthUserContext(deps: UserContextDeps = defaultUserContextDeps): Promise<AuthUserContextResult> {
+  // Native + definitively offline: a network-bound getUser()/profile/
+  // membership request cannot succeed here and would only stall waiting to
+  // fail — the reported iOS ~10s login-screen delay. Resolve the user from
+  // the LOCAL session only (never a network call) and go straight to the
+  // same cached-snapshot fallback the online path below already falls back
+  // to on a genuine network failure, immediately rather than after a
+  // timeout. A throwing/ambiguous connectivity check falls through to the
+  // normal path unchanged — this never skips positive evidence, only a
+  // doomed network attempt when the evidence is already conclusive.
+  if (deps.isNative()) {
+    let definitivelyOffline = false;
+    try {
+      definitivelyOffline = !(await deps.isOnlineFresh());
+    } catch {
+      definitivelyOffline = false;
+    }
+    if (definitivelyOffline) {
+      const user = await deps.getLocalSessionUser();
+      if (!user) return { source: { kind: "signed-out" }, context: emptyContext() };
+      return resolveOfflineFallbackContext(user, "offline-transport");
+    }
+  }
+
+  const user = await deps.resolveOnlineUser();
   if (!user) return { source: { kind: "signed-out" }, context: emptyContext() };
 
   try {
@@ -232,57 +353,11 @@ export async function resolveAuthUserContext(): Promise<AuthUserContextResult> {
     }
 
     // category is "unavailable" | "offline-transport" | "unknown" here —
-    // never a confirmed denial, so a cached fallback is safe to consider
-    // for all three. lib/auth/auth-state.ts is what decides whether
-    // "unknown" is actually ALLOWED to unlock offline access (only when
-    // independently confirmed offline) — this function's job is only to
-    // report what happened and surface whatever data is available.
-    if (isBrowser()) {
-      try {
-        const snap = await getStarterDataSnapshot(user.id);
-        if (snap?.userId === user.id) {
-          return {
-            source: { kind: category },
-            context: {
-              userId: user.id,
-              displayName: snap.profile.displayName?.trim() || null,
-              email: snap.profile.email?.trim() || user.email?.trim() || null,
-              phone: snap.profile.phone?.trim() || null,
-              jobTitle: snap.profile.jobTitle?.trim() || null,
-              globalRole: snap.profile.globalRole,
-              profileIsActive: snap.profile.profileIsActive !== false,
-              onboardingCompleted: snap.profile.onboardingCompleted !== false,
-              companyIds: [...snap.profile.companyIds],
-              companyRolesById: { ...snap.profile.companyRolesById },
-            },
-          };
-        }
-      } catch {
-        // ignore IndexedDB errors
-      }
-    }
-
-    if (category === "unavailable" || category === "offline-transport") {
-      return {
-        source: { kind: category },
-        context: {
-          userId: user.id,
-          displayName: null,
-          email: user.email?.trim() || null,
-          phone: null,
-          jobTitle: null,
-          globalRole: null,
-          profileIsActive: false,
-          onboardingCompleted: true,
-          companyIds: [],
-          companyRolesById: {},
-        },
-      };
-    }
-
-    // "unknown" with no cached data to fall back on — fail closed with an
-    // empty context rather than synthesizing a partial one.
-    return { source: { kind: "unknown" }, context: emptyContext() };
+    // never a confirmed denial. lib/auth/auth-state.ts is what decides
+    // whether "unknown" is actually ALLOWED to unlock offline access (only
+    // when independently confirmed offline) — this function's job is only
+    // to report what happened and surface whatever data is available.
+    return resolveOfflineFallbackContext(user, category);
   }
 }
 
