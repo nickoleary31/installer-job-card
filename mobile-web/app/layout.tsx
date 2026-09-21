@@ -21,6 +21,12 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: "#0f172a",
+  // Required for env(safe-area-inset-*) to resolve to a real value in the
+  // Capacitor WKWebView instead of 0 — without this, the fixed top scrim
+  // below (and the footer's existing safe-area padding in
+  // NewSubmissionForm.tsx) would both collapse to zero height. Intentionally
+  // no maximumScale/userScalable here — pinch-zoom stays available.
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -31,6 +37,21 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full">
+        {/*
+          Every screen scrolls the whole document (no per-screen scroll
+          container), so a screen's own top padding scrolls away with its
+          content — leaving nothing to stop subsequent content from sliding
+          under the status bar / Dynamic Island. This fixed, opaque strip
+          stays pinned above everything else regardless of scroll position,
+          so that area is always covered (and, being a real element, can't
+          be tapped through). Sized to the device's actual inset rather than
+          a guessed constant so it's correct on any notch/Dynamic Island size.
+        */}
+        <div
+          aria-hidden="true"
+          className="fixed inset-x-0 top-0 z-40 bg-slate-50 dark:bg-slate-950"
+          style={{ height: "env(safe-area-inset-top, 0px)" }}
+        />
         <AuthUserContextProvider>{children}</AuthUserContextProvider>
       </body>
     </html>

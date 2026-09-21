@@ -1414,6 +1414,16 @@ function IconSend({ className }: { className?: string }) {
   );
 }
 
+function IconMore({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <circle cx="19" cy="12" r="2" />
+    </svg>
+  );
+}
+
 type SectionStepStatus = "Not Started" | "In Progress" | "Complete";
 
 function sectionStatusBadgeClassName(status: SectionStepStatus) {
@@ -2225,6 +2235,8 @@ export function NewSubmissionForm() {
   /** Suppress stale save/reject from overlapping "Save to this device" clicks. */
   const saveToDeviceGenerationRef = useRef(0);
   const [exitWithoutSavingOpen, setExitWithoutSavingOpen] = useState(false);
+  /** Phone-width New Submission footer: the "…" trigger's action-sheet open state. */
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const autosaveCheckedRef = useRef(false);
   const autosaveRestorePayloadRef = useRef<JobCardAutosavePayload | null>(null);
   const submissionStatusAutosaveRef = useRef(submissionStatus);
@@ -7136,6 +7148,31 @@ export function NewSubmissionForm() {
     handleExitToHome();
   };
 
+  /**
+   * Phone-width "Save" action-sheet item — a single Save concept for the
+   * technician. Always durable-local-first: handleSaveToDevice (existing,
+   * unmodified) writes the canonical offline-recovery IndexedDB draft
+   * unconditionally, regardless of connectivity. Only then, if the device is
+   * actually online, do we additionally run handleSaveDraft (existing,
+   * unmodified) to sync to the cloud — it already refuses to run offline and
+   * falls back to its own local cache on failure, and on success cleans up
+   * the now-redundant offline draft. Gates on isOffline alone, not
+   * isOfflineAuthorized — the latter can be true even while the device is
+   * genuinely online (a confirmed backend-side outage, per auth-state.ts's
+   * "unavailable"/"offline-transport" categories), and handleSaveDraft's own
+   * internal precondition already checks isOffline || isOfflineAuthorized,
+   * so it still safely no-ops in that case without this dispatcher needing
+   * to duplicate that check. Neither reused function exits afterward — this
+   * form stays open; leaving is its own separate, deliberate action (Exit
+   * Without Saving).
+   */
+  const handleSaveJobCard = async (event?: MouseEvent<HTMLButtonElement>) => {
+    await handleSaveToDevice(event);
+    if (!isOffline) {
+      await handleSaveDraft();
+    }
+  };
+
   const handleExitWithoutSavingRequest = () => {
     setExitWithoutSavingOpen(true);
   };
@@ -7221,7 +7258,7 @@ export function NewSubmissionForm() {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-32 sm:pb-36 md:pb-10">
-      <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:space-y-6 sm:px-5 sm:py-6">
+      <div className="mx-auto max-w-4xl space-y-5 px-4 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] sm:space-y-6 sm:px-5 sm:pb-6 sm:pt-[max(1.5rem,env(safe-area-inset-top))]">
         <header className={headerCardClassName}>
           <div className="flex flex-col items-start gap-1.5">
             <TkpLogo />
@@ -11923,51 +11960,18 @@ export function NewSubmissionForm() {
         >
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-2">
             {step === "form" ? (
-              <>
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
-                    onClick={(event) => void handleSaveToDevice(event)}
-                  >
-                    <IconFloppy className="h-5 w-5 shrink-0" />
-                    <span className="truncate">Save to this device</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
-                    onClick={hasCoreOrVehicleInfo ? handleSaveDraftAndExit : handleExitToHome}
-                    disabled={isOffline || isOfflineAuthorized}
-                  >
-                    <IconFloppy className="h-5 w-5 shrink-0" />
-                    <span className="truncate">
-                      {hasCoreOrVehicleInfo
-                        ? isOffline || isOfflineAuthorized
-                          ? "Save Draft (online only)"
-                          : "Save Draft and Exit"
-                        : "Exit"}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`${btnPrimaryClassName} min-w-0 flex-1 text-sm sm:text-base`}
-                    onClick={handleReviewClick}
-                    disabled={!hasAnsweredAdditionalHardwareQuestion}
-                  >
-                    <IconSend className="h-5 w-5 shrink-0" />
-                    <span className="line-clamp-2 text-left leading-tight">Review & Submit Job Card</span>
-                  </button>
-                </div>
-                {hasCoreOrVehicleInfo ? (
-                  <button
-                    type="button"
-                    className={`${btnExitWithoutSaveClassName} w-full text-sm sm:text-base`}
-                    onClick={handleExitWithoutSavingRequest}
-                  >
-                    Exit Without Saving
-                  </button>
-                ) : null}
-              </>
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  aria-label="Job card actions"
+                  aria-haspopup="dialog"
+                  aria-expanded={mobileActionsOpen}
+                  onClick={() => setMobileActionsOpen(true)}
+                  className="inline-flex h-14 w-14 items-center justify-center rounded-full border-2 border-blue-600 bg-white text-blue-600 shadow-sm active:bg-blue-50 dark:border-blue-500 dark:bg-gray-900 dark:text-blue-400"
+                >
+                  <IconMore className="h-6 w-6" />
+                </button>
+              </div>
             ) : (
               <>
                 <button type="button" className={`${btnSecondaryClassName} min-w-0 flex-1 text-sm sm:text-base`} onClick={handleBackToForm}>
@@ -12000,6 +12004,58 @@ export function NewSubmissionForm() {
           </div>
         </div>
       )}
+
+      {mobileActionsOpen ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 p-4 sm:items-center md:hidden"
+          role="presentation"
+          onClick={() => setMobileActionsOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Job card actions"
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-600 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 px-5 py-4 text-base font-semibold text-gray-900 hover:bg-gray-50 active:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-800"
+              onClick={() => {
+                setMobileActionsOpen(false);
+                void handleSaveJobCard();
+              }}
+            >
+              <IconFloppy className="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+              Save
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 border-t border-gray-100 px-5 py-4 text-base font-semibold text-gray-900 hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-800"
+              onClick={() => {
+                setMobileActionsOpen(false);
+                handleReviewClick();
+              }}
+              disabled={!hasAnsweredAdditionalHardwareQuestion}
+            >
+              <IconSend className="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+              Review & Submit
+            </button>
+            {hasCoreOrVehicleInfo ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 border-t border-gray-100 px-5 py-4 text-base font-semibold text-red-600 hover:bg-red-50 active:bg-red-100 dark:border-gray-700 dark:text-red-400 dark:hover:bg-red-950/40"
+                onClick={() => {
+                  setMobileActionsOpen(false);
+                  handleExitWithoutSavingRequest();
+                }}
+              >
+                Exit Without Saving
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {emailSubmissionPreview && pendingEmailPayload ? (
         <EmailSendConfirmModal

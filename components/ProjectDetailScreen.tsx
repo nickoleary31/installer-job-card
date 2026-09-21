@@ -974,7 +974,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
   }, [reviewToast]);
 
   return (
-    <main className="min-h-screen bg-slate-50 py-6">
+    <main className="min-h-screen bg-slate-50 pb-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
       <div className="mx-auto max-w-3xl space-y-5 px-4 sm:px-5 sm:py-2">
         <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
           <TkpLogo priority />

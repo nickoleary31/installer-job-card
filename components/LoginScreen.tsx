@@ -90,7 +90,7 @@ export function LoginScreen() {
   // guards against.
   if (authLoading) {
     return (
-      <main className="min-h-screen bg-slate-50 py-10">
+      <main className="min-h-screen bg-slate-50 pb-10 pt-[max(2.5rem,env(safe-area-inset-top))]">
         <div className="mx-auto max-w-md space-y-4 px-4">
           <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
             <h1 className="text-2xl font-bold tracking-tight text-gray-950">Checking access…</h1>
@@ -112,7 +112,7 @@ export function LoginScreen() {
   if (!authLoading && authMode === "offline-locked") {
     const isExpired = offlineLockReason === "expired";
     return (
-      <main className="min-h-screen bg-slate-50 py-10">
+      <main className="min-h-screen bg-slate-50 pb-10 pt-[max(2.5rem,env(safe-area-inset-top))]">
         <div className="mx-auto max-w-md space-y-4 px-4">
           <header className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
             <h1 className="text-2xl font-bold tracking-tight text-gray-950">
@@ -153,7 +153,7 @@ export function LoginScreen() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 sm:text-sm"
                 autoComplete="email"
               />
             </div>
@@ -163,7 +163,7 @@ export function LoginScreen() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 sm:text-sm"
                 autoComplete="current-password"
               />
             </div>
