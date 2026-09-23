@@ -14,7 +14,7 @@ function loadEnv(): Record<string, string> {
 }
 
 const env = loadEnv();
-const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!, {
+const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL!, (env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY)!, {
   auth: { persistSession: false },
 });
 

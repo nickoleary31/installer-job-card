@@ -1,3 +1,4 @@
+import { deleteLocalPhotoDurably, getLocalPhotoMetadataRepository, type LocalPhotoMetadataRepository } from "./local-photo.ts";
 import { getNativeLocalSubmission } from "./native/local-submission.ts";
 import { isNativeRuntime } from "./native/runtime.ts";
 
@@ -56,6 +57,20 @@ export type LocalSubmission<TPayload = unknown> = {
   formId: string | null;
   submissionType: string | null;
   /**
+   * Set exactly once, ONLY by the atomic Phase 2H technician-submit
+   * transaction (see lib/local-submission-outbox.ts's
+   * technicianSubmitAtomically) — never by saveLocalSubmission, which never
+   * reads or writes this column (see its own native upsert SQL: this
+   * column is deliberately omitted from both the INSERT column list and
+   * the ON CONFLICT DO UPDATE SET clause, the same preserve-on-conflict
+   * trick already used for createdAt). null means "still Working/Draft, not
+   * yet submitted" — see findUnsubmittedLocalSubmissions below, and Phase
+   * 2H's own Saved-vs-Submitted classification doc. Deliberately distinct
+   * from `status` ("locally-complete" is a pure editing-progress concept
+   * and must never be read as submitted — see that field's own doc).
+   */
+  technicianSubmittedAt: string | null;
+  /**
    * The CompanyProductDefinitionsPackage/ProjectWorkPackage schema version
    * in effect when this submission was created — recorded for diagnostic
    * purposes only. Phase 2F does not implement definition-version
@@ -74,7 +89,14 @@ export type LocalSubmission<TPayload = unknown> = {
   updatedAt: string;
 };
 
-export type LocalSubmissionInput<TPayload = unknown> = Omit<LocalSubmission<TPayload>, "createdAt" | "updatedAt">;
+/**
+ * technicianSubmittedAt is deliberately excluded here too — saveLocalSubmission
+ * (the ordinary autosave/working-save path) never sets it; see that field's own doc.
+ */
+export type LocalSubmissionInput<TPayload = unknown> = Omit<
+  LocalSubmission<TPayload>,
+  "createdAt" | "updatedAt" | "technicianSubmittedAt"
+>;
 
 export interface LocalSubmissionRepository {
   /**
@@ -97,6 +119,24 @@ export interface LocalSubmissionRepository {
    * back to.
    */
   findWorkingLocalSubmissions<TPayload>(userId: string, projectId: string): Promise<LocalSubmission<TPayload>[]>;
+  /**
+   * Phase 2H — the corrected resume-detection query: every submission for
+   * this exact (userId, projectId) with technician_submitted_at IS NULL,
+   * newest-updated first, REGARDLESS of `status` (working OR
+   * locally-complete). Deliberately NOT `findWorkingLocalSubmissions` with
+   * an added filter — a "locally-complete" submission the technician has
+   * NOT yet explicitly submitted must still be resumable/visible here (see
+   * Phase 2H's design-review correction on this exact point). Same
+   * malformed-row skip behavior as findWorkingLocalSubmissions.
+   */
+  findUnsubmittedLocalSubmissions<TPayload>(userId: string, projectId: string): Promise<LocalSubmission<TPayload>[]>;
+  /**
+   * Narrow, single-column write: records the server's confirmed identity
+   * once Phase 2H's finalize call has succeeded. Never touches status,
+   * technician_submitted_at, or payload — those are owned by the technician-
+   * submit transaction and the ordinary save path respectively.
+   */
+  recordServerConfirmation(localSubmissionId: string, serverSubmissionId: string): Promise<void>;
   deleteLocalSubmission(localSubmissionId: string): Promise<void>;
 }
 
@@ -123,6 +163,12 @@ class WebLocalSubmissionNotImplemented implements LocalSubmissionRepository {
   findWorkingLocalSubmissions<TPayload>(): Promise<LocalSubmission<TPayload>[]> {
     throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
   }
+  findUnsubmittedLocalSubmissions<TPayload>(): Promise<LocalSubmission<TPayload>[]> {
+    throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
+  }
+  recordServerConfirmation(): Promise<void> {
+    throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
+  }
   deleteLocalSubmission(): Promise<void> {
     throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
   }
@@ -132,6 +178,38 @@ const webLocalSubmissionSingleton = new WebLocalSubmissionNotImplemented();
 
 export function getLocalSubmissionRepository(): LocalSubmissionRepository {
   return isNativeRuntime() ? getNativeLocalSubmission() : webLocalSubmissionSingleton;
+}
+
+export type DeleteLocalSubmissionDurablyDeps = {
+  submissionRepo: Pick<LocalSubmissionRepository, "deleteLocalSubmission">;
+  photoMetadataRepo: Pick<LocalPhotoMetadataRepository, "listLocalPhotosForSubmission">;
+  deletePhotoDurably: (localPhotoId: string) => Promise<void>;
+};
+
+/**
+ * The ONE place a LocalSubmission and everything durably associated with it
+ * (LocalPhoto metadata rows + their filesystem bytes, via the existing
+ * deleteLocalPhotoDurably) gets removed together — used by both
+ * SavedJobCardsScreen.tsx's explicit Delete action and
+ * NewSubmissionForm.tsx's Exit-Without-Saving-on-a-brand-new-draft path (see
+ * that file's own doc on why only a session-created draft, never a resumed
+ * one, is ever discarded this way). Photos are deleted BEFORE the
+ * submission row so a failure partway through never leaves the submission
+ * gone while photo metadata still claims to belong to it.
+ */
+export async function deleteLocalSubmissionDurably(
+  localSubmissionId: string,
+  deps: DeleteLocalSubmissionDurablyDeps = {
+    submissionRepo: getLocalSubmissionRepository(),
+    photoMetadataRepo: getLocalPhotoMetadataRepository(),
+    deletePhotoDurably: deleteLocalPhotoDurably,
+  },
+): Promise<void> {
+  const photos = await deps.photoMetadataRepo.listLocalPhotosForSubmission(localSubmissionId);
+  for (const photo of photos) {
+    await deps.deletePhotoDurably(photo.localPhotoId);
+  }
+  await deps.submissionRepo.deleteLocalSubmission(localSubmissionId);
 }
 
 export type LocalSubmissionResumeOutcome<TPayload = unknown> =

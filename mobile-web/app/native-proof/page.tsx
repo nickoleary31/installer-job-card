@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getActiveProjectsFieldPackage, type FieldPackageProject } from "@/lib/active-projects-field-package";
 import { clearLease, issueOrRefreshLease, loadLease } from "@/lib/auth/offline-access-lease";
+import { apiUrl } from "@/lib/api-base";
 import { getNetworkStatus } from "@/lib/native/network-status";
 import { getProjectWorkPackageRepository } from "@/lib/project-work-package";
 import { getCompanyProductDefinitionsRepository, type CompanyFormProductRow } from "@/lib/product-config";
@@ -247,6 +248,41 @@ export default function NativeProofPage() {
           Live network status:{" "}
           <span className="font-mono">{liveOnline === null ? "checking…" : liveOnline ? "online" : "offline"}</span>
         </p>
+
+        <hr className="border-slate-300 dark:border-slate-700" />
+
+        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Phase 2H — packaged app → local API connectivity proof
+        </h1>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Unauthenticated fetch to apiUrl(&quot;/api/job-card-submissions&quot;) — proves the bundled WebView can
+          reach NEXT_PUBLIC_API_ORIGIN while still loading its own UI from packaged Capacitor assets. Expects a 401
+          (route reached, auth required), not a network-level failure.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              runFieldPackage("fetch apiUrl(/api/job-card-submissions)", async () => {
+                const target = apiUrl("/api/job-card-submissions?companyId=connectivity-check&projectId=connectivity-check");
+                try {
+                  const res = await fetch(target);
+                  const body = await res.text();
+                  return { target, status: res.status, body: body.slice(0, 300) };
+                } catch (e) {
+                  return { target, networkError: e instanceof Error ? e.message : String(e) };
+                }
+              })
+            }
+            className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Test local API connectivity
+          </button>
+        </div>
+
+        <hr className="border-slate-300 dark:border-slate-700" />
+
         <div className="flex flex-wrap gap-2">
           <button
             type="button"

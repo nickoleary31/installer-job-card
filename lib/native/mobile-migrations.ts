@@ -162,4 +162,69 @@ export const MOBILE_MIGRATIONS: readonly SqlMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_local_photos_submission_field ON local_photos(local_submission_id, field_name)`,
     ],
   },
+  {
+    // Owner: lib/native/local-submission.ts, lib/native/local-photo.ts,
+    // lib/native/local-submission-outbox.ts (Phase 2H). Three additive
+    // changes shipped together as one version since they're all part of
+    // the same technician-submit/outbox feature and none is independently
+    // useful without the others:
+    //  - local_submissions.technician_submitted_at: the explicit technician-
+    //    submit transition, deliberately separate from `status`
+    //    (working/locally-complete stays a pure editing-progress concept —
+    //    see that column's own established doc).
+    //  - local_photos.remote_storage_path/remote_uploaded_at: set once a
+    //    LocalPhoto's bytes have actually been uploaded via the deterministic
+    //    signed-upload path — see lib/local-photo.ts's own doc.
+    //  - local_submission_outbox: one row per technician-submitted
+    //    LocalSubmission, created ATOMICALLY with technician_submitted_at
+    //    (same executeSet() transaction — see lib/native/local-submission.ts).
+    //    Carries a FROZEN snapshot (payload/photos/hash) that sync/retry logic
+    //    reads exclusively — never the live, possibly-since-changed
+    //    local_submissions/local_photos rows. user_id/company_id/project_id
+    //    are frozen here too rather than joined from the live row, for the
+    //    same reason. claim_token/claimed_at implement a real compare-and-set
+    //    single-worker claim (foreground-only — see that file's own doc).
+    version: 7,
+    statements: [
+      `ALTER TABLE local_submissions ADD COLUMN technician_submitted_at TEXT`,
+      `ALTER TABLE local_photos ADD COLUMN remote_storage_path TEXT`,
+      `ALTER TABLE local_photos ADD COLUMN remote_uploaded_at TEXT`,
+      `CREATE TABLE IF NOT EXISTS local_submission_outbox (
+        local_submission_id TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL,
+        company_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        sync_state TEXT NOT NULL,
+        claim_token TEXT,
+        claimed_at TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        last_error TEXT,
+        server_submission_id TEXT,
+        snapshot_payload TEXT NOT NULL,
+        snapshot_photos TEXT NOT NULL,
+        snapshot_definition_schema_version INTEGER,
+        snapshot_technician_submitted_at TEXT NOT NULL,
+        submission_snapshot_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_local_submission_outbox_user_project ON local_submission_outbox(user_id, project_id)`,
+    ],
+  },
+  {
+    // Owner: lib/native/local-submission-outbox.ts (Phase 2H security
+    // reconciliation). NULL for every pre-existing row and for any row
+    // never yet failed (pending/syncing/server-confirmed) — only ever set
+    // by recordOutboxSyncFailureViaConnection, distinguishing a failure
+    // this device should keep retrying automatically (network/timeout/5xx —
+    // 'retryable') from one it must not (project/company mismatch, 409
+    // snapshot-hash conflict, 4xx validation — 'terminal'). See
+    // lib/submission-sync.ts's classifySyncResponseStatus for the exact
+    // status-code mapping, and buildSelectClaimableForUserSql's own doc for
+    // why a terminal-classified 'failed' row is excluded from automatic
+    // (and manual, via the same claim mechanism) retry.
+    version: 8,
+    statements: [`ALTER TABLE local_submission_outbox ADD COLUMN error_kind TEXT`],
+  },
 ];

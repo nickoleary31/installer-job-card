@@ -673,6 +673,117 @@ sync, retry queue, conflict reconciliation, quarantine upload, or inspection que
 cleanup is deferred until a real "discard" UI action exists (it does not yet). The PPD JSON config file
 remains a separate file class, untouched by this phase.
 
+## Phase 2H — durable outbox + idempotent foreground sync + native Saved/Submitted lifecycle
+
+Phases 2F/2G made structured work and photos durable on-device; Phase 2H makes *submitting* durable
+too, and closes the loop: a technician can press Confirm & Submit while genuinely offline, see an
+honest "Submitted — saved on this device" immediately, and trust it will sync — exactly once,
+regardless of retries, crashes, or unknown network outcomes — the next time the app is foregrounded
+and online.
+
+**Lifecycle model.** `local_submissions.technician_submitted_at` (new column) is the explicit
+technician-submit event, deliberately independent of `status` ("working"/"locally-complete" stays a
+pure editing-progress concept) and independent of server confirmation. **Saved Job Cards** = every
+local submission with `technician_submitted_at IS NULL` (`findUnsubmittedLocalSubmissions` —
+deliberately not scoped to `status = 'working'`, so a reviewed-but-unsubmitted "locally-complete"
+submission is never hidden from the resume gate either). **Submitted** = every submission the
+technician has explicitly submitted, regardless of sync progress, with a real per-item status: Local
+only → Syncing → Synced, or Sync failed / Authorization required on the way.
+
+**The durable outbox (`local_submission_outbox`, migration version 7).** One row per submitted
+LocalSubmission, created **atomically** with `technician_submitted_at` via
+`db.executeSet([...], true)` — `@capacitor-community/sqlite`'s real multi-statement native
+transaction (verified against the plugin's own source, not assumed; fully parameterized, never a
+semicolon-joined string built from the technician's own JSON). The row carries a **frozen snapshot**
+(`snapshot_payload`, `snapshot_photos`, `snapshot_technician_submitted_at`,
+`submission_snapshot_hash`) that sync logic reads exclusively — never the live, possibly-since-changed
+`local_submissions`/`local_photos` rows — so a technician continuing to edit a *different* submission
+can never change what an in-flight retry sends to the server.
+
+```sql
+CREATE TABLE local_submission_outbox (
+  local_submission_id TEXT PRIMARY KEY, user_id TEXT, company_id TEXT, project_id TEXT,
+  sync_state TEXT,        -- pending | syncing | failed | authorization-blocked | server-confirmed
+  claim_token TEXT, claimed_at TEXT, attempt_count INTEGER, last_attempt_at TEXT, last_error TEXT,
+  server_submission_id TEXT,
+  snapshot_payload TEXT, snapshot_photos TEXT, snapshot_definition_schema_version INTEGER,
+  snapshot_technician_submitted_at TEXT, submission_snapshot_hash TEXT,
+  created_at TEXT, updated_at TEXT
+);
+```
+
+**The logical-identity hash, not a hash of the raw payload.** The frozen payload is captured *before*
+photo upload, so its `photoUploads` still carry `local-photo://<id>` sentinels; the eventual canonical
+server payload carries real remote URLs instead — hashing the raw JSON at both ends would never match.
+`lib/local-submission-outbox.ts`'s `buildSnapshotIdentity`/`computeSubmissionSnapshotHash` instead hash
+a dedicated identity object that represents each photo by a WebCrypto SHA-256 **content hash** (never
+by path/URL), computed once client-side via `canonicalJsonStringify` (reused from
+`lib/canonical-hash.ts`) + `crypto.subtle.digest` (the WebView-safe equivalent of that file's
+Node-only `computeContentHash`). This value is identical whether a photo is still local-only or has
+since been uploaded — the exact property idempotent finalize-retry reconciliation depends on.
+
+**Atomic single-worker claim.** `tryClaimOutboxEntry` is a compare-and-set `UPDATE ... SET
+sync_state='syncing', claim_token=? WHERE sync_state IN ('pending','failed','authorization-blocked')`,
+verified via `result.changes?.changes === 1`. **Crash-orphan recovery**
+(`ensureSyncEngineInitialized()` in `lib/submission-sync.ts`) is a memoized once-per-app-session
+singleton with a fresh `crypto.randomUUID()` claim token, called only from the sync engine's own entry
+point — never from the outbox repository's connection-acquisition path, so a legitimate in-flight
+foreground sync triggered from elsewhere is never reinterpreted as orphaned.
+
+**Sync engine (`lib/submission-sync.ts`), foreground-only — no background service, no scheduler.** The
+only trigger is `components/ForegroundSyncMount.tsx`, mounted once in `mobile-web/app/layout.tsx`,
+which calls `runForegroundSync(userId)` when `AuthUserContextProvider`'s own `authMode` resolves to
+`"online"` (mount, or its existing network-status-subscribe re-resolution on an offline→online flip —
+no new polling loop). Per claimed entry: re-verify each frozen photo's content hash against a fresh
+re-read of its bytes (a mismatch blocks that item truthfully rather than uploading changed bytes),
+request a signed upload URL, upload, then call finalize with the frozen payload rewritten to carry real
+remote photo URLs. Any failure short of an explicit 401/403 records `sync_state='failed'` (retryable
+next pass); 401/403 records `authorization-blocked` (self-heals on the next successful re-authorization,
+since claimable-entry listing already includes it); success records `server-confirmed` and writes
+`local_submissions.server_submission_id`.
+
+**Deterministic, retry-safe photo upload.** Remote path is
+`${localSubmissionId}/${group}/${fieldName}/${localPhotoId}.${ext}` — derived and validated **server
+side** in `app/api/job-card-submissions/photo-upload-url/route.ts` from stable identity inputs, never
+trusted from the client. `createSignedUploadUrl(path, { upsert: true })` (confirmed supported by the
+installed `@supabase/storage-js`, not assumed — `uploadToSignedUrl`'s own `upsert` option has no effect;
+overwrite-safety must be requested here) makes a retried upload to the same `localPhotoId` overwrite in
+place instead of leaving a duplicate or failing.
+
+**Race-safe server finalization (`app/api/job-card-submissions/finalize/route.ts`).** Real
+`INSERT ... ON CONFLICT (submission_id) DO NOTHING` (`upsert(..., { ignoreDuplicates: true })`), then
+read back by `submission_id` and reconcile by `submission_snapshot_hash`: matching hash (whichever
+concurrent identical retry actually won the insert) → return the canonical confirmation; a stored hash
+that doesn't match — including a legacy `NULL` from the existing web submit path — → `409 Conflict`,
+never a blind overwrite. `job_card_submissions.technician_submitted_at`/`submission_snapshot_hash` are
+additive, nullable columns (`supabase/migrations/20260921120000_job_card_submissions_technician_submit.sql`);
+the existing web `persistSubmittedJobCard` path is untouched and never sets either.
+
+**Native Submitted (`components/SubmittedJobCardsScreen.tsx`)** merges this device's outbox entries
+with `GET /api/job-card-submissions` (an authenticated, `authorizeProjectAccess`-gated history endpoint
+— the native client never queries `job_card_submissions` directly, which has no client-facing RLS at
+all) keyed by shared stable identity (`localSubmissionId === submission_id`). A canonical server row
+with no local outbox entry (submitted from another device, or via the legacy web path) still displays,
+correctly, as Synced. "Synced" requires the server's own `submissionSnapshotHash` to match this
+device's frozen hash — a matching id alone is never sufficient (`resolveSubmittedDisplayStatus`).
+
+**Native Saved Job Cards (`components/SavedJobCardsScreen.tsx`)** is explicitly local-only: it lists
+`LocalSubmission` rows on this device and does not read the web app's Cloud Drafts
+(`job_card_drafts`) at all — documented in-product as *"Native Saved Job Cards currently represents
+drafts saved on this device. Existing Cloud Drafts remain available through the web workflow."*
+
+**`NewSubmissionForm.tsx` wiring** — the single choke-point pattern: `handleFinalSubmit` branches
+internally on `isNativeRuntime()` to `handleNativeTechnicianSubmit` rather than touching every Submit
+button; native's Confirm & Submit is enabled regardless of connectivity once validation passes (the web
+online-only `isOffline` gate is unchanged for the web build).
+
+**Scope boundary, explicit** (all previously approved and preserved): no background sync/scheduler, no
+quarantine, no expenses, no cloud-draft import into native Saved Job Cards, no automatic cleanup/
+retention of synced local rows — `LocalSubmission`/`LocalPhoto`/outbox rows are all kept indefinitely
+after a successful sync, exactly as Phase 2F/2G already documented for their own scope. The pre-existing
+RLS-disabled posture on `job_card_submissions`/`job_card_drafts` (app-enforced convention, not fixed by
+this phase) is legacy debt, not introduced or remedied here.
+
 ## iOS offline-auth latency fix
 
 Verified on iOS through Phase 2E, but Phases 2F/2G not yet iOS-runtime-verified when this fix landed:

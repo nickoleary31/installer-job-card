@@ -1560,7 +1560,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
               )}
 
               <Link
-                href="/drafts"
+                href={appRoutes.savedJobCards(companyId, projectId)}
                 className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-emerald-300 hover:bg-emerald-50/50 sm:p-6"
               >
                 <h2 className="text-lg font-bold text-gray-900">Saved Drafts</h2>
@@ -1568,7 +1568,7 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
               </Link>
 
               <Link
-                href="/submitted"
+                href={appRoutes.submitted(companyId, projectId)}
                 className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition hover:border-indigo-300 hover:bg-indigo-50/50 sm:p-6"
               >
                 <h2 className="text-lg font-bold text-gray-900">Submitted Job Cards</h2>

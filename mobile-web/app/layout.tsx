@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { AuthUserContextProvider } from "@/app/providers/AuthUserContextProvider";
+import { ForegroundSyncMount } from "@/components/ForegroundSyncMount";
 import "./globals.css";
 
 /**
@@ -52,7 +53,10 @@ export default function RootLayout({
           className="fixed inset-x-0 top-0 z-40 bg-slate-50 dark:bg-slate-950"
           style={{ height: "env(safe-area-inset-top, 0px)" }}
         />
-        <AuthUserContextProvider>{children}</AuthUserContextProvider>
+        <AuthUserContextProvider>
+          <ForegroundSyncMount />
+          {children}
+        </AuthUserContextProvider>
       </body>
     </html>
   );

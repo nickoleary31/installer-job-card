@@ -3,7 +3,8 @@
  * dependent on short-lived signed URLs persisted in the submission payload.
  */
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { createServiceRoleClient, getSupabaseServerEnv } from "./company-users/admin-api";
 import type { JobCardSubmissionPayload } from "./job-card-submission";
 import { PPD_JSON_FILE_KEY, readUploadedProductFiles, type UploadedProductFile } from "./product-files/types";
 
@@ -27,12 +28,11 @@ export type BuildProductFileEmailAttachmentsResult = {
 
 function serviceClient(existing?: SupabaseClient): SupabaseClient {
   if (existing) return existing;
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
-  if (!url || !key) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for product file attachments.");
+  const client = createServiceRoleClient(getSupabaseServerEnv());
+  if (!client) {
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY) for product file attachments.");
   }
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return client;
 }
 
 function collectEmailableProductFiles(payload: JobCardSubmissionPayload): UploadedProductFile[] {

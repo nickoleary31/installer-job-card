@@ -15,6 +15,43 @@ type ProjectAssignmentRow = {
   project_id: string;
 };
 
+export type ProjectCompanyBindingResult = { ok: true } | { ok: false; status: number; error: string };
+
+/**
+ * Phase 2H security reconciliation — the missing check the RLS/adversarial
+ * review found: authorization here previously proved company_memberships
+ * for the client-supplied companyId, and project_assignments for the
+ * client-supplied projectId, INDEPENDENTLY — never that the two client-
+ * supplied ids actually describe the SAME project. A company admin for
+ * company A supplying a projectId that actually belongs to company B (or a
+ * technician assigned to a project under company B while claiming
+ * companyId A) would previously still pass. This pure function is the
+ * explicit "prove project.company_id === requested companyId" step, called
+ * BEFORE any role-specific check below (including the global-admin
+ * shortcut) so it applies uniformly to every requester, not just
+ * non-admins.
+ *
+ * status 409, not 403: this mirrors the SAME "immutable identity conflict,
+ * never resolvable by retrying or re-authenticating" convention this
+ * codebase already uses for job_card_submissions.submission_snapshot_hash
+ * mismatches (see lib/job-card-submissions/finalize.ts) — the sync engine's
+ * error classification (lib/submission-sync.ts) relies on exactly this
+ * status code meaning "terminal", never "authorization, may be restored".
+ */
+export function verifyProjectBelongsToCompany(
+  project: { id: string; companyId: string } | null,
+  requestedProjectId: string,
+  requestedCompanyId: string,
+): ProjectCompanyBindingResult {
+  if (!project || project.id !== requestedProjectId) {
+    return { ok: false, status: 404, error: "Project not found." };
+  }
+  if (project.companyId !== requestedCompanyId) {
+    return { ok: false, status: 409, error: "Project does not belong to the specified company." };
+  }
+  return { ok: true };
+}
+
 /**
  * Server-side mirror of the client-side project access check used on the project dashboard
  * page: global admin, active company admin, or a technician with an active assignment on this
@@ -59,6 +96,26 @@ export async function authorizeProjectAccess(args: {
 
   const serviceClient = createServiceRoleClient(env);
   const dataClient = serviceClient || createUserScopedClient(env, accessToken);
+
+  // Phase 2H security reconciliation — load the requested project and prove
+  // it actually belongs to the requested company BEFORE any role-specific
+  // check, including the global-admin shortcut below. See
+  // verifyProjectBelongsToCompany's own doc for why this must apply
+  // uniformly to every requester, not just non-admins.
+  const { data: projectRow, error: projectError } = await dataClient
+    .from("projects")
+    .select("id, company_id")
+    .eq("id", projectId)
+    .maybeSingle<{ id: string; company_id: string }>();
+  if (projectError) {
+    return { ok: false, status: 403, error: "Failed to validate the requested project." };
+  }
+  const binding = verifyProjectBelongsToCompany(
+    projectRow ? { id: projectRow.id, companyId: projectRow.company_id } : null,
+    projectId,
+    companyId,
+  );
+  if (!binding.ok) return binding;
 
   const { data: requesterProfile, error: requesterProfileError } = await dataClient
     .from("user_profiles")

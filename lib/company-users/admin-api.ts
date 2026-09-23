@@ -21,19 +21,29 @@ export type SupabaseServerEnv = {
   missingServiceRole: string[];
 };
 
+/**
+ * Key-name migration (publishable/secret replacing anon/service_role) — the new names
+ * (NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY) always win when both old and new
+ * are present; the legacy names (NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY) are
+ * the fallback so environments not yet migrated (other worktrees, Vercel envs) keep working
+ * unchanged. Every server route reads Supabase config through this one function — see
+ * createServiceRoleClient/createUserScopedClient below and every route handler under app/api
+ * that calls getSupabaseServerEnv() — so this is the single place the fallback needs to live
+ * server-side.
+ */
 export function getSupabaseServerEnv(): SupabaseServerEnv {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)?.trim() || "";
+  const serviceRoleKey = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)?.trim() || "";
   return {
     url,
     anonKey,
     serviceRoleKey: serviceRoleKey || null,
     missingPublic: [
       ...(!url ? (["NEXT_PUBLIC_SUPABASE_URL"] as const) : []),
-      ...(!anonKey ? (["NEXT_PUBLIC_SUPABASE_ANON_KEY"] as const) : []),
+      ...(!anonKey ? (["NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or legacy NEXT_PUBLIC_SUPABASE_ANON_KEY)"] as const) : []),
     ],
-    missingServiceRole: !serviceRoleKey ? ["SUPABASE_SERVICE_ROLE_KEY"] : [],
+    missingServiceRole: !serviceRoleKey ? ["SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY)"] : [],
   };
 }
 
@@ -61,6 +71,38 @@ export function createServiceRoleClient(env: SupabaseServerEnv): SupabaseClient 
   return createClient(env.url, env.serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+}
+
+export type PrivilegedServiceClientResult =
+  | { ok: true; serviceClient: SupabaseClient }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Phase 2H security reconciliation — the fail-closed gate every Phase 2H
+ * privileged route (finalize, photo-upload-url, submitted-history) must
+ * call BEFORE doing anything else. Mirrors authorizeGlobalAdmin's own
+ * existing service-role requirement below, extracted here so it's directly
+ * unit-testable (pure given an env value — no live Supabase call) and
+ * shared by every Phase 2H *-server.ts wiring file without each
+ * reimplementing the same two checks.
+ *
+ * Deliberately does NOT touch authorizeProjectAccess's own
+ * `serviceClient || createUserScopedClient(...)` fallback (lib/project-access.ts)
+ * — that fallback remains intact for its other, non-Phase-2H callers
+ * (expense-report, the Zoho auto-publish trigger authorizer). A Phase 2H
+ * route that calls this gate first simply never reaches that fallback
+ * branch, since authorizeProjectAccess's own createServiceRoleClient(env)
+ * call is guaranteed to succeed once this gate has already passed.
+ */
+export function requirePrivilegedServiceClient(env: SupabaseServerEnv): PrivilegedServiceClientResult {
+  if (env.missingServiceRole.length > 0) {
+    return { ok: false, status: 500, error: missingConfigError(env.missingServiceRole) };
+  }
+  const serviceClient = createServiceRoleClient(env);
+  if (!serviceClient) {
+    return { ok: false, status: 500, error: missingConfigError(["NEXT_PUBLIC_SUPABASE_URL"]) };
+  }
+  return { ok: true, serviceClient };
 }
 
 export function createUserScopedClient(env: SupabaseServerEnv, accessToken: string): SupabaseClient {

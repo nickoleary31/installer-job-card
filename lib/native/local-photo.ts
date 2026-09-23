@@ -38,21 +38,21 @@ function buildUpsertSql(): string {
 function buildSelectByIdSql(): string {
   return `SELECT local_photo_id, user_id, project_id, local_submission_id,
       field_name, group_name, original_filename, mime_type, size_bytes,
-      filesystem_path, created_at, updated_at
+      filesystem_path, remote_storage_path, remote_uploaded_at, created_at, updated_at
     FROM ${TABLE} WHERE local_photo_id = ?`;
 }
 
 function buildSelectBySubmissionSql(): string {
   return `SELECT local_photo_id, user_id, project_id, local_submission_id,
       field_name, group_name, original_filename, mime_type, size_bytes,
-      filesystem_path, created_at, updated_at
+      filesystem_path, remote_storage_path, remote_uploaded_at, created_at, updated_at
     FROM ${TABLE} WHERE local_submission_id = ? ORDER BY created_at ASC`;
 }
 
 function buildSelectBySubmissionAndFieldSql(): string {
   return `SELECT local_photo_id, user_id, project_id, local_submission_id,
       field_name, group_name, original_filename, mime_type, size_bytes,
-      filesystem_path, created_at, updated_at
+      filesystem_path, remote_storage_path, remote_uploaded_at, created_at, updated_at
     FROM ${TABLE} WHERE local_submission_id = ? AND field_name = ? ORDER BY created_at ASC`;
 }
 
@@ -62,6 +62,10 @@ function buildDeleteByIdSql(): string {
 
 function buildDeleteBySubmissionSql(): string {
   return `DELETE FROM ${TABLE} WHERE local_submission_id = ?`;
+}
+
+function buildRecordRemoteUploadSql(): string {
+  return `UPDATE ${TABLE} SET remote_storage_path = ?, remote_uploaded_at = ?, updated_at = ? WHERE local_photo_id = ?`;
 }
 
 type PhotoRow = {
@@ -75,6 +79,8 @@ type PhotoRow = {
   mime_type: string;
   size_bytes: number;
   filesystem_path: string;
+  remote_storage_path: string | null;
+  remote_uploaded_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -115,7 +121,7 @@ export async function saveViaConnection(db: RunQueryConnection, input: LocalPhot
   const now = new Date().toISOString();
   const { statement, values } = buildUpsertStatement(input, now, now);
   await db.run(statement, values);
-  return { ...input, createdAt: now, updatedAt: now };
+  return { ...input, remoteStoragePath: null, remoteUploadedAt: null, createdAt: now, updatedAt: now };
 }
 
 /** Pure — no image bytes/base64 column exists to decode; this just maps SQL row -> LocalPhoto. */
@@ -131,6 +137,8 @@ export function parseStoredRow(row: PhotoRow): LocalPhoto {
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
     filesystemPath: row.filesystem_path,
+    remoteStoragePath: row.remote_storage_path,
+    remoteUploadedAt: row.remote_uploaded_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -175,6 +183,11 @@ export class NativeLocalPhotoMetadata implements LocalPhotoMetadataRepository {
   async clearLocalPhotosForSubmission(localSubmissionId: string): Promise<void> {
     const db = await getSchemaReadyConnection();
     await db.run(buildDeleteBySubmissionSql(), [localSubmissionId]);
+  }
+
+  async recordRemoteUpload(localPhotoId: string, remoteStoragePath: string, remoteUploadedAt: string): Promise<void> {
+    const db = await getSchemaReadyConnection();
+    await db.run(buildRecordRemoteUploadSql(), [remoteStoragePath, remoteUploadedAt, new Date().toISOString(), localPhotoId]);
   }
 }
 

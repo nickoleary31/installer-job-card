@@ -38,11 +38,27 @@ export type LocalPhoto = {
   sizeBytes: number;
   /** The getAppFilesystem() key these bytes are stored under — see buildLocalPhotoFilesystemPath(). */
   filesystemPath: string;
+  /**
+   * Phase 2H — set once this photo's bytes have been durably uploaded via
+   * the deterministic signed-upload path (see lib/submission-sync.ts and
+   * lib/native/local-submission-outbox.ts's own docs). null means "not yet
+   * uploaded" — the SAME truth findLocalPhotoUri/LOCAL_PHOTO_URI_SCHEME
+   * already encodes in a submission payload's photoUploads entries, kept
+   * here too so the sync engine can determine per-photo upload state
+   * without re-deriving it from payload JSON. Never set by
+   * saveLocalPhotoMetadata's own upsert (see that SQL's own doc) — only by
+   * recordRemoteUpload below.
+   */
+  remoteStoragePath: string | null;
+  remoteUploadedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export type LocalPhotoMetadataInput = Omit<LocalPhoto, "createdAt" | "updatedAt">;
+export type LocalPhotoMetadataInput = Omit<
+  LocalPhoto,
+  "createdAt" | "updatedAt" | "remoteStoragePath" | "remoteUploadedAt"
+>;
 
 /**
  * Pure metadata CRUD only — never touches the filesystem. Native-only in
@@ -59,6 +75,12 @@ export interface LocalPhotoMetadataRepository {
   listLocalPhotosForField(localSubmissionId: string, fieldName: string): Promise<LocalPhoto[]>;
   deleteLocalPhotoMetadata(localPhotoId: string): Promise<void>;
   clearLocalPhotosForSubmission(localSubmissionId: string): Promise<void>;
+  /**
+   * Phase 2H — narrow write recording that this photo's bytes now durably
+   * exist at `remoteStoragePath` in Supabase Storage. Never touches any
+   * other column.
+   */
+  recordRemoteUpload(localPhotoId: string, remoteStoragePath: string, remoteUploadedAt: string): Promise<void>;
 }
 
 const WEB_NOT_IMPLEMENTED_MESSAGE =
@@ -83,6 +105,9 @@ class WebLocalPhotoMetadataNotImplemented implements LocalPhotoMetadataRepositor
   clearLocalPhotosForSubmission(): Promise<void> {
     throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
   }
+  recordRemoteUpload(): Promise<void> {
+    throw new Error(WEB_NOT_IMPLEMENTED_MESSAGE);
+  }
 }
 
 const webLocalPhotoMetadataSingleton = new WebLocalPhotoMetadataNotImplemented();
@@ -97,14 +122,51 @@ function generateLocalPhotoId(): string {
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+/** Pure — normalized file extension for a photo mime type; shared by the local filesystem path and the Phase 2H remote storage path below. */
+export function photoMimeTypeToExtension(mimeType: string): "png" | "webp" | "jpg" {
+  return mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : "jpg";
+}
+
 /**
  * Pure — deterministic, opaque, filename/PII-free. Never depends on the
  * original filename (only the localPhotoId + a normalized extension) — see
  * the phase's own "no PII in the filename/path" requirement.
  */
 export function buildLocalPhotoFilesystemPath(localSubmissionId: string, localPhotoId: string, mimeType: string): string {
-  const ext = mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : "jpg";
-  return `submissions/${localSubmissionId}/photos/${localPhotoId}.${ext}`;
+  return `submissions/${localSubmissionId}/photos/${localPhotoId}.${photoMimeTypeToExtension(mimeType)}`;
+}
+
+/**
+ * Phase 2H — the deterministic REMOTE Supabase Storage path for a photo,
+ * derived purely from stable identity (never a timestamp or random value —
+ * a retry of the SAME photo must always resolve to the SAME remote object,
+ * so a signed-upload retry overwrites in place instead of leaving orphans).
+ * Computed identically on the server
+ * (app/api/job-card-submissions/photo-upload-url/route.ts, which
+ * derives/validates it from server-VERIFIED companyId/projectId rather than
+ * trusting a client-supplied path) and reused client-side only to know what
+ * publicUrl to expect once uploaded.
+ *
+ * Phase 2H security reconciliation — tenant-bound: the path is prefixed
+ * with companyId/projectId (never just submissionId) so that two different
+ * tenants can never collide on, or be confused with, each other's Storage
+ * namespace, and so that a signed-upload URL issued for one project can
+ * never be mistaken for a path under another. Both companyId and projectId
+ * here must already be server-verified (authorizeProjectAccess having
+ * proven project.company_id === companyId and the requester's access to
+ * that pair) — see photo-upload-url.ts's own doc for why this function is
+ * never called with raw, unauthorized client input.
+ */
+export function buildRemotePhotoStoragePath(
+  companyId: string,
+  projectId: string,
+  localSubmissionId: string,
+  group: string,
+  fieldName: string,
+  localPhotoId: string,
+  mimeType: string,
+): string {
+  return `${companyId}/${projectId}/${localSubmissionId}/${group}/${fieldName}/${localPhotoId}.${photoMimeTypeToExtension(mimeType)}`;
 }
 
 export type SavePhotoDurablyInput = {

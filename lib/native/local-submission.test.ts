@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildUpsertStatement, parseStoredRow, saveViaConnection, type RunQueryConnection } from "./local-submission.ts";
+import {
+  buildTechnicianSubmitUpsertStatement,
+  buildUpsertStatement,
+  parseStoredRow,
+  saveViaConnection,
+  type RunQueryConnection,
+} from "./local-submission.ts";
 import type { LocalSubmissionInput } from "../local-submission.ts";
 
 type SamplePayload = { coreJob: { customer: string; unitNumber: string }; notes?: string };
@@ -52,6 +58,48 @@ describe("buildUpsertStatement (pure) — definition DTO serialization", () => {
     });
     const { values } = buildUpsertStatement(input, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
     assert.deepEqual(JSON.parse(values[9] as string), input.payload);
+  });
+});
+
+describe("buildTechnicianSubmitUpsertStatement (pure) — the Phase 2H fix: an upsert, not a blind UPDATE", () => {
+  it("is a single INSERT ... ON CONFLICT statement, not a plain UPDATE", () => {
+    const input = submissionInput();
+    const { statement } = buildTechnicianSubmitUpsertStatement(input, "2026-01-01T00:00:00.000Z");
+    assert.match(statement, /^INSERT INTO local_submissions/);
+    assert.match(statement, /ON CONFLICT\(local_submission_id\) DO UPDATE SET/);
+  });
+
+  it("never omits created_at from the UPDATE SET clause — an existing draft's identity/created_at must survive a technician-submit", () => {
+    const { statement } = buildTechnicianSubmitUpsertStatement(submissionInput(), "2026-01-01T00:00:00.000Z");
+    assert.ok(!statement.includes("created_at = excluded"), "created_at must never be in the UPDATE SET clause");
+  });
+
+  it("sets technician_submitted_at unconditionally, both in the fresh-insert column list and the ON CONFLICT UPDATE SET", () => {
+    const { statement } = buildTechnicianSubmitUpsertStatement(submissionInput(), "2026-01-01T00:00:00.000Z");
+    assert.match(statement, /technician_submitted_at/);
+    assert.match(statement, /technician_submitted_at = excluded\.technician_submitted_at/);
+  });
+
+  it("always writes status = 'locally-complete' — the technician can only reach Submit after passing full review validation", () => {
+    const { statement, values } = buildTechnicianSubmitUpsertStatement(submissionInput({ status: "working" }), "2026-01-01T00:00:00.000Z");
+    assert.match(statement, /'locally-complete'/);
+    assert.ok(!values.includes("working"), "the caller's own (now-stale) status value must never leak into the statement's values");
+  });
+
+  it("uses technicianSubmittedAt for technician_submitted_at, created_at (fresh-insert candidate), and updated_at alike", () => {
+    const { values } = buildTechnicianSubmitUpsertStatement(submissionInput(), "2026-03-05T12:00:00.000Z");
+    // values: [id, userId, projectId, companyId, formId, submissionType, defSchemaVersion,
+    //          selectedSections, payload, serverSubmissionId, technicianSubmittedAt, createdAt, updatedAt]
+    assert.equal(values[10], "2026-03-05T12:00:00.000Z");
+    assert.equal(values[11], "2026-03-05T12:00:00.000Z");
+    assert.equal(values[12], "2026-03-05T12:00:00.000Z");
+  });
+
+  it("JSON-serializes selectedSections/payload exactly like the ordinary autosave upsert does", () => {
+    const input = submissionInput({ payload: { coreJob: { customer: "Jane Doe", unitNumber: "UNIT-1" }, notes: "final" } });
+    const { values } = buildTechnicianSubmitUpsertStatement(input, "2026-01-01T00:00:00.000Z");
+    assert.deepEqual(JSON.parse(values[7] as string), ["VAC4"]);
+    assert.deepEqual(JSON.parse(values[8] as string), input.payload);
   });
 });
 

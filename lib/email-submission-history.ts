@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createServiceRoleClient, getSupabaseServerEnv } from "@/lib/company-users/admin-api";
 import type { EmailSendMode } from "@/lib/email-recipients";
 import type { EmailRecipient } from "@/lib/email-recipients";
 
@@ -12,16 +12,15 @@ export type EmailHistoryUpdate = {
   status: "sent" | "failed";
 };
 
-function createServiceRoleClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
-  if (!url || !key) throw new Error("Missing Supabase service role for email history.");
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+function requireServiceRoleClient() {
+  const client = createServiceRoleClient(getSupabaseServerEnv());
+  if (!client) throw new Error("Missing Supabase service role (SUPABASE_SECRET_KEY or legacy SUPABASE_SERVICE_ROLE_KEY) for email history.");
+  return client;
 }
 
 export async function persistEmailHistory(update: EmailHistoryUpdate): Promise<void> {
   const now = new Date().toISOString();
-  const sb = createServiceRoleClient();
+  const sb = requireServiceRoleClient();
 
   const patch: Record<string, unknown> = {
     last_emailed_at: update.status === "sent" ? now : undefined,

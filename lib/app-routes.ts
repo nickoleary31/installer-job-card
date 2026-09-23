@@ -60,4 +60,26 @@ export const appRoutes = {
   newSubmission(): string {
     return "/new-submission";
   },
+  /**
+   * Phase 2H — native Saved Job Cards (LocalSubmission rows not yet
+   * technician-submitted). Web keeps its existing Cloud Draft /drafts page
+   * unchanged; mobile has no equivalent route today, so this is a genuinely
+   * new mobile-only screen, not a query-param mirror of an existing web
+   * route — see components/SavedJobCardsScreen.tsx's own scope doc.
+   */
+  savedJobCards(companyId: string, projectId: string): string {
+    return isMobileStaticBuild()
+      ? `/saved-job-cards?companyId=${encodeURIComponent(companyId)}&projectId=${encodeURIComponent(projectId)}`
+      : "/drafts";
+  },
+  /**
+   * Phase 2H — native Submitted (technician-submitted, local+server merged
+   * — see components/SubmittedJobCardsScreen.tsx). Web keeps its existing
+   * /submitted page unchanged.
+   */
+  submitted(companyId: string, projectId: string): string {
+    return isMobileStaticBuild()
+      ? `/submitted-job-cards?companyId=${encodeURIComponent(companyId)}&projectId=${encodeURIComponent(projectId)}`
+      : "/submitted";
+  },
 };
