@@ -1,7 +1,19 @@
 -- ============================================================================
--- DRAFT — RLS Hardening for Installer Sheetz V1   (revision 2: adversarial review)
+-- DRAFT — RLS Hardening for Installer Sheetz V1
+--   revision 2: adversarial review (baseline commit 7707650)
+--   revision 3: reconciled with the FINAL Phase 2H commit 3359107 and the
+--               product decisions Q1-Q8 / B1-B2 (see audit §0 and §12)
 -- STATUS: NOT APPLIED. NOT part of supabase/migrations/ on purpose, so
 -- `supabase db push` / `db diff` / CI cannot pick it up by accident.
+--
+-- APPLY ORDER (V1 Dev only, each step gated on the previous one's checks):
+--   1. supabase/migrations/20260921120000_job_card_submissions_technician_submit.sql
+--      (Phase 2H; Section 0 below refuses to run without its columns)
+--   2. THIS FILE (table RLS)                       -> web + Android regression
+--   3. 0002_job_card_photos_storage_policies.sql   -> storage regression
+--   4. repair data until 0003's preflight passes, then
+--      0003_enforce_active_profiles.sql (Q1)       -> regression
+--   5. VALIDATE the Section 11 FKs once Section 0 reports zero mismatches.
 -- Target (when eventually applied): Installer Sheetz V1 Dev ONLY
 --   (gewtjutfjrmhwmjlovly). Never run this against Production
 --   (uboutcndhvygmwfjztla) or Developer Sheets Dev (ipjwhhyaurjzgaychoii)
@@ -53,13 +65,51 @@
 -- and clean up before running the Section 11 VALIDATE step.
 -- ----------------------------------------------------------------------------
 
+-- Hard precondition: the job_card_submissions guard (Section 9) references the
+-- Phase 2H columns. Refuse to run until 20260921120000 has been applied.
+do $$
+begin
+  if (
+    select count(*)
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'job_card_submissions'
+      and column_name in ('technician_submitted_at', 'submission_snapshot_hash')
+  ) <> 2 then
+    raise exception 'rls-hardening: apply 20260921120000_job_card_submissions_technician_submit.sql (Phase 2H) first';
+  end if;
+end
+$$;
+
 do $$
 declare
   v_submissions bigint;
   v_drafts bigint;
   v_orphan_expenses bigint;
   v_null_created_by bigint;
+  v_members_without_profile bigint;
+  v_assignees_without_profile bigint;
+  v_inactive_profiles_with_access bigint;
 begin
+  -- Q1 preparation (report only here; 0003 blocks on the first two).
+  select count(distinct cm.user_id) into v_members_without_profile
+  from public.company_memberships cm
+  where cm.is_active
+    and not exists (select 1 from public.user_profiles up where up.id = cm.user_id);
+
+  select count(distinct pa.user_id) into v_assignees_without_profile
+  from public.project_assignments pa
+  where pa.is_active
+    and not exists (select 1 from public.user_profiles up where up.id = pa.user_id);
+
+  select count(distinct up.id) into v_inactive_profiles_with_access
+  from public.user_profiles up
+  where not up.is_active
+    and exists (select 1 from public.company_memberships cm where cm.user_id = up.id and cm.is_active);
+
+  raise notice 'rls-hardening preflight (Q1): active members without a profile=%, active assignees without a profile=%, inactive profiles that still hold active memberships=%',
+    v_members_without_profile, v_assignees_without_profile, v_inactive_profiles_with_access;
+
   select count(*) into v_submissions
   from public.job_card_submissions s
   join public.projects p on p.id = s.project_id
@@ -304,6 +354,11 @@ grant execute on function public.can_view_member_profile(uuid) to authenticated;
 --   postgres, supabase_admin — migrations / dashboard / SQL editor
 -- and constrains every other role (in practice: authenticated, anon). This
 -- fails closed for any role not on the trusted list.
+--
+-- Exception (Section 9): job_card_submissions_guard_write protects data
+-- integrity, not authorization, so on UPDATE it also binds service_role. Only
+-- the maintenance roles (postgres, supabase_admin) skip it. The Section 8
+-- needs_review/review_reason derivation likewise applies to every role.
 --
 -- Caveat for future work: a SECURITY DEFINER function owned by postgres that
 -- writes these tables would run with current_user = postgres and bypass the
@@ -713,8 +768,9 @@ create policy expenses_update
     or (created_by = (select auth.uid()) and public.can_access_project(project_id))
   );
 
--- DELETE: same actors (delete button in the project page; canEditExpense =
--- admin || created_by === me).
+-- DELETE: same actors (delete button in components/ProjectDetailScreen.tsx,
+-- which Phase 2H renders for both the web project page and mobile;
+-- canEditExpense = admin || created_by === me).
 drop policy if exists expenses_delete on public.expenses;
 create policy expenses_delete
   on public.expenses
@@ -726,9 +782,21 @@ create policy expenses_delete
   );
 
 -- Guard: one BEFORE INSERT OR UPDATE trigger (not separate triggers) so the
--- whole review state machine lives in one place. API-caller rules:
+-- whole review state machine lives in one place.
 --
+-- ALL roles (a data rule, not an authorization rule — Q8):
+--   * needs_review and review_reason are DERIVED, never taken from input:
+--       needs_review  = no receipt AND lost_receipt AND review still pending
+--       review_reason = 'Lost receipt' when no receipt AND lost_receipt
+--     This reproduces exactly what every client write already sends
+--     (ProjectDetailScreen insert/edit, and needs_review=false on review), so
+--     no client change is needed. Residual: an expense with no receipt that
+--     is NOT marked lost is not flagged — same as today's app rule.
+--
+-- API callers only (service_role / postgres / supabase_admin skip the rest):
 -- INSERT (everyone, admins included):
+--   * created_by must be the caller (explicit error; the RLS WITH CHECK also
+--     enforces it). A NULL creator is therefore impossible for user writes.
 --   * review state must be pristine: review_status 'pending' (or omitted ->
 --     column default), reviewed_by NULL, reviewed_at NULL. Reviews are always
 --     a later UPDATE by a project admin. This closes INSERT self-approval.
@@ -739,8 +807,9 @@ create policy expenses_delete
 -- UPDATE:
 --   * id, project_id, created_by, created_at are immutable. This stops
 --     re-parenting an expense to another project and re-attributing it.
---   * non-admin (creator) updates must leave the review state pristine. Both
---     the web and mobile edit flows already reset to
+--   * updates by a non-admin, or by the expense's own creator even when they
+--     are an admin (Q2), must leave the review state pristine. The
+--     shared edit flow (ProjectDetailScreen) already resets to
 --     ('pending', NULL, NULL) on every edit ("any edit invalidates a prior
 --     review"), and the post-insert receipt_url update happens while the row
 --     is still pristine. This also closes approval-then-edit: amending
@@ -748,20 +817,25 @@ create policy expenses_delete
 --     approval.
 --   * admin setting a review decision: review_status must be
 --     'approved'|'rejected', reviewed_by must be the caller (no attributing a
---     review to someone else), and reviewed_at is stamped server-side.
---     Admins may also reset a review to pristine.
---
--- Not guarded (documented residual, audit §6 F-12): needs_review /
--- review_reason are triage flags the creator still controls. The
--- authoritative approval state is review_status/reviewed_by/reviewed_at.
+--     review to someone else), and reviewed_at is stamped server-side. The
+--     reviewer can never be the creator (Q2: no self-review for anyone,
+--     including global admins). Legacy rows with created_by NULL may be
+--     reviewed by any authorized reviewer. Any admin may reset a review to
+--     pristine.
 create or replace function public.expenses_guard_write()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 declare
+  v_no_receipt boolean;
   v_pristine boolean;
 begin
+  v_no_receipt := nullif(btrim(new.receipt_url), '') is null
+                  and coalesce(new.lost_receipt, false);
+  new.needs_review := v_no_receipt and coalesce(new.review_status, 'pending') = 'pending';
+  new.review_reason := case when v_no_receipt then 'Lost receipt' end;
+
   if current_user in ('service_role', 'postgres', 'supabase_admin') then
     return new;
   end if;
@@ -771,6 +845,10 @@ begin
                 and new.reviewed_at is null;
 
   if tg_op = 'INSERT' then
+    if new.created_by is distinct from auth.uid() then
+      raise exception 'expenses: created_by must be the signed-in user'
+        using errcode = '42501';
+    end if;
     if not v_pristine then
       raise exception 'expenses: review_status/reviewed_by/reviewed_at cannot be set on insert'
         using errcode = '42501';
@@ -788,9 +866,14 @@ begin
       using errcode = '42501';
   end if;
 
-  if not public.can_admin_project(new.project_id) then
+  -- Non-reviewers: anyone who is not a project admin, AND the expense's own
+  -- creator even when they are an admin (Q2). Their updates must leave the
+  -- review pristine. That blocks both self-approval and editing one's own
+  -- already-approved expense while keeping the approval.
+  if not public.can_admin_project(new.project_id)
+     or (new.created_by is not null and new.created_by = auth.uid()) then
     if not v_pristine then
-      raise exception 'expenses: only a global admin or active company admin may record a review; other edits must reset review to pending'
+      raise exception 'expenses: a review can only be recorded by a global or company admin who did not create this expense; the creator''s edits must reset review to pending'
         using errcode = '42501';
     end if;
     return new;
@@ -836,11 +919,19 @@ create index if not exists idx_expenses_project_created_at
 -- ----------------------------------------------------------------------------
 -- SECTION 9: job_card_submissions
 --
--- Writers: legacy web persistSubmittedJobCard (app/page.tsx, direct anon-key
--- select -> insert|update by submission_id); Phase 2H finalize route
--- (service role when configured, otherwise the RLS-subject user-scoped
--- client doing INSERT ... ON CONFLICT (submission_id) DO NOTHING + read-back);
--- lib/email-submission-history.ts (service role only).
+-- Writers at Phase 2H final (3359107):
+--   * web: persistSubmittedJobCard in components/NewSubmissionForm.tsx — direct
+--     anon-key select -> insert | update(payload, customer, unit_number) by
+--     submission_id. Subject to everything in this section.
+--   * native: POST /api/job-card-submissions/finalize — ALWAYS the service
+--     role (requirePrivilegedServiceClient fails closed; there is no user-
+--     scoped fallback any more), after authorizeProjectAccess has proven
+--     project.company_id = companyId. INSERT ... ON CONFLICT (submission_id)
+--     DO NOTHING + read-back; never an UPDATE.
+--   * lib/email-submission-history.ts — service role, email-history columns
+--     only.
+-- Readers: web /submitted, /photos, project lists (RLS); native history
+-- GET /api/job-card-submissions (service role, after authorizeProjectAccess).
 -- ----------------------------------------------------------------------------
 
 alter table public.job_card_submissions enable row level security;
@@ -886,6 +977,69 @@ create policy job_card_submissions_update
   );
 
 -- DELETE: none (no client path deletes submissions).
+
+-- Canonical-identity and snapshot integrity (Phase 2H contract).
+--
+-- INSERT: API callers cannot set technician_submitted_at or
+-- submission_snapshot_hash. Only the privileged finalize route stamps them.
+-- Without this, anyone with project access could forge a row that looks like
+-- a server-confirmed native submission.
+--
+-- UPDATE, for EVERY role except the maintenance roles (postgres,
+-- supabase_admin), including service_role, because this is a data-integrity
+-- invariant rather than an authorization rule:
+--   submission_id, company_id, project_id, created_at,
+--   technician_submitted_at and submission_snapshot_hash are immutable.
+-- Nothing legitimate changes them: the web revision path updates only
+-- payload/customer/unit_number, email history updates only last_email_*/
+-- *_emailed_at, and finalize never UPDATEs (ON CONFLICT DO NOTHING). So a
+-- retry, a code bug or a direct REST call can never rewrite the canonical
+-- identity/hash that the native "same hash -> idempotent, different hash ->
+-- terminal 409" reconciliation relies on.
+--
+-- Deliberately NOT frozen: payload. The web edit-submitted-job-card flow
+-- revises payload in place (and re-triggers Zoho auto-publish). Whether a
+-- revision should be allowed on a hash-bearing (native) submission is open
+-- question Q9 in the audit.
+create or replace function public.job_card_submissions_guard_write()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user in ('postgres', 'supabase_admin') then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    if current_user <> 'service_role'
+       and (new.technician_submitted_at is not null or new.submission_snapshot_hash is not null) then
+      raise exception 'job_card_submissions: technician_submitted_at and submission_snapshot_hash are set only by the server finalize route'
+        using errcode = '42501';
+    end if;
+    return new;
+  end if;
+
+  if new.id is distinct from old.id
+     or new.submission_id is distinct from old.submission_id
+     or new.company_id is distinct from old.company_id
+     or new.project_id is distinct from old.project_id
+     or new.created_at is distinct from old.created_at
+     or new.technician_submitted_at is distinct from old.technician_submitted_at
+     or new.submission_snapshot_hash is distinct from old.submission_snapshot_hash then
+    raise exception 'job_card_submissions: submission identity and snapshot fields are immutable'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_job_card_submissions_guard_write on public.job_card_submissions;
+create trigger trg_job_card_submissions_guard_write
+  before insert or update on public.job_card_submissions
+  for each row
+  execute function public.job_card_submissions_guard_write();
 
 
 -- ----------------------------------------------------------------------------
@@ -950,11 +1104,12 @@ create policy job_card_drafts_delete
 -- SECTION 11: company/project consistency as a hard invariant (ALL roles)
 --
 -- RLS only binds API roles. The Phase 2H finalize route writes
--- job_card_submissions with the SERVICE ROLE after authorizeProjectAccess,
--- which never checks that projectId belongs to companyId. So even with
--- Section 9 in place, a company admin could finalize a submission
--- (company_id = own company, project_id = another company's project). A
--- composite FK closes this for every role, including service_role.
+-- job_card_submissions with the SERVICE ROLE. At Phase 2H final (3359107),
+-- authorizeProjectAccess proves project.company_id = companyId before any
+-- write (mismatch -> 409, terminal in the outbox), which closes audit
+-- finding A2 in code. This composite FK is the DB-level defense in depth
+-- for that invariant, for every role including service_role, so a future
+-- code path that skips the check still cannot write a cross-tenant row.
 --
 -- NOT VALID: enforced immediately for new rows and for any change to
 -- (project_id, company_id); existing rows are not checked. After the Section

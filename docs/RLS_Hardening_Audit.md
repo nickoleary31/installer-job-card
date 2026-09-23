@@ -1,18 +1,133 @@
 # Installer Sheetz — RLS Hardening: Audit, Findings, Policy Matrix, Draft Migration, Test Plan
 
-**Status: PREPARATION ONLY — revision 2 (second-engineer adversarial review).** Nothing in this
-document or the companion draft SQL has been applied anywhere. No RLS was enabled, no migration
-was run, no Supabase project was touched, and no application code was changed.
+**Status: PREPARATION ONLY — revision 3 (reconciled with the final Phase 2H commit).** Nothing in
+this document or the companion draft SQL has been applied anywhere. No RLS was enabled, no
+migration was run, no Supabase project was touched, and no application code was changed.
+Revision 2 is preserved as commit `7707650`. **Section R below is what changed in revision 3;
+read it first.** §0–§11 are the revision-2 audit, annotated where revision 3 supersedes them.
 
 | | |
 |---|---|
 | Worktree | `C:\dev\install-app-rls` |
-| Branch | `feature/rls-hardening` (base `origin/main` @ `76df9a7`) |
-| Draft migration | [`supabase/rls_hardening_draft/0001_enable_rls_and_policies.sql`](../supabase/rls_hardening_draft/0001_enable_rls_and_policies.sql). It sits deliberately **outside** `supabase/migrations/` so `supabase db push` and CI can't pick it up. |
+| Branch | `feature/rls-hardening` (base `origin/main` @ `76df9a7`; revision-2 baseline `7707650`) |
+| Draft migrations | [`0001_enable_rls_and_policies.sql`](../supabase/rls_hardening_draft/0001_enable_rls_and_policies.sql) (table RLS), [`0002_job_card_photos_storage_policies.sql`](../supabase/rls_hardening_draft/0002_job_card_photos_storage_policies.sql) (storage), [`0003_enforce_active_profiles.sql`](../supabase/rls_hardening_draft/0003_enforce_active_profiles.sql) (Q1). All sit deliberately **outside** `supabase/migrations/` so `supabase db push` and CI can't pick them up. |
 | Target when eventually applied | Installer Sheetz **V1 Dev** (`gewtjutfjrmhwmjlovly`) only |
 | Never touch | Installer Sheetz **Production** (`uboutcndhvygmwfjztla`), **Developer Sheets Dev** (`ipjwhhyaurjzgaychoii`) |
-| Mobile Phase 2H | `C:\dev\install-app-mobile` inspected **read-only** (`feature/mobile-shell` @ `f9f7bb3` plus uncommitted Phase 2H work, untouched) |
-| Validation performed | Static only. A purpose-built linter checked token/dollar-quote balance, drop-before-create, "no raw subqueries in policies", SECURITY DEFINER `search_path`/grant hygiene, trigger attachment, and RLS coverage on all 8 tables; it passes. **The SQL has not been executed against any database** (see §11 for the V1 Dev plan). |
+| Mobile Phase 2H | Final commit `feature/mobile-shell` @ `3359107` (linear on `origin/main` @ `76df9a7`), reviewed **read-only** from the committed tree (`git show 3359107:…`), never the working copy; `install-app-mobile` untouched |
+| Validation performed | Static only. A purpose-built linter checked token/dollar-quote/CASE/IF balance, drop-before-create, "no raw subqueries in policies", `search_path = ''` + qualified names in every function, grants, trigger attachment, guard bypass lists, and RLS coverage on all 8 tables. All three files pass, and a planted-defect probe is still caught. **No SQL has been executed against any database.** |
+
+---
+
+## R. Revision 3 — reconciliation with the final Phase 2H commit (`3359107`)
+
+### R.1 Phase 2H contract, verified from committed code
+
+| Contract item | Where (at `3359107`) | Result |
+|---|---|---|
+| Privileged routes fail closed | `requirePrivilegedServiceClient` (`lib/company-users/admin-api.ts:97-106`), called **first** in `finalize-server.ts:67`, `history-server.ts:45`, `photo-upload-url-server.ts:32` | ✓ No user-scoped fallback for any Phase 2H route |
+| Key handling | `getSupabaseServerEnv` reads `SUPABASE_SECRET_KEY` then legacy `SUPABASE_SERVICE_ROLE_KEY` (`admin-api.ts:34-48`) | ✓ (reaches `main` only when 2H merges) |
+| Project/company binding | `verifyProjectBelongsToCompany` + load in `authorizeProjectAccess` **before** the global-admin shortcut (`lib/project-access.ts:41-53, 100-118`); mismatch → **409**, missing → 404 | ✓ Closes **A2** |
+| Photo namespace | `{companyId}/{projectId}/{localSubmissionId}/{group}/{fieldName}/{localPhotoId}.{ext}` (`lib/local-photo.ts:160-170`), built server-side after `authorize` (`photo-upload-url.ts:74-93`), segment and MIME whitelists (`:13-14, :48-72`) | ✓ Closes **A4** |
+| Retry/idempotency | `INSERT … ON CONFLICT (submission_id) DO NOTHING` → read-back → same hash 200 / different or NULL hash **409** (`finalize.ts:113-140`); never UPDATE | ✓ |
+| Outbox success state | `sync_state = 'server-confirmed'` (`lib/local-submission-outbox.ts:42`, `lib/native/local-submission-outbox.ts:99`). "Synced" is only a **display label** (`lib/local-submission-outbox.ts:361`) | ✓ Corrected: the outbox state is not "synced" |
+| History endpoint | **`GET`** `/api/job-card-submissions` (`app/api/job-card-submissions/route.ts:14`) | ✓ |
+| Error model | `classifySyncResponseStatus`: 401/403 → authorization; 400/409/422 → terminal; everything else retryable (`lib/submission-sync.ts:95-99`). Terminal `failed` rows are never re-claimed; `authorization-blocked` always is (`lib/native/local-submission-outbox.ts:62-72`) | ✓ with gaps in R.4 |
+| Native local-first | `handleNativeTechnicianSubmit` → `technicianSubmitAtomically` (local SQLite) → `runForegroundSync` (`components/NewSubmissionForm.tsx:5129-5215`) | ✓ **RLS cannot touch the durability path**. One pre-existing network call is in it: B2, R.5 |
+| Server migration | `20260921120000_job_card_submissions_technician_submit.sql`: two nullable columns only | ✓ `0001` now refuses to run without it |
+
+### R.2 What RLS does to each Phase 2H path
+
+- **finalize / history / photo-upload-url**: always the service role → table policies and guard
+  *authorization* rules don't apply. Only two things do. The composite FK (`0001` §11) can't fire,
+  because the 409 binding check runs first. The new `job_card_submissions` integrity guard can't
+  fire either: finalize never UPDATEs, and the service role may set the snapshot columns on INSERT.
+  **No new failure mode reaches the outbox.**
+- **Signed photo upload** (`uploadToSignedUrl`): performed by the Storage API as its own privileged
+  user, so table RLS is irrelevant. `0002` depends on this and says so (verify in V1 Dev; open
+  question **Q10**).
+- **Native direct reads** (`ActiveProjectsScreen`, `ProjectDetailScreen`, `userContext`): RLS
+  **filters silently** (empty rows, never a 403), so `classifySupabaseFailure` can't misread an RLS
+  SELECT as a session denial. Technician provisioning under `0001`: member companies → all their
+  active projects (still filtered to assigned ones client-side) → submission counts only for
+  assigned projects → own assignment rows. Everything the screen shows still loads.
+- **Direct writes** (expenses in the shared `ProjectDetailScreen`; web submit/draft in
+  `NewSubmissionForm`): guard violations are PostgREST `42501` → HTTP 403, surfaced in the UI. They
+  never go through the outbox.
+
+### R.3 SQL changes in revision 3
+
+| # | Change | Why |
+|---|---|---|
+| 1 | `0001` §0: hard precondition that the Phase 2H columns exist; Q1 counts (report only) | Integrity guard references them; Q1 prep |
+| 2 | `0001` §8 expense guard: `needs_review`/`review_reason` **derived for every role** (lost receipt ∧ no receipt ∧ pending) | **Q8**; reproduces exactly what every client already sends, so no client change |
+| 3 | `0001` §8: the **creator is never a reviewer**, for anyone including company and global admins. The creator's own edits must leave the review pending (closes "admin edits own approved expense and keeps the approval"). Legacy `created_by IS NULL` rows are reviewable by any authorized reviewer. Explicit `created_by = caller` on INSERT. | **Q2** + follow-up 1 |
+| 4 | `0001` §9 `job_card_submissions_guard_write`: API callers cannot set `technician_submitted_at` / `submission_snapshot_hash` on INSERT. `submission_id, company_id, project_id, created_at, technician_submitted_at, submission_snapshot_hash` are immutable for **every role except the maintenance roles, service_role included** | Snapshot-immutability defense in depth; no legitimate writer changes them |
+| 5 | `0001` §11 composite FK re-scoped as defense in depth (A2 is fixed in code) | Phase 2H binding |
+| 6 | **New `0002`**: `job-card-photos`: anonymous listing and uploads removed; Phase 2H namespace readable by project members only (company segment must match the project) and **not directly writable** (server-signed only); receipts bound to project access; legacy web paths open to signed-in users (residual) | Namespace binding preserved |
+| 7 | **New `0003`** (Q1): blocking preflight for active memberships/assignments without a profile (**never auto-creates**), a NOTICE list of inactive users who will lose access, `is_active_user()`, and one **restrictive** policy per table plus `storage.objects`. An inactive user can still *read their own profile*, which is what makes `userContext` produce its explicit `inactive-user` denial. | **Q1** + follow-up 2 |
+| — | Unchanged, by decision: technicians see only their own membership/assignment rows (**Q3/B1**); drafts/submissions stay project-shared (**Q4**) | — |
+
+### R.4 Error-model check under RLS
+
+RLS denials **cannot reach the outbox**: all three outbox endpoints run as the service role after
+authorization in code, so the outbox sees exactly the statuses it saw before RLS. Pre-existing
+app-side gaps against the stated contract, recommended before Android sign-off:
+
+1. `finalize.ts:123-129` maps **every** DB write/read-back error to 500 (retryable). The contract
+   says constraint/FK/identity failures are terminal. It's unreachable in practice (binding check +
+   `ON CONFLICT DO NOTHING`), but the repo should return the PostgREST code so `23xxx` → 422 and
+   `42501` → 403.
+2. `authorizeProjectAccess` returns **404** for a missing project (`project-access.ts:47`), and the
+   sync engine treats 404 as retryable, so an outbox entry for a deleted project retries forever.
+   Map to terminal.
+3. With `0003` (Q1) on, a deactivated technician must get **403 → authorization-blocked** from
+   finalize. That needs the Q1 app change in R.5, because service-role routes bypass restrictive
+   policies.
+
+### R.5 App-side changes still required (not RLS; separate changes)
+
+| Item | Status at `3359107` | Needed before |
+|---|---|---|
+| **A1** `/api/send-email` unauthenticated | Open. The route has no auth, and the client call sends no `Authorization` header (`NewSubmissionForm.tsx:5278`) | Independent. Critical: fix now |
+| **B2** remove the Powerfleet "Default Project" fallback, require a valid project | Open (`NewSubmissionForm.tsx:2796-2829`). Used by web submit (`:4808`), draft save (`:6823`) **and native Submit** (`:5137`), where an empty selection also puts a **network query into the local-first Submit path** | `0001` |
+| **Q7** search/add-existing: require the service role (fail closed); return only id/name/email/profile-active, plus membership and active state **in the searching company only** | Open. Still `authorizeCompanyUserManager`'s silent fallback; the response includes every company's memberships and roles | `0001` (the fallback silently degrades under RLS) |
+| **A3** Zoho `project-info` / `project-progress` authorization | Open | `0001` in any shared environment |
+| **Q1 app side**: `authorizeProjectAccess` and `authorizeCompanyUserManager` return 403 when the requester's profile is inactive or missing | Open | `0003` |
+| finalize error-code mapping; 404 → terminal (R.4) | Open | Android sign-off |
+| Move web photo uploads to the signed namespace | Open | Closing `0002`'s legacy-path residual |
+| A5 receipt SSRF, A7 invite `ilike` | Open | Follow-up |
+
+### R.6 Apply order and gates (V1 Dev only, each after explicit approval)
+
+1. Confirm `20260921120000` is applied (`0001` aborts otherwise). Inspect V1 Dev for Q5/Q6
+   (triggers on `auth.users`, dashboard-created objects), and run the `0001` §0 queries by hand.
+2. Ship the R.5 items marked "`0001`" to the build under test.
+3. Apply **`0001`** → run the Android and web regression (the handoff list, plus §11.3 below).
+4. Verify signed uploads are policy-independent (Q10) → apply **`0002`** → storage regression
+   (web photo upload, receipts, `/photos` listing, native signed upload, anonymous listing now
+   denied).
+5. Repair the data until `0003`'s preflight passes; review its NOTICE list; ship the Q1 app change →
+   apply **`0003`** → regression (a deactivated technician: web shows the inactive-user state;
+   native finalize → authorization-blocked).
+6. When the `0001` §0 mismatch counts are 0, run the two `VALIDATE CONSTRAINT`s.
+
+Emergency rollback of `0001` (V1 Dev): for each of the 8 tables `alter table … disable row level
+security`; drop the five `trg_*_guard_*` triggers; `grant update on public.user_profiles to
+authenticated`. `0002` and `0003` carry their own rollback blocks.
+
+### R.7 New and remaining open questions
+
+- **Q9** The web edit-submitted flow revises `payload` in place. On a native (hash-bearing)
+  submission, the hash then no longer describes the payload. Revision 3 freezes the hash and
+  identity but **not** the payload (today's behavior). Should payload also freeze once a snapshot
+  hash exists?
+- **Q10** `0002` assumes Storage signed uploads bypass `storage.objects` policies. Must be verified
+  in V1 Dev before `0002` is applied.
+- **Q11** Residual within a project: a project member who learns a pending native
+  `localSubmissionId` (e.g. from a family-A photo path) can pre-insert a web row with that
+  `submission_id`, and the native finalize then gets a terminal 409. `0002` limits family-A
+  listing to project members; eliminating it needs server-issued submission ids.
+- **Q5 / Q6** (V1 Dev inspection) remain open. Q1–Q4, Q7, Q8, B1 and B2 are **decided** (R.3/R.5).
 
 ---
 
@@ -153,15 +268,21 @@ true.
 | # | Sev. | Vulnerability | Required fix |
 |---|---|---|---|
 | **A1** | **Critical** | **`/api/send-email` has no authentication** (`app/api/send-email/route.ts:307-326`). Anyone on the internet can (a) send mail through the app's Resend sender to recipients taken **from the request payload** (`resolveJobCardEmailRecipients` → `readProjectExternalEmails(payload)`), with attacker-controlled content and photo URLs the server then fetches; (b) overwrite the email-history columns of **any** `job_card_submissions` row by `submission_id` through the service role (`lib/email-submission-history.ts:47-50`), with a caller-chosen `last_email_sent_by` (`body.sentByUserId`, `:326`). Revision 1 classified this route as "touches none of the 8 tables", which is incorrect. | Require a bearer token. Load the submission server-side and `authorizeProjectAccess` on its stored project. Derive recipients from the stored project, not the payload. Take `sentByUserId` from the verified JWT. |
-| **A2** | High | `authorizeProjectAccess` does not verify project ∈ company (§2). Exploitable through service-role consumers: **auto-publish** (a company A admin can trigger a Zoho publish for company B's project); **Phase 2H finalize** (a company A admin can write a submission into company B's project — blocked at the DB by revision 2's composite FK, but not otherwise); **history** (reads mismatched rows); **photo-upload-url**. `expense-report` is safe (it re-checks at `:82`). | In `authorizeProjectAccess`, load `projects` by id and require `project.company_id === companyId` before any branch |
+| **A2** | High | `authorizeProjectAccess` does not verify project ∈ company (§2). Exploitable through service-role consumers: **auto-publish** (a company A admin can trigger a Zoho publish for company B's project); **Phase 2H finalize** (a company A admin can write a submission into company B's project — blocked at the DB by revision 2's composite FK, but not otherwise); **history** (reads mismatched rows); **photo-upload-url**. `expense-report` is safe (it re-checks at `:82`). | In `authorizeProjectAccess`, load `projects` by id and require `project.company_id === companyId` before any branch. **Fixed in Phase 2H `3359107`** (R.1); the `0001` §11 composite FK remains as DB-level defense in depth. |
 | **A3** | High | Zoho `project-info` / `project-progress` authenticate but **do not authorize**: any signed-in user can read WO#/SA#/summary for any project UUID and SA counts for any company UUID. Their comments justify this by "projects/customers are readable by any signed-in user today", which is false once this migration lands. Project UUIDs are enumerable from the public `job-card-photos` bucket paths (`expenses/<projectId>/…`). | `authorizeProjectAccess` (project-info) / `authorizeCompanyUserManager`-style membership check (project-progress) |
-| **A4** | Medium | Phase 2H `photo-upload-url` signs `{localSubmissionId}/{group}/{field}/{photoId}` with `upsert: true` via the service role (`local-photo.ts:153-161`, `photo-upload-url-server.ts:16-24`). The path is not bound to the authorized project or to the caller's submission, so a caller authorized on *any* project can get overwrite URLs for another tenant's photos. (The bucket's public policies have no UPDATE policy, so this service-role path is the only overwrite vector.) | Wait for Phase 2H final. Bind the path to the authorized project and verify `submission_id` is unused or belongs to it. |
+| **A4** | Medium | Phase 2H `photo-upload-url` signs `{localSubmissionId}/{group}/{field}/{photoId}` with `upsert: true` via the service role (`local-photo.ts:153-161`, `photo-upload-url-server.ts:16-24`). The path is not bound to the authorized project or to the caller's submission, so a caller authorized on *any* project can get overwrite URLs for another tenant's photos. (The bucket's public policies have no UPDATE policy, so this service-role path is the only overwrite vector.) | **Fixed in Phase 2H `3359107`**: the path is now `{companyId}/{projectId}/…`, derived after binding + access checks (R.1). Remaining within-project residual: Q11. |
 | **A5** | Medium | SSRF: `expense-report` fetches every `expenses.receipt_url` server-side (`:152-156`); `receipt_url` is creator-writable | Fetch only URLs under this project's own Supabase Storage origin and `expenses/<projectId>/` prefix |
 | **A6** | Medium | `company-users/search` (privileged path) lets any company admin substring-search the **whole** user directory (25 rows per query, 2-character minimum) and returns each user's memberships **in other companies**, with company names and roles | Product decision (Q7). Suggest exact-email match for company admins, and return only the target-company membership. |
 | **A7** | Low | `invite` resolves users with `ilike('email', email)`; `isValidEmail` permits `%` and `_`, so wildcards can match and link an arbitrary existing profile | Escape LIKE metacharacters or use `eq` on a normalized column |
-| **F-12** | Low | `expenses.needs_review` / `review_reason` (the review-queue triage flags, `page.tsx:442-446`) stay creator-controlled. The authoritative approval state is protected; the DB cannot verify receipts anyway. | Optional follow-up: derive in a trigger/generated column |
+| **F-12** | Low | `expenses.needs_review` / `review_reason` (the review-queue triage flags, `page.tsx:442-446`) stay creator-controlled. The authoritative approval state is protected; the DB cannot verify receipts anyway. | **Resolved in revision 3** (Q8): derived in the expense guard for every role (R.3 #2) |
 
 ## 5. The non-service-role fallback (`createUserScopedClient`)
+
+> **Revision 3:** at `3359107` the three Phase 2H routes fail closed
+> (`requirePrivilegedServiceClient`), and the key rename exists on that branch. The fallback now
+> remains only for `expense-report` (`authorizeProjectAccess`) and `company-users/search` /
+> `add-existing` (`authorizeCompanyUserManager`). The Phase 2H rows in the table below are
+> historical. Q7 decides the search/add-existing outcome: **fail closed** (R.5).
 
 **Is the privileged key guaranteed in every deployed environment? No.** Evidence:
 
@@ -214,11 +335,12 @@ guards) · ❌ = default deny (no policy).
 | `projects` | GA · MEM (all company projects, incl. unassigned — matches current UI) | GA · CA | ❌ (was anticipatory in rev 1) | ❌ | — (company re-parenting blocked by FK once it has rows) |
 | `company_memberships` | SELF · GA · CA | GA · CA | GA · CA | ❌ (soft-deactivate only) | `id/user_id/company_id/created_at` immutable |
 | `project_assignments` | SELF · GA · CA(project) | GA · CA(project) | GA · CA(project) | ❌ (soft-deactivate only) | `id/user_id/project_id/created_at` immutable |
-| `expenses` | GA · CA · TECH | TECH/CA/GA with `created_by = self` | CA/GA (any in scope) · creator while still TECH | same as UPDATE | INSERT: pristine review, `created_at := now()`. UPDATE: `id/project_id/created_by/created_at` immutable; non-admin → review must end pristine; admin review → `approved`/`rejected`, `reviewed_by = self`, `reviewed_at := now()` |
-| `job_card_submissions` | GA · CA · TECH (by project) | CA/GA/TECH **and** `company_id = project's company` | same (USING by project; CHECK adds consistency) | ❌ | — (composite FK `(project_id, company_id)` for all roles) |
+| `expenses` | GA · CA · TECH | TECH/CA/GA with `created_by = self` | CA/GA (any in scope) · creator while still TECH | same as UPDATE | **All roles:** `needs_review`/`review_reason` derived (Q8). INSERT: `created_by = self`, pristine review, `created_at := now()`. UPDATE: `id/project_id/created_by/created_at` immutable; non-admins **and the creator (even an admin)** → review must end pristine (Q2); a reviewer who is not the creator → `approved`/`rejected`, `reviewed_by = self`, `reviewed_at := now()`; `created_by IS NULL` is reviewable by any admin |
+| `job_card_submissions` | GA · CA · TECH (by project) | CA/GA/TECH **and** `company_id = project's company`; API may not set `technician_submitted_at`/`submission_snapshot_hash` | same (USING by project; CHECK adds consistency) | ❌ | **All roles except maintenance, incl. service_role:** `submission_id/company_id/project_id/created_at/technician_submitted_at/submission_snapshot_hash` immutable (payload is not: Q9). Composite FK `(project_id, company_id)` for all roles |
 | `job_card_drafts` | GA · CA · TECH (by project) | as submissions | as submissions | GA · CA · TECH | — (composite FK) |
-| Storage `job-card-photos` | **unchanged**: public read + public insert, listable | | | | |
+| Storage `job-card-photos` (`0002`) | family A `{company}/{project}/…`: project members, company segment must match · family B `expenses/{project}/…`: project access · family C legacy `{submissionId}/…`: any signed-in user (residual) · **no anonymous access through the API** (public URLs still work) | A: **server-signed only** · B: project access · C: any signed-in user | ❌ | ❌ | — |
 | Storage `customer-site-files` | **unchanged**: any authenticated user, unscoped | | | | |
+| Every table above + `company_form_products` + `storage.objects` (`0003`, Q1) | **Restrictive**: caller must have an active `user_profiles` row (an inactive user can still read their own profile) | | | | |
 
 Semantics notes:
 - **UPDATE requires SELECT visibility of the new row** whenever the statement has a WHERE or
@@ -305,6 +427,12 @@ the next step is a set-returning `accessible_project_ids()` used as `project_id 
 
 ## 9. Behavior changes and open questions
 
+> **Revision 3:** B1 and B2 are **approved**. Q1 (enforce after preflight → `0003`), Q2 (no
+> self-review, NULL-creator legacy rows reviewable), Q3 (technicians see only their own rows), Q4
+> (project-shared), Q7 (directory search via a fail-closed server route with minimal fields and
+> only the searching company's membership state) and Q8 (derived `needs_review`) are **decided**.
+> See R.3/R.5. Still open: Q5, Q6, and the new Q9–Q11 (R.7).
+
 **Behavior changes that need product sign-off before apply:**
 
 - **B1** Technicians on `/companies/[id]/assignments` see only their own row in the read-only
@@ -343,6 +471,11 @@ the next step is a set-returning `accessible_project_ids()` used as `project_id 
 - **Q8** Should the creator-controlled `needs_review` triage flag (F-12) be derived server-side?
 
 ## 10. Mobile Phase 2H compatibility (read-only review of `install-app-mobile`)
+
+> **Superseded by R.1–R.5** (final commit `3359107`). Of the "must wait" items below: #3 (photo
+> path) and #4 (key rename) are done in Phase 2H. #2 (snapshot integrity) is handled by `0001` §9.
+> #1 (error mapping) is narrowed to the two app-side gaps in R.4. #5 is Q10. #6 is the R.6
+> regression.
 
 **Compatible as-is:**
 - `mobile-web` uses the same `lib/` and the same anon-key client. Every policy applies
@@ -412,11 +545,35 @@ if Section 0 reports any.
 15. anon (no JWT): all 8 tables empty or denied; `rpc/is_active_company_admin` → permission denied.
 16. `delete from company_memberships` / `project_assignments` / `projects` → 0 rows.
 
-### 11.4 Android / Phase 2H (after its final commit)
-Repeat 11.2 #3 and 11.3 #3–#7 on mobile; offline → online finalize for A1 succeeds; finalize for A2
-or with T2 → 403 surfaces as `AuthorizationBlockedError` (no retry loop); duplicate finalize
-converges (same hash → 200, different → 409); finalize with a mismatched company/project →
-terminal error, not retry (§10.1).
+Revision 3 additions:
+17. Co A admin approves **their own** expense → 42501. As a global admin → 42501. Another Co A
+    admin approves it → OK. The creating admin edits their own approved expense without resetting
+    → 42501; with the UI's reset → OK (back to pending).
+18. A legacy expense with `created_by IS NULL`: an admin approves → OK.
+19. T1 inserts a lost-receipt expense with `needs_review: false` → the stored row has
+    `needs_review = true`, `review_reason = 'Lost receipt'`. After an admin approves → `false`.
+    After T1's edit reset → `true` again.
+20. T1 `insert expenses (created_by: null)` → 42501.
+21. T1 `insert job_card_submissions (… submission_snapshot_hash:'x')` → 42501. T1 updates
+    `submission_snapshot_hash` / `technician_submitted_at` / `company_id` / `submission_id` on an
+    existing row → 42501. The same UPDATE **as service role** → 42501. A payload-only update (web
+    revision) → OK.
+22. After `0002`: anonymous `storage.list('job-card-photos')` → empty or denied; a public URL still
+    downloads. A Co B user lists `{coA}/{projectA1}/…` → empty. T1 direct `upload` into
+    `{coA}/{A1}/…` → denied; the native signed upload to the same path → OK. A receipt upload under
+    `expenses/{A2}/…` by T1 → denied; under `expenses/{A1}/…` → OK. Web photo upload
+    `{submissionId}/…` (upsert) → OK. `/photos/[submissionId]` listing → OK.
+23. After `0003`: a deactivated user reads their own profile (→ `inactive-user` state in
+    `userContext`) and gets nothing else from any table or storage. Reactivate → access returns.
+
+### 11.4 Android / Phase 2H (final `3359107`)
+The handoff's focused regression, run after each of `0001`, `0002`, `0003`: login and project
+provisioning; offline → online sync; signed photo upload; finalize; Submitted history (`GET`);
+same-hash idempotent retry (→ `server-confirmed`, exactly one row, and exactly N objects);
+wrong-company/project → 409 → **terminal**, not re-claimed; unassigned or deactivated membership
+→ 403 → `authorization-blocked` (re-claimable after access is restored); a terminal
+RLS/validation failure is never auto-retried. Also repeat 11.2 #3 and 11.3 #3–#7 and #17–#20
+through `ProjectDetailScreen` on the device.
 
 ### 11.5 Post-apply verification queries (read-only)
 ```sql
