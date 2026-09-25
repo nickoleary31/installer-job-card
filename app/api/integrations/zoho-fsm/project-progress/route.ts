@@ -1,54 +1,52 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getSupabaseServerEnv, createServiceRoleClient, extractBearerToken } from "@/lib/company-users/admin-api";
+import { extractBearerToken, getSupabaseServerEnv, requirePrivilegedServiceClient } from "@/lib/company-users/admin-api";
+import { authorizeCompanyAccess } from "@/lib/project-access";
 import { fetchZohoProjectProgressForCompany } from "@/lib/zoho-fsm/project-progress";
+import { handleProjectProgressRequest } from "@/lib/zoho-fsm/project-routes-access";
 
 /**
  * Narrow, browser-safe SA Target/Finalized Asset Count for every Zoho-linked project in one
  * company — feeds the admin Project card's "Completed submissions" denominator (see
  * lib/zoho-fsm/project-progress-display.ts). zoho_fsm_service_appointments has no client-facing
- * RLS policies, so this server route is the only way client code can learn these values — same
- * auth requirement as the existing project-info route (any signed-in app user, no
- * company-membership check — this exposes nothing more sensitive than the project list itself
- * already does).
+ * RLS policies, so this server route is the only way client code can learn these values.
+ *
+ * Checkpoint 2 — authorized, not just authenticated: a global admin or an active member of
+ * the company (lib/project-access.ts's authorizeCompanyAccess); a technician receives only
+ * the projects they are actively assigned to. Thin wrapper — see
+ * lib/zoho-fsm/project-routes-access.ts for the unit-tested handler.
  */
 export async function GET(req: Request) {
   const env = getSupabaseServerEnv();
-  if (env.missingPublic.length > 0 || env.missingServiceRole.length > 0) {
+  if (env.missingPublic.length > 0) {
     return NextResponse.json({ error: "Server is missing required Supabase configuration." }, { status: 500 });
   }
-
-  const accessToken = extractBearerToken(req);
-  if (!accessToken) {
-    return NextResponse.json({ error: "Missing authorization token." }, { status: 401 });
+  const privileged = requirePrivilegedServiceClient(env);
+  if (!privileged.ok) {
+    return NextResponse.json({ error: privileged.error }, { status: privileged.status });
   }
+  const { serviceClient } = privileged;
 
-  const anonClient = createClient(env.url, env.anonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  const { data: userData, error: userError } = await anonClient.auth.getUser(accessToken);
-  if (userError || !userData.user) {
-    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
-  }
-
-  const companyId = new URL(req.url).searchParams.get("companyId")?.trim();
-  if (!companyId) {
-    return NextResponse.json({ error: "companyId is required." }, { status: 400 });
-  }
-
-  const serviceClient = createServiceRoleClient(env);
-  if (!serviceClient) {
-    return NextResponse.json(
-      { error: "Server is missing required Supabase service-role configuration." },
-      { status: 500 },
-    );
-  }
-
-  try {
-    const byProjectId = await fetchZohoProjectProgressForCompany(serviceClient, companyId);
-    return NextResponse.json(byProjectId);
-  } catch (error) {
-    console.error("[zoho-fsm] project-progress lookup failed", error instanceof Error ? error.message : error);
-    return NextResponse.json({}, { status: 200 });
-  }
+  const result = await handleProjectProgressRequest(
+    {
+      accessToken: extractBearerToken(req),
+      companyId: new URL(req.url).searchParams.get("companyId") ?? "",
+    },
+    {
+      async authorizeCompany(args) {
+        const auth = await authorizeCompanyAccess({ env, ...args });
+        return auth.ok ? { ok: true, requesterUserId: auth.requesterUserId, role: auth.role } : auth;
+      },
+      fetchProgress: (companyId) => fetchZohoProjectProgressForCompany(serviceClient, companyId),
+      async listActiveAssignedProjectIds(userId) {
+        const { data, error } = await serviceClient
+          .from("project_assignments")
+          .select("project_id")
+          .eq("user_id", userId)
+          .eq("is_active", true);
+        if (error) throw error;
+        return ((data as { project_id: string }[] | null) || []).map((row) => row.project_id);
+      },
+    },
+  );
+  return NextResponse.json(result.body, { status: result.status });
 }

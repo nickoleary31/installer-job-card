@@ -63,6 +63,36 @@ export function createServiceRoleClient(env: SupabaseServerEnv): SupabaseClient 
   });
 }
 
+export type PrivilegedServiceClientResult =
+  | { ok: true; serviceClient: SupabaseClient }
+  | { ok: false; status: number; error: string };
+
+/**
+ * The fail-closed gate a privileged route (send-email, the Zoho project
+ * routes) must call BEFORE doing anything else. Mirrors authorizeGlobalAdmin's
+ * own existing service-role requirement below, extracted here so it's
+ * directly unit-testable (pure given an env value — no live Supabase call)
+ * and shared without each route reimplementing the same two checks.
+ *
+ * Deliberately does NOT touch authorizeProjectAccess's own
+ * `serviceClient || createUserScopedClient(...)` fallback (lib/project-access.ts)
+ * — that fallback remains intact for its other callers (expense-report, the
+ * Zoho auto-publish trigger authorizer). A route that calls this gate first
+ * simply never reaches that fallback branch, since authorizeProjectAccess's
+ * own createServiceRoleClient(env) call is guaranteed to succeed once this
+ * gate has already passed.
+ */
+export function requirePrivilegedServiceClient(env: SupabaseServerEnv): PrivilegedServiceClientResult {
+  if (env.missingServiceRole.length > 0) {
+    return { ok: false, status: 500, error: missingConfigError(env.missingServiceRole) };
+  }
+  const serviceClient = createServiceRoleClient(env);
+  if (!serviceClient) {
+    return { ok: false, status: 500, error: missingConfigError(["NEXT_PUBLIC_SUPABASE_URL"]) };
+  }
+  return { ok: true, serviceClient };
+}
+
 export function createUserScopedClient(env: SupabaseServerEnv, accessToken: string): SupabaseClient {
   return createClient(env.url, env.anonKey, {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
