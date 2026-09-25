@@ -445,13 +445,16 @@ export default function SubmittedPage() {
     setResendMessageBySubmissionId((prev) => ({ ...prev, [row.submissionId]: "" }));
     setResendState(row.submissionId, "sending");
     try {
+      // Checkpoint 2 — the route now requires the signed-in session and derives the sender
+      // and the submission's scope server-side; sentByUserId is no longer read from the body.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token || "";
       const res = await fetch("/api/send-email", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
         body: JSON.stringify({
           payload: row.payload,
           sendMode,
-          sentByUserId: userContext.userId || null,
         }),
       });
       let data: {

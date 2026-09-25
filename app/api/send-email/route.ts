@@ -11,6 +11,9 @@ import {
   type EmailSendMode,
 } from "@/lib/email-recipients";
 import { persistEmailHistory } from "@/lib/email-submission-history";
+import { extractBearerToken, getSupabaseServerEnv } from "@/lib/company-users/admin-api";
+import { authorizeSendEmailRequest } from "@/lib/send-email/authorize-send-email";
+import { createSendEmailAuthDeps } from "@/lib/send-email/authorize-send-email-server";
 import {
   type JobCardCp4Payload,
   type JobCardPpdPayload,
@@ -316,14 +319,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing payload" }, { status: 400 });
   }
 
-  const payload = normalizeSubmissionPayload(body.payload);
-  if (!payload) {
+  const submittedPayload = normalizeSubmissionPayload(body.payload);
+  if (!submittedPayload) {
     return NextResponse.json({ error: "Invalid submission payload" }, { status: 400 });
   }
 
+  // Checkpoint 2 — authenticated + authorized against the submission's OWN stored
+  // company/project, storage references scoped, recipients re-derived from the project.
+  // Nothing below (Storage downloads, Resend, the history update) runs unless this passes.
+  // See lib/send-email/authorize-send-email.ts. The body's sentByUserId is no longer read.
+  const authDeps = createSendEmailAuthDeps(getSupabaseServerEnv());
+  if (!authDeps.ok) {
+    return NextResponse.json({ error: authDeps.error }, { status: authDeps.status });
+  }
+  const gate = await authorizeSendEmailRequest({ accessToken: extractBearerToken(req), payload: submittedPayload }, authDeps.deps);
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.error }, { status: gate.status });
+  }
+  const payload = gate.payload;
+  const sentByUserId = gate.requesterUserId;
+
   const sendMode: EmailSendMode = body.sendMode === "internal_only" ? "internal_only" : "client_and_internal";
   const allowPartialSend = body.allowPartialSend === true;
-  const sentByUserId = typeof body.sentByUserId === "string" ? body.sentByUserId.trim() : null;
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
