@@ -5328,13 +5328,16 @@ export function NewSubmissionForm() {
     setPostSubmitSyncWarning(null);
     try {
       const payloadForSend = pendingEmailPayload;
+      // Checkpoint 2 — the route now requires the signed-in session and derives the sender
+      // and the submission's scope server-side; sentByUserId is no longer read from the body.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token || "";
       const res = await fetch(apiUrl("/api/send-email"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
         body: JSON.stringify({
           payload: payloadForSend,
           sendMode,
-          sentByUserId: authUserContext.userId || null,
         }),
       });
       let data: {

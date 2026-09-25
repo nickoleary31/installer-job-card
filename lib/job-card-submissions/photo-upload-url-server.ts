@@ -31,9 +31,10 @@ export function createPhotoUploadAccess(env: SupabaseServerEnv): PhotoUploadAcce
       // requirePrivilegedServiceClient's own doc.
       const privileged = requirePrivilegedServiceClient(env);
       if (!privileged.ok) return privileged;
-      const auth = await authorizeProjectAccess({ env, ...args });
+      // requireActiveProject: an upload URL is the first step of recording NEW work — see ProjectAccessOptions.
+      const auth = await authorizeProjectAccess({ env, ...args, requireActiveProject: true });
       if (!auth.ok) return auth;
-      return { ok: true, storage: createSupabasePhotoStorageRepo(auth.dataClient) };
+      return { ok: true, storage: createSupabasePhotoStorageRepo(auth.dataClient), requesterUserId: auth.requesterUserId };
     },
   };
 }

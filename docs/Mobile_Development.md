@@ -886,3 +886,52 @@ a time; requests during a pass collapse into one follow-up pass. Still no pollin
 **Web auth.** `decideWebAuthMode` restores the pre-Phase-2C web behaviour: a lost connection or a server
 hiccup keeps the browser's own session as mode `web-unverified` instead of signing out and bouncing to
 `/login`. It is not offline authorization — no lease, no packages, no local-first submission.
+
+## Checkpoint 2 — server/API hardening for the mobile workflow
+
+**Shared access decision (`lib/project-access.ts`).** `authorizeProjectAccess` keeps its signature but
+now runs `decideProjectAccess` over injectable reads (unit-tested adversarially in
+`lib/project-access.test.ts`). Two checks were added, applied to every requester before any role
+check: `user_profiles.is_active = false` is refused (previously only the global-admin shortcut looked
+at it), and — for the routes that record NEW work (finalize, photo-upload-url, via
+`requireActiveProject`) — an inactive project (`projects.active = false`) is refused with 403 so a
+reactivation can restore sync. Read routes (history, Zoho info, expense export, email resend) still
+serve a completed project's data to those who have access. Any failed read is a denial. `authorizeCompanyAccess` / `decideCompanyAccess` is the
+company-scoped sibling (global admin or any active member) for company-wide reads.
+
+**Finalize (`lib/job-card-submissions/finalize.ts`).** Beyond the existing insert-if-absent + hash
+reconciliation: `submissionId` must be a safe identifier; the snapshot hash must be a sha256 hex
+digest; `technicianSubmittedAt` must be ISO-8601 within 180 days past / 15 minutes future (it becomes
+`technician_submitted_at` AND `created_at`, which the Zoho evidence trail reads); `payload.companyId/
+projectId`, when present, must equal the authorized ids (409, terminal); every `photoUploads[]` path
+must be `company/project/<requester>/submission/group/field/photo.ext` and every `productFiles[]` /
+`ppd.jsonConfigFile` reference must be in `customer-site-files` under this project's path
+(`lib/storage-references.ts`); photo `publicUrl` is re-derived server-side and a product-file
+`downloadUrl` is kept only if it is a signed URL for its own path. **Limitation:** `job_card_submissions`
+has no requester/submitter column (only `last_email_sent_by`), so the verified requester identity is
+enforced but not persisted on the row — that needs a migration in a later checkpoint.
+
+**Photo upload URL.** The server-built path now includes the server-verified requester id after the
+project: `company/project/<uploaderUserId>/localSubmission/group/field/localPhoto.ext`. Two technicians
+in the same project supplying the same client ids get different paths, so one can never overwrite the
+other's photo; the same user retrying still overwrites their own in place. Consequence for existing V1
+Dev test devices: an outbox entry whose photos were already uploaded under the old 6-segment path will
+be rejected by finalize (400 → Needs attention) — test data only. The RLS `0002` storage draft encodes
+the old path family and must be updated for the extra segment.
+
+**Zoho `project-info` / `project-progress`.** Previously authenticated only. `project-info` derives the
+project's company server-side and runs the shared project-access check; `project-progress` requires
+company access, and a technician receives only their actively assigned projects
+(`lib/zoho-fsm/project-routes-access.ts`). Both routes exist on `main` with the pre-existing gap.
+
+**`POST /api/send-email`.** Previously no authentication at all: it downloaded any bucket/path named in
+the body with the service role and mailed it to recipients named in the body. Callers are the two web
+flows (post-submit in `NewSubmissionForm.tsx`, resend on `/submitted`); native never calls it. Now
+(`lib/send-email/authorize-send-email.ts`): Bearer token required; the submission's company/project
+come from the stored `job_card_submissions` row (404 if not stored); the requester must pass the
+shared project-access check; every photo/product-file reference must be inside that submission's
+storage scope (legacy web `submission/...` photo paths allowed here, any uploader namespace allowed);
+`projectRecipientEmails` is replaced by the project's own `external_recipient_emails`; the sender
+recorded in email history is the verified requester (`sentByUserId` in the body is ignored). Both
+callers now send the session token. A browser still running a pre-deploy bundle would get a 401
+"Please sign in again" until refreshed.

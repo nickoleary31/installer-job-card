@@ -156,17 +156,27 @@ export function buildLocalPhotoFilesystemPath(localSubmissionId: string, localPh
  * proven project.company_id === companyId and the requester's access to
  * that pair) — see photo-upload-url.ts's own doc for why this function is
  * never called with raw, unauthorized client input.
+ *
+ * Checkpoint 2 — uploader-bound too: the server-verified requester's user
+ * id follows the project. localSubmissionId and localPhotoId are chosen by
+ * the client, so without this a technician in the same project could
+ * request an upload URL for another technician's ids and overwrite that
+ * photo in place (signed uploads are upsert-safe by design, for retries).
+ * With it, a requester can only ever write under their own namespace; a
+ * retry by the same user still lands on the same path.
+ * lib/storage-references.ts validates this exact family at finalize.
  */
 export function buildRemotePhotoStoragePath(
   companyId: string,
   projectId: string,
+  uploaderUserId: string,
   localSubmissionId: string,
   group: string,
   fieldName: string,
   localPhotoId: string,
   mimeType: string,
 ): string {
-  return `${companyId}/${projectId}/${localSubmissionId}/${group}/${fieldName}/${localPhotoId}.${photoMimeTypeToExtension(mimeType)}`;
+  return `${companyId}/${projectId}/${uploaderUserId}/${localSubmissionId}/${group}/${fieldName}/${localPhotoId}.${photoMimeTypeToExtension(mimeType)}`;
 }
 
 export type SavePhotoDurablyInput = {

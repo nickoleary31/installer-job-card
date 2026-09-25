@@ -1,4 +1,5 @@
 import { buildRemotePhotoStoragePath } from "../local-photo.ts";
+import { isSafePathSegment } from "../storage-references.ts";
 
 /**
  * Phase 2H's signed-upload-URL boundary, split into an injectable-dependency
@@ -8,16 +9,23 @@ import { buildRemotePhotoStoragePath } from "../local-photo.ts";
  * is derived/validated HERE, server-side, from stable identity inputs only
  * — a client never supplies a path directly, so there is no client-facing
  * field this route even reads to override it.
+ *
+ * Checkpoint 2 — the path also carries the server-verified requester's user
+ * id (never a client-supplied one), so a signed URL can only ever write
+ * inside the requester's own namespace within the authorized project.
  */
 
-const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+export { isSafePathSegment };
 
 export interface PhotoStorageRepo {
   createSignedUploadUrl(path: string): Promise<{ path: string; token: string } | { error: string }>;
 }
 
-export type PhotoUploadAuthResult = { ok: true; storage: PhotoStorageRepo } | { ok: false; status: number; error: string };
+export type PhotoUploadAuthResult =
+  | { ok: true; storage: PhotoStorageRepo; requesterUserId: string }
+  | { ok: false; status: number; error: string };
 
 export interface PhotoUploadAccess {
   authorize(args: { accessToken: string; companyId: string; projectId: string }): Promise<PhotoUploadAuthResult>;
@@ -35,11 +43,6 @@ export type PhotoUploadRequestInput = {
 };
 
 export type PhotoUploadResult = { status: number; body: Record<string, unknown> };
-
-/** No `/`, no `..`, no leading dot — every one of these becomes a raw path segment in buildRemotePhotoStoragePath. Pure, exported for direct unit coverage. */
-export function isSafePathSegment(value: string): boolean {
-  return SAFE_PATH_SEGMENT.test(value);
-}
 
 export async function handlePhotoUploadUrlRequest(
   input: PhotoUploadRequestInput,
@@ -75,6 +78,10 @@ export async function handlePhotoUploadUrlRequest(
   if (!auth.ok) {
     return { status: auth.status, body: { error: auth.error } };
   }
+  if (!isSafePathSegment(auth.requesterUserId)) {
+    // Defensive: a verified Supabase user id is a UUID; anything else must never become a path segment.
+    return { status: 403, body: { error: "Requester identity could not be used for storage." } };
+  }
 
   // companyId/projectId are safe to use for the Storage path here ONLY
   // because access.authorize() just succeeded — i.e. authorizeProjectAccess
@@ -85,6 +92,7 @@ export async function handlePhotoUploadUrlRequest(
   const path = buildRemotePhotoStoragePath(
     input.companyId,
     input.projectId,
+    auth.requesterUserId,
     input.localSubmissionId,
     input.group,
     input.fieldName,

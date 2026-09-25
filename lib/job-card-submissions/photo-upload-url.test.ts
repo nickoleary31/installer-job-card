@@ -9,6 +9,8 @@ import {
 } from "./photo-upload-url.ts";
 import { buildRemotePhotoStoragePath } from "../local-photo.ts";
 
+const REQUESTER = "user-tech-1";
+
 function requestInput(overrides: Partial<PhotoUploadRequestInput> = {}): PhotoUploadRequestInput {
   return {
     accessToken: "token-abc",
@@ -34,8 +36,8 @@ function fakeStorage(): PhotoStorageRepo & { calls: string[] } {
   };
 }
 
-function okAccess(storage: PhotoStorageRepo): PhotoUploadAccess {
-  return { authorize: async () => ({ ok: true, storage }) };
+function okAccess(storage: PhotoStorageRepo, requesterUserId = REQUESTER): PhotoUploadAccess {
+  return { authorize: async () => ({ ok: true, storage, requesterUserId }) };
 }
 
 function deniedAccess(status: number, error: string): PhotoUploadAccess {
@@ -44,15 +46,14 @@ function deniedAccess(status: number, error: string): PhotoUploadAccess {
 
 describe("isSafePathSegment (pure)", () => {
   it("accepts simple alphanumeric/dash/underscore identifiers", () => {
-    assert.equal(isSafePathSegment("sub-1"), true);
-    assert.equal(isSafePathSegment("photo_1"), true);
-    assert.equal(isSafePathSegment("VehicleFrontPhoto123"), true);
+    assert.equal(isSafePathSegment("abc-123_XYZ"), true);
+    assert.equal(isSafePathSegment("8f3e2c1a-0000-4000-8000-000000000000"), true);
   });
 
   it("rejects path traversal and path-separator attempts", () => {
-    assert.equal(isSafePathSegment("../../etc/passwd"), false);
+    assert.equal(isSafePathSegment("../etc"), false);
     assert.equal(isSafePathSegment("a/b"), false);
-    assert.equal(isSafePathSegment(".."), false);
+    assert.equal(isSafePathSegment(".hidden"), false);
     assert.equal(isSafePathSegment(""), false);
     assert.equal(isSafePathSegment("a b"), false);
   });
@@ -60,9 +61,7 @@ describe("isSafePathSegment (pure)", () => {
 
 describe("handlePhotoUploadUrlRequest — authentication/authorization", () => {
   it("propagates a 401 from a missing/invalid access token, before ever touching storage", async () => {
-    const storage = fakeStorage();
     const access: PhotoUploadAccess = { authorize: async () => ({ ok: false, status: 401, error: "Unauthorized requester." }) };
-    void storage;
     const result = await handlePhotoUploadUrlRequest(requestInput(), access);
     assert.equal(result.status, 401);
   });
@@ -70,6 +69,18 @@ describe("handlePhotoUploadUrlRequest — authentication/authorization", () => {
   it("propagates a 403 for a requester with no project access", async () => {
     const result = await handlePhotoUploadUrlRequest(requestInput(), deniedAccess(403, "no access"));
     assert.equal(result.status, 403);
+  });
+
+  it("L: a 403/409 for another company's project is propagated and no signed URL is ever issued", async () => {
+    const storage = fakeStorage();
+    assert.equal((await handlePhotoUploadUrlRequest(requestInput({ companyId: "company-B" }), deniedAccess(403, "no access"))).status, 403);
+    assert.equal((await handlePhotoUploadUrlRequest(requestInput(), deniedAccess(409, "Project does not belong to the specified company."))).status, 409);
+    assert.deepEqual(storage.calls, []);
+  });
+
+  it("D/E: an inactive user profile or inactive project is a 403 from the shared access check", async () => {
+    assert.equal((await handlePhotoUploadUrlRequest(requestInput(), deniedAccess(403, "This user account is not active."))).status, 403);
+    assert.equal((await handlePhotoUploadUrlRequest(requestInput(), deniedAccess(403, "This project is not active."))).status, 403);
   });
 });
 
@@ -81,6 +92,7 @@ describe("handlePhotoUploadUrlRequest — server-derived deterministic path", ()
     const expected = buildRemotePhotoStoragePath(
       input.companyId,
       input.projectId,
+      REQUESTER,
       input.localSubmissionId,
       input.group,
       input.fieldName,
@@ -130,19 +142,42 @@ describe("handlePhotoUploadUrlRequest — server-derived deterministic path", ()
   });
 });
 
-describe("handlePhotoUploadUrlRequest — wrong-tenant denial (project/company mismatch)", () => {
-  it("a 409 from access.authorize (project belongs to a different company) is propagated, and no signed URL is ever issued", async () => {
+describe("handlePhotoUploadUrlRequest — M: Checkpoint 2 uploader namespace", () => {
+  it("the path carries the SERVER-VERIFIED requester id right after the project — never anything the client sent", async () => {
     const storage = fakeStorage();
-    const result = await handlePhotoUploadUrlRequest(requestInput(), deniedAccess(409, "Project does not belong to the specified company."));
-    assert.equal(result.status, 409);
-    assert.deepEqual(storage.calls, [], "createSignedUploadUrl must never be called when authorization denies the request");
+    await handlePhotoUploadUrlRequest(requestInput(), okAccess(storage, "user-verified-9"));
+    assert.match(storage.calls[0], /^company-1\/project-1\/user-verified-9\/sub-1\//);
+  });
+
+  it("two technicians in the SAME project supplying the SAME localSubmissionId/localPhotoId get DIFFERENT paths — one can never overwrite the other's photo by crafting ids", async () => {
+    const storage = fakeStorage();
+    const crafted = requestInput({ localSubmissionId: "victims-sub", localPhotoId: "victims-photo" });
+    await handlePhotoUploadUrlRequest(crafted, okAccess(storage, "user-victim"));
+    await handlePhotoUploadUrlRequest(crafted, okAccess(storage, "user-attacker"));
+    assert.notEqual(storage.calls[0], storage.calls[1]);
+    assert.match(storage.calls[0], /\/user-victim\//);
+    assert.match(storage.calls[1], /\/user-attacker\//);
+  });
+
+  it("the same technician retrying the same photo still lands on the same path", async () => {
+    const storage = fakeStorage();
+    await handlePhotoUploadUrlRequest(requestInput(), okAccess(storage, "user-victim"));
+    await handlePhotoUploadUrlRequest(requestInput(), okAccess(storage, "user-victim"));
+    assert.equal(storage.calls[0], storage.calls[1]);
+  });
+
+  it("a requester id that is not a safe path segment is refused (403) rather than ever becoming part of a path", async () => {
+    const storage = fakeStorage();
+    const result = await handlePhotoUploadUrlRequest(requestInput(), okAccess(storage, "../../x"));
+    assert.equal(result.status, 403);
+    assert.deepEqual(storage.calls, []);
   });
 });
 
 describe("handlePhotoUploadUrlRequest — companyId/projectId are validated like every other identity segment", () => {
   it("rejects a path-traversal companyId, before ever calling authorize", async () => {
     let authorizeCalled = false;
-    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage() }; } };
+    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage(), requesterUserId: REQUESTER }; } };
     const result = await handlePhotoUploadUrlRequest(requestInput({ companyId: "../../etc/passwd" }), access);
     assert.equal(result.status, 400);
     assert.equal(authorizeCalled, false);
@@ -164,7 +199,7 @@ describe("handlePhotoUploadUrlRequest — companyId/projectId are validated like
 describe("handlePhotoUploadUrlRequest — input validation, checked before authorization", () => {
   it("rejects a mimeType outside the allowlist, before ever calling authorize", async () => {
     let authorizeCalled = false;
-    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage() }; } };
+    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage(), requesterUserId: REQUESTER }; } };
     const result = await handlePhotoUploadUrlRequest(requestInput({ mimeType: "application/pdf" }), access);
     assert.equal(result.status, 400);
     assert.equal(authorizeCalled, false);
@@ -172,7 +207,7 @@ describe("handlePhotoUploadUrlRequest — input validation, checked before autho
 
   it("rejects a path-traversal localPhotoId, before ever calling authorize — an arbitrary client storage path is structurally impossible", async () => {
     let authorizeCalled = false;
-    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage() }; } };
+    const access: PhotoUploadAccess = { authorize: async () => { authorizeCalled = true; return { ok: true, storage: fakeStorage(), requesterUserId: REQUESTER }; } };
     const result = await handlePhotoUploadUrlRequest(requestInput({ localPhotoId: "../../etc/passwd" }), access);
     assert.equal(result.status, 400);
     assert.equal(authorizeCalled, false);

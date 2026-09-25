@@ -66,9 +66,15 @@ export function createFinalizeAccess(env: SupabaseServerEnv): FinalizeAccess {
       // privileged write path. See requirePrivilegedServiceClient's own doc.
       const privileged = requirePrivilegedServiceClient(env);
       if (!privileged.ok) return privileged;
-      const auth = await authorizeProjectAccess({ env, ...args });
+      // requireActiveProject: finalize records NEW work — see ProjectAccessOptions.
+      const auth = await authorizeProjectAccess({ env, ...args, requireActiveProject: true });
       if (!auth.ok) return auth;
-      return { ok: true, repo: createSupabaseJobCardSubmissionsRepo(auth.dataClient) };
+      return {
+        ok: true,
+        repo: createSupabaseJobCardSubmissionsRepo(auth.dataClient),
+        requesterUserId: auth.requesterUserId,
+        supabaseUrl: env.url,
+      };
     },
   };
 }
