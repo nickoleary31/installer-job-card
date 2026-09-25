@@ -29,6 +29,16 @@ function submissionInput(overrides: Partial<LocalSubmissionInput<SamplePayload>>
 }
 
 describe("buildUpsertStatement (pure) — definition DTO serialization", () => {
+  it("Checkpoint 1 — never rewrites a stored row's user/company/project, and only updates a row with the same binding", () => {
+    const { statement } = buildUpsertStatement(submissionInput(), "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    for (const column of ["user_id", "company_id", "project_id"]) {
+      assert.ok(!new RegExp(`\\b${column} = excluded\\.${column}\\s*,`).test(statement), `${column} must never be in the UPDATE SET clause`);
+    }
+    assert.match(statement, /WHERE local_submissions\.user_id = excluded\.user_id/);
+    assert.match(statement, /local_submissions\.company_id = excluded\.company_id/);
+    assert.match(statement, /local_submissions\.project_id = excluded\.project_id/);
+  });
+
   it("is a single INSERT ... ON CONFLICT statement JSON-serializing selectedSections/payload", () => {
     const input = submissionInput();
     const { statement, values } = buildUpsertStatement(input, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");

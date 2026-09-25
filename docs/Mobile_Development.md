@@ -841,3 +841,48 @@ the app's own listener even fires); offline + no lease → 67ms, correctly `offl
 
 **Not yet verified**: the actual iOS ~10s delay itself. This fix cannot be claimed fixed on iOS until
 retested on the real iPhone — see the after-implementation report for the exact retest checklist.
+
+## Checkpoint 1 — submission project binding + sync safety
+
+**A native job card belongs to the project it was created under.** `lib/submission-binding.ts` defines
+the binding: `(userId, companyId, projectId)`, captured once — from the selected project when the
+resume gate resolves for a new job card (`readActiveProjectForUser`, which only honours a pointer the
+same signed-in user set), or from the stored `local_submissions` row when one is resumed. Autosave,
+durable photo saves, the payload's project context and the final submit all use that binding, never
+the device-wide selected-project pointer, and there is no default project on native: the Powerfleet
+"Default Project" fallback in `NewSubmissionForm.tsx` is web-only. No binding = a visible banner and a
+fail-closed save/submit. At submit, `verifyNativeSubmitBinding` requires the form's binding and the
+stored row to agree and to belong to the signed-in user.
+
+**The stored binding is write-once.** Both `local_submissions` upserts (`lib/native/local-submission.ts`)
+never update `user_id`/`company_id`/`project_id`, and their `ON CONFLICT` branch only applies when the
+incoming write carries the same binding — a mis-bound write leaves the row untouched. The outbox insert
+(`lib/native/local-submission-outbox.ts`) is `INSERT ... SELECT ... WHERE EXISTS` the paired row with
+this exact binding and `technician_submitted_at`, and `technicianSubmitAtomicallyViaConnection`
+verifies the outbox row afterwards, so a mismatch is a failed submit, never a mis-bound outbox entry.
+No local schema migration was needed — the columns already existed. Proven against a real SQLite
+engine in `lib/native/local-submission-binding.sqlite.test.ts` (Node's built-in `node:sqlite`).
+
+**Selected-project pointer.** `lib/active-project-context.ts` now records which user set the pointer
+(`installer-selected-context-user-id`), and on native `signOutAndClearOfflineState` clears all three keys
+(the web keeps its existing logout behavior while its Powerfleet fallback still exists). The native app
+has no logout control yet, so the owner check is what stops one user's selection from becoming the next
+user's project context after a session simply ends. Logout still never touches local submissions,
+photos or the outbox.
+
+**Sync failures (supersedes the Phase 2H "only 401/403 are special" description above).** A 404 that
+carries the route's own JSON error (authorizeProjectAccess's "Project not found.") is terminal; a 404
+without it (route not at this API origin) stays retryable with an explicit message. A frozen photo whose
+metadata or file is gone, or whose bytes changed, is terminal. Terminal rows show **Needs attention**
+with an explanation and no button; `resolveSubmittedRowAction` offers Retry / Recheck Access / Sync now
+only for rows `isOutboxRowClaimable` says the engine would actually claim. A sync pass only runs when
+the signed-in session is the entry owner's, and re-checks that before finalize.
+
+**Sync on resume, single-flight.** `ForegroundSyncMount` also listens for Capacitor's `document`
+`resume` event (`lib/native/app-lifecycle.ts` — fired by Capacitor itself on both platforms, no
+`@capacitor/app` needed). Every trigger goes through `createSingleFlightSyncRunner`: at most one pass at
+a time; requests during a pass collapse into one follow-up pass. Still no polling and no background sync.
+
+**Web auth.** `decideWebAuthMode` restores the pre-Phase-2C web behaviour: a lost connection or a server
+hiccup keeps the browser's own session as mode `web-unverified` instead of signing out and bouncing to
+`/login`. It is not offline authorization — no lease, no packages, no local-first submission.

@@ -1,6 +1,7 @@
 import { getNativeSqliteConnection, runMigrations } from "./database.ts";
 import { MOBILE_MIGRATIONS } from "./mobile-migrations.ts";
 import { buildTechnicianSubmitUpsertStatement } from "./local-submission.ts";
+import { NATIVE_SUBMISSION_BINDING_MISMATCH_MESSAGE, SubmissionBindingError } from "../submission-binding.ts";
 import type {
   FrozenSnapshotPhoto,
   LocalSubmissionOutboxEntry,
@@ -25,12 +26,33 @@ const COLUMNS = `local_submission_id, user_id, company_id, project_id, sync_stat
       snapshot_definition_schema_version, snapshot_technician_submitted_at,
       submission_snapshot_hash, created_at, updated_at`;
 
+/**
+ * Checkpoint 1 — the outbox row is inserted ONLY when, inside the same
+ * transaction, the paired local_submissions row exists with exactly this
+ * submit's user/company/project binding and this submit's
+ * technician_submitted_at (i.e. the preceding upsert actually applied to a
+ * row bound the same way). Bind order: the 19 column values, then the five
+ * guard values. See technicianSubmitAtomicallyViaConnection for the
+ * post-transaction verification that turns a guarded no-op into an error.
+ */
 function buildInsertOutboxSql(): string {
-  return `INSERT INTO ${TABLE} (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  return `INSERT INTO ${TABLE} (${COLUMNS})
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE EXISTS (
+      SELECT 1 FROM local_submissions
+      WHERE local_submission_id = ? AND user_id = ? AND company_id = ? AND project_id = ?
+        AND technician_submitted_at = ?
+    )`;
 }
 
 function buildSelectByIdSql(): string {
   return `SELECT ${COLUMNS} FROM ${TABLE} WHERE local_submission_id = ?`;
+}
+
+function buildSelectBoundOutboxEntrySql(): string {
+  return `SELECT local_submission_id FROM ${TABLE}
+    WHERE local_submission_id = ? AND user_id = ? AND company_id = ? AND project_id = ?
+      AND submission_snapshot_hash = ?`;
 }
 
 function buildSelectAllForUserSql(): string {
@@ -239,6 +261,12 @@ export function buildTechnicianSubmitStatementSet<TPayload, TLocalPayload = unkn
         input.submissionSnapshotHash,
         input.technicianSubmittedAt,
         input.technicianSubmittedAt,
+        // Guard values for the WHERE EXISTS — see buildInsertOutboxSql.
+        input.localSubmissionId,
+        input.userId,
+        input.companyId,
+        input.projectId,
+        input.technicianSubmittedAt,
       ],
     },
   ];
@@ -262,6 +290,20 @@ export async function technicianSubmitAtomicallyViaConnection<TPayload, TLocalPa
   input: TechnicianSubmitInput<TPayload, TLocalPayload>,
 ): Promise<{ technicianSubmittedAt: string }> {
   await db.executeSet(buildTechnicianSubmitStatementSet(input), true);
+  // Checkpoint 1 — a binding mismatch makes both guarded statements no-ops
+  // (nothing is written, so nothing needs rolling back); surface it as a
+  // failed submit instead of reporting success for an entry that was never
+  // queued.
+  const check = await db.query(buildSelectBoundOutboxEntrySql(), [
+    input.localSubmissionId,
+    input.userId,
+    input.companyId,
+    input.projectId,
+    input.submissionSnapshotHash,
+  ]);
+  if (!check.values?.length) {
+    throw new SubmissionBindingError(NATIVE_SUBMISSION_BINDING_MISMATCH_MESSAGE);
+  }
   return { technicianSubmittedAt: input.technicianSubmittedAt };
 }
 

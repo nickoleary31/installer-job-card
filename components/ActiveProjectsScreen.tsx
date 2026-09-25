@@ -455,7 +455,7 @@ export function ActiveProjectsScreen() {
   const totalProjects = useMemo(() => groups.reduce((sum, g) => sum + g.projects.length, 0), [groups]);
 
   const openProject = (companyId: string, projectId: string) => {
-    setActiveProject({ companyId, projectId });
+    setActiveProject({ companyId, projectId, userId: context.userId });
     router.push(appRoutes.project(companyId, projectId));
   };
 

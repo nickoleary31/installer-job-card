@@ -5,6 +5,7 @@ import {
   buildSnapshotIdentity,
   computeSubmissionSnapshotHash,
   resolveSubmittedDisplayStatus,
+  resolveSubmittedRowAction,
   sha256Hex,
   type FrozenSnapshotPhoto,
   type LocalSubmissionOutboxEntry,
@@ -130,6 +131,7 @@ function outboxEntry(overrides: Partial<LocalSubmissionOutboxEntry> = {}): Local
     attemptCount: 0,
     lastAttemptAt: null,
     lastError: null,
+    errorKind: null,
     serverSubmissionId: null,
     snapshotPayload: {},
     snapshotPhotos: [],
@@ -157,8 +159,8 @@ describe("resolveSubmittedDisplayStatus (pure) — the Submitted screen's status
     assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "server-confirmed" }), undefined), "Synced");
   });
 
-  it("server-confirmed locally + a live server result reporting a DIFFERENT hash -> a truthful conflict (Sync failed), never Synced", () => {
-    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "server-confirmed" }), "different-hash"), "Sync failed");
+  it("server-confirmed locally + a live server result reporting a DIFFERENT hash -> a truthful conflict (Needs attention), never Synced — and never the retryable 'Sync failed', since nothing will re-attempt it", () => {
+    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "server-confirmed" }), "different-hash"), "Needs attention");
   });
 
   it("pending -> Local only", () => {
@@ -169,11 +171,61 @@ describe("resolveSubmittedDisplayStatus (pure) — the Submitted screen's status
     assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "syncing" }), null), "Syncing");
   });
 
-  it("failed -> Sync failed", () => {
-    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "failed" }), null), "Sync failed");
+  it("failed (retryable, or legacy with no classification) -> Sync failed", () => {
+    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "failed", errorKind: "retryable" }), null), "Sync failed");
+    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "failed", errorKind: null }), null), "Sync failed");
+  });
+
+  it("Checkpoint 1 — failed + terminal -> Needs attention, visibly distinct from the retryable Sync failed", () => {
+    assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "failed", errorKind: "terminal" }), null), "Needs attention");
   });
 
   it("authorization-blocked -> Authorization required", () => {
     assert.equal(resolveSubmittedDisplayStatus(outboxEntry({ syncState: "authorization-blocked" }), null), "Authorization required");
+  });
+});
+
+describe("resolveSubmittedRowAction (pure) — Checkpoint 1: the Submitted screen never shows a dead button", () => {
+  it("D: a terminal failure gets NO action — nothing would ever re-claim it", () => {
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "failed", errorKind: "terminal" })), null);
+  });
+
+  it("E: a retryable failure keeps its Retry, and a legacy unclassified failure is treated the same way", () => {
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "failed", errorKind: "retryable" })), "Retry");
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "failed", errorKind: null })), "Retry");
+  });
+
+  it("authorization-blocked keeps its own distinct Recheck Access action", () => {
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "authorization-blocked" })), "Recheck Access");
+  });
+
+  it("a Local only (pending) row now has a useful Sync now action", () => {
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "pending" })), "Sync now");
+  });
+
+  it("rows mid-sync, confirmed rows, a server-hash conflict and server-only rows get no action", () => {
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "syncing" })), null);
+    assert.equal(resolveSubmittedRowAction(outboxEntry({ syncState: "server-confirmed" })), null);
+    assert.equal(resolveSubmittedRowAction(null), null);
+  });
+
+  it("every status that shows an action is one the display maps to an actionable state — no action ever pairs with Needs attention, Syncing or Synced", () => {
+    const states = ["pending", "syncing", "failed", "authorization-blocked", "server-confirmed"] as const;
+    const kinds = [null, "retryable", "terminal"] as const;
+    for (const syncState of states) {
+      for (const errorKind of kinds) {
+        const entry = outboxEntry({ syncState, errorKind });
+        const action = resolveSubmittedRowAction(entry);
+        const status = resolveSubmittedDisplayStatus(entry, entry.submissionSnapshotHash);
+        if (action) {
+          assert.ok(
+            ["Sync failed", "Authorization required", "Local only"].includes(status),
+            `${syncState}/${errorKind}: action ${action} paired with status ${status}`,
+          );
+        } else {
+          assert.ok(!["Sync failed", "Authorization required", "Local only"].includes(status), `${syncState}/${errorKind}: ${status} has no action`);
+        }
+      }
+    }
   });
 });

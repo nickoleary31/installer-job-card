@@ -19,6 +19,18 @@ import type { LocalSubmission, LocalSubmissionInput, LocalSubmissionRepository }
  */
 const TABLE = "local_submissions";
 
+/**
+ * Checkpoint 1 — a row's (user_id, company_id, project_id) binding is
+ * write-once. Neither upsert below ever UPDATEs those three columns, and the
+ * ON CONFLICT branch only applies at all when the incoming write carries the
+ * SAME binding as the stored row; a write for the same local_submission_id
+ * under a different user/company/project leaves the stored row completely
+ * untouched. See lib/submission-binding.ts.
+ */
+const BINDING_UNCHANGED_WHERE = `WHERE ${TABLE}.user_id = excluded.user_id
+      AND ${TABLE}.company_id = excluded.company_id
+      AND ${TABLE}.project_id = excluded.project_id`;
+
 function buildUpsertSql(): string {
   return `INSERT INTO ${TABLE} (
       local_submission_id, user_id, project_id, company_id, status,
@@ -27,9 +39,6 @@ function buildUpsertSql(): string {
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(local_submission_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      project_id = excluded.project_id,
-      company_id = excluded.company_id,
       status = excluded.status,
       form_id = excluded.form_id,
       submission_type = excluded.submission_type,
@@ -37,7 +46,8 @@ function buildUpsertSql(): string {
       selected_sections = excluded.selected_sections,
       payload = excluded.payload,
       server_submission_id = excluded.server_submission_id,
-      updated_at = excluded.updated_at`;
+      updated_at = excluded.updated_at
+    ${BINDING_UNCHANGED_WHERE}`;
   // created_at AND technician_submitted_at deliberately omitted from the
   // UPDATE SET (and from the INSERT column list above) — an existing row
   // keeps both values from their original write; only the Phase 2H atomic
@@ -106,6 +116,13 @@ function buildDeleteSql(): string {
  * the technician can only reach Submit after passing full review validation
  * (see NewSubmissionForm.tsx's handleReviewClick), so that is always true by
  * the time this statement runs.
+ *
+ * Checkpoint 1 — like buildUpsertSql(), never rebinds an existing row: the
+ * ON CONFLICT branch applies only when the stored user/company/project match
+ * this submit's binding. On a mismatch nothing is written here, and the
+ * paired outbox insert (lib/native/local-submission-outbox.ts) is guarded on
+ * this exact row existing with this exact binding, so the whole submit
+ * becomes a verified no-op instead of a mis-bound outbox entry.
  */
 export function buildTechnicianSubmitUpsertStatement<TPayload>(
   input: Omit<LocalSubmissionInput<TPayload>, "status">,
@@ -119,9 +136,6 @@ export function buildTechnicianSubmitUpsertStatement<TPayload>(
         technician_submitted_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'locally-complete', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(local_submission_id) DO UPDATE SET
-        user_id = excluded.user_id,
-        project_id = excluded.project_id,
-        company_id = excluded.company_id,
         status = 'locally-complete',
         form_id = excluded.form_id,
         submission_type = excluded.submission_type,
@@ -130,7 +144,8 @@ export function buildTechnicianSubmitUpsertStatement<TPayload>(
         payload = excluded.payload,
         server_submission_id = excluded.server_submission_id,
         technician_submitted_at = excluded.technician_submitted_at,
-        updated_at = excluded.updated_at`,
+        updated_at = excluded.updated_at
+      ${BINDING_UNCHANGED_WHERE}`,
     values: [
       input.localSubmissionId,
       input.userId,

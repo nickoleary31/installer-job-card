@@ -80,6 +80,25 @@ describe("buildTechnicianSubmitStatementSet (pure) — the two statements compos
     assert.equal(set[1].values[4], "pending");
     assert.equal(set[1].values[7], 0);
   });
+
+  it("Checkpoint 1 — the outbox insert is guarded on the paired local_submissions row carrying this exact binding and submit time", () => {
+    const set = buildTechnicianSubmitStatementSet(
+      submitInput({ userId: "user-9", companyId: "company-9", projectId: "project-9", technicianSubmittedAt: "2026-04-04T00:00:00.000Z" }),
+    );
+    assert.match(set[1].statement, /WHERE EXISTS/);
+    assert.match(set[1].statement, /FROM local_submissions/);
+    assert.deepEqual(set[1].values.slice(19), ["sub-1", "user-9", "company-9", "project-9", "2026-04-04T00:00:00.000Z"]);
+  });
+
+  it("Checkpoint 1 — the local_submissions upsert never rewrites user/company/project and only applies to a row with the same binding", () => {
+    const [upsert] = buildTechnicianSubmitStatementSet(submitInput());
+    for (const column of ["user_id", "company_id", "project_id"]) {
+      assert.ok(!upsert.statement.includes(`${column} = excluded.${column},`), `${column} must never be in the UPDATE SET clause`);
+    }
+    assert.match(upsert.statement, /WHERE local_submissions\.user_id = excluded\.user_id/);
+    assert.match(upsert.statement, /local_submissions\.company_id = excluded\.company_id/);
+    assert.match(upsert.statement, /local_submissions\.project_id = excluded\.project_id/);
+  });
 });
 
 describe("parseStoredRow (pure) — the read-side counterpart", () => {
@@ -254,7 +273,14 @@ class FakeOutboxConnection implements OutboxConnection {
     return { changes: { changes: 0 } };
   }
 
-  async query(): Promise<{ values?: Array<Record<string, unknown>> }> {
+  async query(statement: string, values: unknown[] = []): Promise<{ values?: Array<Record<string, unknown>> }> {
+    if (statement.includes("SELECT local_submission_id FROM local_submission_outbox")) {
+      // Checkpoint 1's post-transaction binding verification.
+      const [localSubmissionId, userId, companyId, projectId] = values as [string, string, string, string];
+      const row = this.outboxRows.get(localSubmissionId);
+      const matches = row && row.userId === userId && row.companyId === companyId && row.projectId === projectId;
+      return { values: matches ? [{ local_submission_id: localSubmissionId }] : [] };
+    }
     return { values: [] };
   }
 }

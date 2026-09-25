@@ -15,7 +15,19 @@ import { useRouter } from "next/navigation";
 import { urlLooksLikeInviteAuthCallback } from "@/lib/auth/onboarding";
 import { apiUrl } from "@/lib/api-base";
 import { appRoutes } from "@/lib/app-routes";
-import { SELECTED_COMPANY_ID_KEY, SELECTED_PROJECT_ID_KEY } from "@/lib/active-project-context";
+import {
+  SELECTED_COMPANY_ID_KEY,
+  SELECTED_PROJECT_ID_KEY,
+  readActiveProjectForUser,
+  setActiveProject,
+} from "@/lib/active-project-context";
+import {
+  NATIVE_SUBMISSION_UNBOUND_MESSAGE,
+  resolveSubmissionContextIds,
+  toSubmissionBinding,
+  verifyNativeSubmitBinding,
+  type SubmissionBinding,
+} from "@/lib/submission-binding";
 import { compressPhotoForUpload } from "@/lib/client-photo-optimize";
 import {
   type CoreJobFields,
@@ -1866,6 +1878,20 @@ export function NewSubmissionForm() {
   >({ kind: "checking" });
   /** Guards against re-resolving/re-creating the local submission on every re-render of the gate effect. */
   const localSubmissionResolvedRef = useRef(false);
+  /**
+   * Checkpoint 1 — the (user, company, project) THIS native job card belongs
+   * to, fixed when it is created (from the selected project, owner-checked,
+   * at the moment the resume gate resolves) or resumed (from the stored
+   * local_submissions row). Every native project-scoped operation — autosave,
+   * durable photo saves, payload project context, final submit — reads this,
+   * never the mutable selected-project pointer. `null` means no project could
+   * be proven, and native save/submit fail closed. See lib/submission-binding.ts.
+   */
+  const nativeSubmissionBindingRef = useRef<SubmissionBinding | null>(null);
+  /** The binding captured when the resume gate resolved — what "Start another" creates the new job card under. */
+  const nativeGateBindingRef = useRef<SubmissionBinding | null>(null);
+  /** Native only: true once the resume gate resolved without a provable project, to show a banner instead of a silently unsaved form. */
+  const [nativeProjectBindingMissing, setNativeProjectBindingMissing] = useState(false);
   /** The CompanyProductDefinitionsPackage.schemaVersion in effect when this local submission was created/resumed — diagnostic only, see lib/local-submission.ts's own doc. */
   const localSubmissionDefinitionVersionRef = useRef<number | null>(null);
   /** Dedupes redundant SQLite writes from the interval-poll safety net when nothing has actually changed since the last persisted snapshot. */
@@ -2818,15 +2844,22 @@ export function NewSubmissionForm() {
     return ids;
   };
 
+  /**
+   * Native (Checkpoint 1): this job card's own binding, or a fail-closed
+   * error — never the selected-project pointer and never the Powerfleet
+   * "Default Project". Web: unchanged — the selected pointer, else that
+   * web-only default.
+   */
   const resolveSelectedOrDefaultContextIds = async (): Promise<DefaultContextIds> => {
-    if (typeof window !== "undefined") {
-      const selectedCompanyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-      const selectedProjectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-      if (selectedCompanyId && selectedProjectId) {
-        return { companyId: selectedCompanyId, projectId: selectedProjectId };
-      }
-    }
-    return resolveDefaultContextIds();
+    const readSelected = (key: string) =>
+      typeof window !== "undefined" ? window.localStorage.getItem(key)?.trim() || "" : "";
+    return resolveSubmissionContextIds({
+      isNative: isNativeRuntime(),
+      nativeBinding: nativeSubmissionBindingRef.current,
+      selectedCompanyId: readSelected(SELECTED_COMPANY_ID_KEY),
+      selectedProjectId: readSelected(SELECTED_PROJECT_ID_KEY),
+      resolveWebDefault: resolveDefaultContextIds,
+    });
   };
 
   const normalizeRecipientEmails = (value: unknown): string[] => {
@@ -3605,15 +3638,14 @@ export function NewSubmissionForm() {
         // the web/PWA runtime (never true here) falls through to the legacy real-time
         // upload branch below.
         if (isNativeRuntime()) {
-          const projectId =
-            typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "" : "";
+          const binding = nativeSubmissionBindingRef.current;
           try {
-            if (!authUserContext.userId || !projectId) {
+            if (!authUserContext.userId || !binding || binding.userId !== authUserContext.userId) {
               throw new Error("Missing user/project context for durable local photo save");
             }
             const localPhoto = await savePhotoDurably({
-              userId: authUserContext.userId,
-              projectId,
+              userId: binding.userId,
+              projectId: binding.projectId,
               localSubmissionId: submissionId,
               fieldName,
               group,
@@ -5132,9 +5164,30 @@ export function NewSubmissionForm() {
     setSubmitPersistStatus("saving");
     try {
       if (!authUserContext.userId) throw new Error("Not signed in.");
+      // Checkpoint 1 — prove which project this job card belongs to BEFORE
+      // building anything: this form's own binding, cross-checked against the
+      // stored local_submissions row for the same id when one exists. Any
+      // doubt fails closed with a user-visible error; nothing is guessed.
+      const storedRow = await getLocalSubmissionRepository().loadLocalSubmission(submissionId);
+      const bindingCheck = verifyNativeSubmitBinding({
+        currentUserId: authUserContext.userId,
+        sessionBinding: nativeSubmissionBindingRef.current,
+        storedBinding: storedRow
+          ? { userId: storedRow.userId, companyId: storedRow.companyId, projectId: storedRow.projectId }
+          : null,
+      });
+      if (!bindingCheck.ok) throw new Error(bindingCheck.error);
+      const binding = bindingCheck.binding;
+
       let payload = await buildSubmissionPayload();
       payload = await ensureProductFilesOnPayload(payload);
-      const contextIds = await resolveSelectedOrDefaultContextIds();
+      if (
+        (payload.companyId && payload.companyId !== binding.companyId) ||
+        (payload.projectId && payload.projectId !== binding.projectId)
+      ) {
+        throw new Error(NATIVE_SUBMISSION_UNBOUND_MESSAGE);
+      }
+      const contextIds = { companyId: binding.companyId, projectId: binding.projectId };
 
       const localPhotos = await getLocalPhotoMetadataRepository().listLocalPhotosForSubmission(submissionId);
       const localPhotoById = new Map(localPhotos.map((p) => [p.localPhotoId, p]));
@@ -5190,9 +5243,9 @@ export function NewSubmissionForm() {
       const base = buildAutosaveBaseRef.current();
       await getLocalSubmissionOutboxRepository().technicianSubmitAtomically({
         localSubmissionId: submissionId,
-        userId: authUserContext.userId,
-        companyId: contextIds.companyId,
-        projectId: contextIds.projectId,
+        userId: binding.userId,
+        companyId: binding.companyId,
+        projectId: binding.projectId,
         formId: (base.data.formId || "").trim() || null,
         submissionType: (base.data.submissionType || "").trim() || null,
         selectedSections: base.selectedSections,
@@ -6542,18 +6595,19 @@ export function NewSubmissionForm() {
     if (!isNativeRuntime()) return;
     if (!authUserContext.userId) return;
     if (typeof window === "undefined") return;
-    const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-    const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-    if (!projectId || !companyId) return;
+    // Checkpoint 1 — always this job card's own binding, never the current
+    // selected-project pointer; no binding (or another user's) = no write.
+    const binding = nativeSubmissionBindingRef.current;
+    if (!binding || binding.userId !== authUserContext.userId) return;
     const base = buildAutosaveBaseRef.current();
     const snapshotKey = JSON.stringify({ id: base.submissionId, data: base.data, sections: base.selectedSections, status });
     if (status === "working" && snapshotKey === lastPersistedLocalSubmissionSnapshotRef.current) return;
     try {
       await getLocalSubmissionRepository().saveLocalSubmission<StoredJobCardDraft["data"]>({
         localSubmissionId: base.submissionId,
-        userId: authUserContext.userId,
-        projectId,
-        companyId,
+        userId: binding.userId,
+        projectId: binding.projectId,
+        companyId: binding.companyId,
         status,
         formId: (base.data.formId || "").trim() || null,
         submissionType: (base.data.submissionType || "").trim() || null,
@@ -6571,6 +6625,15 @@ export function NewSubmissionForm() {
   };
 
   const handleResumeLocalSubmission = (chosen: LocalSubmission<StoredJobCardDraft["data"]>) => {
+    // Checkpoint 1 — a resumed job card keeps the project it was created
+    // under: bind from the stored row itself, and re-point the navigation
+    // context at that same project so everything the form displays matches.
+    const binding = toSubmissionBinding(chosen.userId, { companyId: chosen.companyId, projectId: chosen.projectId });
+    nativeSubmissionBindingRef.current = binding && binding.userId === authUserContext.userId ? binding : null;
+    setNativeProjectBindingMissing(!nativeSubmissionBindingRef.current);
+    if (nativeSubmissionBindingRef.current) {
+      setActiveProject(nativeSubmissionBindingRef.current);
+    }
     restoreFromDraftData(chosen.payload, chosen.localSubmissionId);
     localSubmissionDefinitionVersionRef.current = chosen.definitionSchemaVersion;
     localSubmissionResolvedRef.current = true;
@@ -6578,6 +6641,8 @@ export function NewSubmissionForm() {
   };
 
   const handleStartAnotherLocalSubmission = () => {
+    nativeSubmissionBindingRef.current = nativeGateBindingRef.current;
+    setNativeProjectBindingMissing(!nativeSubmissionBindingRef.current);
     localSubmissionResolvedRef.current = true;
     setLocalSubmissionGate({ kind: "ready" });
     void persistLocalSubmissionNow("working");
@@ -6606,19 +6671,34 @@ export function NewSubmissionForm() {
     if (localSubmissionResolvedRef.current) return;
     let cancelled = false;
     const resolve = async () => {
-      const projectId = window.localStorage.getItem(SELECTED_PROJECT_ID_KEY)?.trim() || "";
-      const companyId = window.localStorage.getItem(SELECTED_COMPANY_ID_KEY)?.trim() || "";
-      if (!authUserContext.userId || !projectId || !companyId) {
-        if (!cancelled) setLocalSubmissionGate({ kind: "ready" });
+      // Checkpoint 1 — the ONE moment a new native job card's project is
+      // taken from the selected-project pointer, and only a pointer this same
+      // user set (readActiveProjectForUser). It becomes this job card's
+      // binding if the technician starts a new one; resuming instead binds
+      // from the stored row (handleResumeLocalSubmission). No provable
+      // project = no binding: the banner below explains, and native
+      // save/submit fail closed rather than guessing a project.
+      const gateBinding = toSubmissionBinding(
+        authUserContext.userId,
+        readActiveProjectForUser(authUserContext.userId),
+      );
+      nativeGateBindingRef.current = gateBinding;
+      if (!gateBinding) {
+        if (!cancelled) {
+          setNativeProjectBindingMissing(true);
+          setLocalSubmissionGate({ kind: "ready" });
+        }
         return;
       }
+      const { companyId, projectId } = gateBinding;
+      if (!cancelled) setNativeProjectBindingMissing(false);
       try {
         // Phase 2H: findUnsubmittedLocalSubmissions (not findWorkingLocalSubmissions) — a
         // "locally-complete" submission the technician has NOT yet explicitly submitted must
         // still appear in this Resume/Start Another gate, or reopening the form after marking
         // one locally-complete would silently orphan it and auto-create a second blank one below.
         const unsubmitted = await getLocalSubmissionRepository().findUnsubmittedLocalSubmissions<StoredJobCardDraft["data"]>(
-          authUserContext.userId,
+          gateBinding.userId,
           projectId,
         );
         if (cancelled) return;
@@ -6631,6 +6711,7 @@ export function NewSubmissionForm() {
             localSubmissionDefinitionVersionRef.current = null;
           }
           if (cancelled) return;
+          nativeSubmissionBindingRef.current = gateBinding;
           localSubmissionResolvedRef.current = true;
           setLocalSubmissionGate({ kind: "ready" });
           await persistLocalSubmissionNow("working");
@@ -6643,8 +6724,12 @@ export function NewSubmissionForm() {
         // Could not check for a resumable submission — fail closed to "ready" with
         // a fresh blank form rather than blocking the technician from working at
         // all; this entry still gets durability going forward via the normal
-        // interval/structural/review-complete write triggers below.
-        if (!cancelled) setLocalSubmissionGate({ kind: "ready" });
+        // interval/structural/review-complete write triggers below, bound to
+        // the project this gate just proved.
+        if (!cancelled) {
+          nativeSubmissionBindingRef.current = gateBinding;
+          setLocalSubmissionGate({ kind: "ready" });
+        }
       }
     };
     void resolve();
@@ -7504,6 +7589,11 @@ export function NewSubmissionForm() {
         {localDeviceSaveError ? (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-900" role="alert">
             {localDeviceSaveError}
+          </div>
+        ) : null}
+        {isNativeRuntime() && nativeProjectBindingMissing ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-900" role="alert">
+            {NATIVE_SUBMISSION_UNBOUND_MESSAGE}
           </div>
         ) : null}
 

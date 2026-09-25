@@ -39,8 +39,8 @@ export function SavedJobCardsScreen({ companyId, projectId }: { companyId: strin
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (companyId && projectId) setActiveProject({ companyId, projectId });
-  }, [companyId, projectId]);
+    if (companyId && projectId) setActiveProject({ companyId, projectId, userId: userContext.userId });
+  }, [companyId, projectId, userContext.userId]);
 
   const fetchSubmissions = async (userId: string): Promise<LocalSubmission[]> => {
     return getLocalSubmissionRepository().findUnsubmittedLocalSubmissions(userId, projectId);
@@ -82,7 +82,7 @@ export function SavedJobCardsScreen({ companyId, projectId }: { companyId: strin
   }, [authLoading, userContext.userId, projectId]);
 
   const handleResume = () => {
-    setActiveProject({ companyId, projectId });
+    setActiveProject({ companyId, projectId, userId: userContext.userId });
   };
 
   const handleDelete = async (localSubmissionId: string) => {

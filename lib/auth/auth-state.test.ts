@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decideAuthMode, resolveAuthState, type AuthStateDeps } from "./auth-state.ts";
+import { decideAuthMode, decideWebAuthMode, resolveAuthState, type AuthStateDeps } from "./auth-state.ts";
 import { checkLeaseValidity, type LeaseValidityVerdict, type OfflineAccessLease } from "./offline-access-lease.ts";
 import type { AuthUserContext, AuthUserContextResult, AuthUserContextSource } from "./userContext.ts";
 
@@ -171,11 +171,45 @@ describe("decideAuthMode", () => {
     assert.notEqual(state.context.userId, "user-B-attempted");
   });
 
-  it("WEB/PWA: leaseCheck === null (lease concept not applicable) -> signed-out even when offline, never offline-locked/offline-authorized", () => {
+  it("leaseCheck === null (lease concept not applicable) -> signed-out even when offline, never offline-locked/offline-authorized (the web never reaches this — see decideWebAuthMode)", () => {
     const state = decideAuthMode(result({ kind: "offline-transport" }), null, true);
     assert.equal(state.mode, "signed-out");
     assert.equal(state.offlineLockReason, null);
     assert.equal(state.lease, null);
+  });
+});
+
+describe("decideWebAuthMode — Checkpoint 1: the PC/Mac web app keeps its session through a connectivity loss", () => {
+  it("I: a lost connection keeps the locally-resolved web session — not signed-out, and never native offline-authorized", () => {
+    const state = decideWebAuthMode(result({ kind: "offline-transport" }));
+    assert.equal(state.mode, "web-unverified");
+    assert.notEqual(state.mode, "offline-authorized");
+    assert.equal(state.context.userId, "user-1");
+    assert.deepEqual(state.context.companyIds, ["company-1"]);
+    assert.equal(state.lease, null);
+    assert.equal(state.offlineLockReason, null);
+  });
+
+  it("a temporary server problem (5xx/429) or an ambiguous error keeps the session the same way", () => {
+    assert.equal(decideWebAuthMode(result({ kind: "unavailable" })).mode, "web-unverified");
+    assert.equal(decideWebAuthMode(result({ kind: "unknown" })).mode, "web-unverified");
+  });
+
+  it("a fallback with no user id at all (nothing cached, ambiguous error) still fails closed to signed-out", () => {
+    assert.equal(decideWebAuthMode(result({ kind: "unknown" }, { userId: null })).mode, "signed-out");
+    assert.equal(decideWebAuthMode(result({ kind: "offline-transport" }, { userId: null })).mode, "signed-out");
+  });
+
+  it("an explicit denial or no session at all still signs the web user out", () => {
+    assert.equal(decideWebAuthMode(result({ kind: "denied", reason: "invalid-session" })).mode, "signed-out");
+    assert.equal(decideWebAuthMode(result({ kind: "denied", reason: "inactive-user" })).mode, "signed-out");
+    assert.equal(decideWebAuthMode(result({ kind: "signed-out" }, { userId: null })).mode, "signed-out");
+  });
+
+  it("a confirmed online result is online, exactly as before", () => {
+    const state = decideWebAuthMode(result({ kind: "online" }));
+    assert.equal(state.mode, "online");
+    assert.equal(state.context.userId, "user-1");
   });
 });
 
@@ -247,6 +281,31 @@ describe("resolveAuthState (impure orchestration — actual lease I/O behavior)"
     const deps = fakeDeps({ isNative: () => false });
     await resolveAuthState(result({ kind: "denied", reason: "inactive-user" }, { userId: null }), deps);
     assert.equal(deps.clearCalls, 0);
+  });
+
+  it("I: WEB connectivity loss keeps the web session (web-unverified) and never runs the native offline-login path — no lease read, no network re-check, no clear", async () => {
+    const mustNotRun = (name: string) => async () => {
+      throw new Error(`${name} must never be called on web`);
+    };
+    const deps = fakeDeps({
+      isNative: () => false,
+      loadLease: mustNotRun("loadLease"),
+      isOnlineFresh: mustNotRun("isOnlineFresh"),
+      getDeviceInstallationId: mustNotRun("getDeviceInstallationId"),
+    });
+    const state = await resolveAuthState(result({ kind: "offline-transport" }), deps);
+    assert.equal(state.mode, "web-unverified");
+    assert.equal(state.context.userId, "user-1");
+    assert.equal(state.lease, null);
+    assert.equal(deps.clearCalls, 0);
+    assert.equal(deps.issueCalls.length, 0);
+    assert.equal(deps.saveCalls.length, 0);
+  });
+
+  it("the SAME connectivity loss on NATIVE still goes through the offline lease exactly as before", async () => {
+    const deps = fakeDeps({ isNative: () => true, isOnlineFresh: async () => false });
+    const state = await resolveAuthState(result({ kind: "offline-transport" }), deps);
+    assert.equal(state.mode, "offline-authorized");
   });
 
   it("500/service-unavailable + valid lease -> does NOT clear, resolves offline-authorized", async () => {

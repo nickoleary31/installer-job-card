@@ -32,14 +32,21 @@ import { isNativeRuntime } from "../native/runtime.ts";
  *    online" apart from "you have no usable offline access right now."
  *  - "signed-out": online with no valid session (the ordinary "please log
  *    in" case), or an explicit server denial/revocation.
+ *  - "web-unverified" (Checkpoint 1, WEB/PWA ONLY): the browser still holds
+ *    its own Supabase session, but the server couldn't be reached (or
+ *    reported temporary trouble) to re-confirm it right now. The context is
+ *    whatever userContext.ts could resolve locally — the cached starter
+ *    snapshot, else a minimal session-only context — exactly what the web
+ *    app used before Phase 2C. It is NOT offline authorization: no lease,
+ *    no offline project packages, no local-first submission; every
+ *    offline-authorized code path checks for "offline-authorized" and so
+ *    never runs for it.
  *
  * The offline access lease is a NATIVE-ONLY concept — see resolveAuthState()
- * below. The web/PWA build never consults or writes it; any non-"online"
- * category on web resolves straight to "signed-out", preserving exactly
- * the pre-Phase-2C web behavior (no extended offline auth model is
- * introduced for the browser).
+ * below. The web/PWA build never consults or writes it; see
+ * decideWebAuthMode() for what a non-"online" category means on web.
  */
-export type AuthMode = "online" | "offline-authorized" | "offline-locked" | "signed-out";
+export type AuthMode = "online" | "offline-authorized" | "offline-locked" | "signed-out" | "web-unverified";
 
 export type OfflineLockReason = "no-lease" | "expired" | "invalid";
 
@@ -138,6 +145,32 @@ function offlineOutcome(result: AuthUserContextResult, leaseCheck: LeaseValidity
   }
 }
 
+/**
+ * Checkpoint 1 — the WEB/PWA decision. A temporary connectivity loss or
+ * server hiccup must not sign a browser user out: before Phase 2C the web
+ * kept the locally-resolved context in exactly these cases (see
+ * userContext.ts's resolveOfflineFallbackContext), and routing them to
+ * "signed-out" bounced PC/Mac users to /login mid-form. Explicit denials and
+ * "no session at all" still sign out, and a fallback with no user id (the
+ * "unknown" category with nothing cached) still fails closed.
+ */
+export function decideWebAuthMode(result: AuthUserContextResult): ResolvedAuthState {
+  switch (result.source.kind) {
+    case "online":
+      return { mode: "online", context: result.context, lease: null, offlineLockReason: null };
+    case "unavailable":
+    case "offline-transport":
+    case "unknown":
+      if (result.context.userId) {
+        return { mode: "web-unverified", context: result.context, lease: null, offlineLockReason: null };
+      }
+      return signedOut();
+    case "denied":
+    case "signed-out":
+      return signedOut();
+  }
+}
+
 function offlineLocked(reason: OfflineLockReason): ResolvedAuthState {
   return { mode: "offline-locked", context: emptySignedOutContext(), lease: null, offlineLockReason: reason };
 }
@@ -179,8 +212,8 @@ function emptySignedOutContext(): AuthUserContext {
  *    server problem — or simply not finding a session — is not an
  *    authorization revocation.
  *  - On every other category: native-only. The web/PWA build returns
- *    straight to decideAuthMode() with `leaseCheck: null` (never touching
- *    the lease store at all — see this file's module doc on why). The
+ *    straight to decideWebAuthMode() (never touching the lease store at
+ *    all — see this file's module doc on why). The
  *    native build loads the lease, resolves its validity via
  *    checkLeaseValidity() against a FRESH network check and this
  *    installation's own id, opportunistically persists the validity
@@ -244,8 +277,9 @@ export async function resolveAuthState(
   }
 
   if (!deps.isNative()) {
-    // Web/PWA: the offline access lease never applies — see module doc.
-    return decideAuthMode(result, null, false);
+    // Web/PWA: the offline access lease never applies — see module doc and
+    // decideWebAuthMode() for why a lost connection keeps the web session.
+    return decideWebAuthMode(result);
   }
 
   // "unavailable" | "offline-transport" | "unknown" | "signed-out", native only.

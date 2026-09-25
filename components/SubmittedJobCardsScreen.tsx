@@ -9,8 +9,10 @@ import { setActiveProject } from "@/lib/active-project-context";
 import {
   getLocalSubmissionOutboxRepository,
   resolveSubmittedDisplayStatus,
+  resolveSubmittedRowAction,
   type LocalSubmissionOutboxEntry,
   type SubmittedDisplayStatus,
+  type SubmittedRowAction,
 } from "@/lib/local-submission-outbox";
 import { getNetworkStatus } from "@/lib/native/network-status";
 import { isNativeRuntime } from "@/lib/native/runtime";
@@ -35,15 +37,32 @@ type MergedRow = {
   sortAt: string;
   displayStatus: SubmittedDisplayStatus;
   lastError: string | null;
+  /** See resolveSubmittedRowAction — non-null only when the sync engine would actually claim this row. */
+  action: SubmittedRowAction | null;
 };
 
 const STATUS_BADGE_CLASSES: Record<SubmittedDisplayStatus, string> = {
   Synced: "bg-emerald-100 text-emerald-800",
   Syncing: "bg-blue-100 text-blue-800",
   "Local only": "bg-gray-100 text-gray-700",
-  "Sync failed": "bg-rose-100 text-rose-800",
+  "Sync failed": "bg-orange-100 text-orange-800",
+  "Needs attention": "bg-rose-100 text-rose-800",
   "Authorization required": "bg-amber-100 text-amber-800",
 };
+
+/** Plain-language next step for each state that isn't simply done or in progress. */
+function guidanceFor(status: SubmittedDisplayStatus): string | null {
+  switch (status) {
+    case "Sync failed":
+      return "It will try again automatically when you're online, or tap Retry.";
+    case "Needs attention":
+      return "Retrying won't fix this, so there's no Retry. The job card is still saved on this device — contact your admin.";
+    case "Authorization required":
+      return "Your access to this project couldn't be confirmed. Sign in again, or check with your admin that you're still assigned to this project. The job card is still saved on this device.";
+    default:
+      return null;
+  }
+}
 
 /**
  * Phase 2H — Submitted: the merge of THIS device's outbox entries for this
@@ -100,6 +119,7 @@ async function fetchMergedRows(userId: string, companyId: string, projectId: str
       sortAt: entry.snapshotTechnicianSubmittedAt,
       displayStatus: resolveSubmittedDisplayStatus(entry, server?.submissionSnapshotHash),
       lastError: entry.syncState === "failed" ? entry.lastError : null,
+      action: resolveSubmittedRowAction(entry),
     });
     seen.add(entry.localSubmissionId);
   }
@@ -112,26 +132,12 @@ async function fetchMergedRows(userId: string, companyId: string, projectId: str
       sortAt: server.technicianSubmittedAt || server.createdAt,
       displayStatus: resolveSubmittedDisplayStatus(null, server.submissionSnapshotHash),
       lastError: null,
+      action: null,
     });
   }
   merged.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
 
   return { merged, fetchedServer };
-}
-
-/**
- * Deliberately narrow: "Local only"/pending has no action here — a fresh
- * submission is expected to sync automatically (on submit-while-online, on
- * connectivity recovery, and on app/session startup — see
- * ForegroundSyncMount.tsx and handleNativeTechnicianSubmit's own opportunistic
- * call). A manual action only earns its place for states automatic sync
- * cannot itself resolve without either a real failure to retry past or a
- * fresh authorization check: "Sync failed" and "Authorization required".
- */
-const ACTIONABLE_STATUSES: ReadonlySet<SubmittedDisplayStatus> = new Set(["Sync failed", "Authorization required"]);
-
-function actionLabelFor(status: SubmittedDisplayStatus): string {
-  return status === "Authorization required" ? "Recheck Access" : "Retry";
 }
 
 export function SubmittedJobCardsScreen({ companyId, projectId }: { companyId: string; projectId: string }) {
@@ -143,8 +149,8 @@ export function SubmittedJobCardsScreen({ companyId, projectId }: { companyId: s
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (companyId && projectId) setActiveProject({ companyId, projectId });
-  }, [companyId, projectId]);
+    if (companyId && projectId) setActiveProject({ companyId, projectId, userId: userContext.userId });
+  }, [companyId, projectId, userContext.userId]);
 
   useEffect(() => {
     if (authLoading || !userContext.userId) return;
@@ -167,20 +173,19 @@ export function SubmittedJobCardsScreen({ companyId, projectId }: { companyId: s
   }, [authLoading, userContext.userId, companyId, projectId]);
 
   /**
-   * The functional Retry / Recheck Access action for "Sync failed" and
-   * "Authorization required" rows only — invokes the SAME
-   * lib/submission-sync.ts engine ForegroundSyncMount uses, never a
-   * decorative status-only button. A "Local only"/pending row has no
-   * equivalent button at all: it is expected to sync automatically (on
-   * submit-while-online, on connectivity recovery, and on app/session
-   * startup), so no manual trigger is offered for it. Deliberately
-   * re-syncs every claimable entry for this user in one pass (not just the
-   * row tapped): the engine's claim/finalize logic already has to load the
-   * full claimable set, and a technician with several stuck items benefits
-   * from one tap fixing all of them rather than needing to retry each
-   * individually. Authorization revalidation happens inside the engine
-   * itself, server-side, as the first network call for that entry (see
-   * lib/submission-sync.ts's own doc) — this handler never uploads/
+   * The functional Retry / Recheck Access / Sync now action — invokes the
+   * SAME lib/submission-sync.ts engine ForegroundSyncMount uses, never a
+   * decorative status-only button. Checkpoint 1: a row only gets a button
+   * when resolveSubmittedRowAction says the engine would actually claim it
+   * (retryable "Sync failed", "Authorization required", and "Local only"
+   * pending rows); terminal "Needs attention" rows get an explanation and no
+   * button. Deliberately re-syncs every claimable entry for this user in one
+   * pass (not just the row tapped): the engine's claim/finalize logic already
+   * has to load the full claimable set, and a technician with several stuck
+   * items benefits from one tap fixing all of them rather than needing to
+   * retry each individually. Authorization revalidation happens inside the
+   * engine itself, server-side, as the first network call for that entry
+   * (see lib/submission-sync.ts's own doc) — this handler never uploads/
    * finalizes before that check.
    */
   const handleSyncAction = async () => {
@@ -260,7 +265,10 @@ export function SubmittedJobCardsScreen({ companyId, projectId }: { companyId: s
                   </span>
                 </div>
                 {row.lastError ? <p className="mt-2 text-xs text-rose-700">{row.lastError}</p> : null}
-                {ACTIONABLE_STATUSES.has(row.displayStatus) ? (
+                {guidanceFor(row.displayStatus) ? (
+                  <p className="mt-1 text-xs text-gray-600">{guidanceFor(row.displayStatus)}</p>
+                ) : null}
+                {row.action ? (
                   <div className="mt-3">
                     <button
                       type="button"
@@ -268,7 +276,7 @@ export function SubmittedJobCardsScreen({ companyId, projectId }: { companyId: s
                       disabled={syncingNow}
                       className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {syncingNow ? "Syncing…" : actionLabelFor(row.displayStatus)}
+                      {syncingNow ? "Syncing…" : row.action}
                     </button>
                   </div>
                 ) : null}

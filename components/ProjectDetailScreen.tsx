@@ -217,8 +217,8 @@ export function ProjectDetailScreen({ companyId, projectId }: { companyId: strin
 
   /** Reconciles the active-project context on direct/deep-link open — ActiveProjectsScreen and ProjectsListScreen already set it on card click, but this keeps deep links safe. */
   useEffect(() => {
-    if (companyId && projectId) setActiveProject({ companyId, projectId });
-  }, [companyId, projectId]);
+    if (companyId && projectId) setActiveProject({ companyId, projectId, userId: userContext.userId });
+  }, [companyId, projectId, userContext.userId]);
 
   /** Phase 2D — maps a locally provisioned package onto the same state the online path populates, for both the offline-authorized path and the server-load-failure fallback below. Never touches Site Info/expenses — those stay empty/unexpanded offline (see the render section). */
   const applyPackageToState = (pkg: ProjectWorkPackage) => {

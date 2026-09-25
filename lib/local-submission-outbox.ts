@@ -1,4 +1,4 @@
-import { getNativeLocalSubmissionOutbox } from "./native/local-submission-outbox.ts";
+import { getNativeLocalSubmissionOutbox, isOutboxRowClaimable } from "./native/local-submission-outbox.ts";
 import { isNativeRuntime } from "./native/runtime.ts";
 import { canonicalJsonStringify } from "./canonical-hash.ts";
 
@@ -357,11 +357,23 @@ export async function computeSubmissionSnapshotHash(identity: unknown): Promise<
  * A server response that ACTIVELY reports a DIFFERENT hash for the same
  * submission_id is the only thing that can turn this into a genuine,
  * truthful conflict — never silently "Synced" in that case either.
+ *
+ * Checkpoint 1 — "Needs attention" is the terminal state, distinct from the
+ * retryable "Sync failed": a failed row classified 'terminal' (and a
+ * server-confirmed row whose live server hash disagrees) will never be
+ * re-attempted by the sync engine, so it must not look retryable either. See
+ * resolveSubmittedRowAction for which rows get an action at all.
  */
-export type SubmittedDisplayStatus = "Local only" | "Syncing" | "Sync failed" | "Authorization required" | "Synced";
+export type SubmittedDisplayStatus =
+  | "Local only"
+  | "Syncing"
+  | "Sync failed"
+  | "Needs attention"
+  | "Authorization required"
+  | "Synced";
 
 export function resolveSubmittedDisplayStatus(
-  outboxEntry: Pick<LocalSubmissionOutboxEntry, "syncState" | "submissionSnapshotHash"> | null,
+  outboxEntry: Pick<LocalSubmissionOutboxEntry, "syncState" | "submissionSnapshotHash" | "errorKind"> | null,
   serverSnapshotHash: string | null | undefined,
 ): SubmittedDisplayStatus {
   if (!outboxEntry) {
@@ -377,17 +389,43 @@ export function resolveSubmittedDisplayStatus(
       // local confirmation rather than treating silence as "unsynced".
       return "Synced";
     }
-    return serverSnapshotHash === outboxEntry.submissionSnapshotHash ? "Synced" : "Sync failed";
+    return serverSnapshotHash === outboxEntry.submissionSnapshotHash ? "Synced" : "Needs attention";
   }
   switch (outboxEntry.syncState) {
     case "syncing":
       return "Syncing";
     case "failed":
-      return "Sync failed";
+      return outboxEntry.errorKind === "terminal" ? "Needs attention" : "Sync failed";
     case "authorization-blocked":
       return "Authorization required";
     case "pending":
     default:
       return "Local only";
+  }
+}
+
+export type SubmittedRowAction = "Retry" | "Recheck Access" | "Sync now";
+
+/**
+ * Checkpoint 1 — the Submitted screen's per-row action, derived from the SAME
+ * isOutboxRowClaimable gate the sync engine uses to decide what it will claim.
+ * An action is offered only for a row the engine would actually pick up, so a
+ * button can never be decorative: terminal failures, rows mid-sync, confirmed
+ * rows and server-only rows get none.
+ */
+export function resolveSubmittedRowAction(
+  outboxEntry: Pick<LocalSubmissionOutboxEntry, "syncState" | "errorKind"> | null,
+): SubmittedRowAction | null {
+  if (!outboxEntry) return null;
+  if (!isOutboxRowClaimable(outboxEntry.syncState, outboxEntry.errorKind)) return null;
+  switch (outboxEntry.syncState) {
+    case "failed":
+      return "Retry";
+    case "authorization-blocked":
+      return "Recheck Access";
+    case "pending":
+      return "Sync now";
+    default:
+      return null;
   }
 }
