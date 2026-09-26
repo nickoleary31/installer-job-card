@@ -37,6 +37,15 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Supabase CLI local state: the linked project ref, pooler URL and cached
+# service versions written by `supabase link` and other CLI commands. It is
+# per-developer and per-environment. A committed copy silently links every
+# fresh checkout to that project (it pointed at Production), so select a
+# project explicitly (`supabase link --project-ref …` or `--db-url`) before
+# any remote CLI command.
+/supabase/.temp/
+/supabase/.branches/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -854,7 +854,7 @@ export default function ProjectAssignmentsPage() {
                                   `${m.companyName} (${m.role}${m.isActive ? "" : ", inactive"})`,
                               )
                               .join(" · ")
-                          : "No company memberships";
+                          : "Not a member of this company";
                       const alreadyActiveHere = !!result.targetCompanyMembership?.isActive;
                       return (
                         <li key={result.userId}>
