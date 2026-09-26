@@ -69,7 +69,8 @@ export type PrivilegedServiceClientResult =
 
 /**
  * The fail-closed gate a privileged route (send-email, the Zoho project
- * routes) must call BEFORE doing anything else. Mirrors authorizeGlobalAdmin's
+ * routes, and every company-user route via authorizeCompanyUserManager) must
+ * call BEFORE doing anything else. Mirrors authorizeGlobalAdmin's
  * own existing service-role requirement below, extracted here so it's
  * directly unit-testable (pure given an env value — no live Supabase call)
  * and shared without each route reimplementing the same two checks.
@@ -106,9 +107,138 @@ export function extractBearerToken(req: Request): string {
   return authHeader.startsWith(bearerPrefix) ? authHeader.slice(bearerPrefix.length).trim() : "";
 }
 
+export type CompanyUserManagerReads = {
+  verifyAccessToken(accessToken: string): Promise<{ userId: string } | null>;
+  loadProfile(userId: string): Promise<{ profile: RequesterProfile | null; error?: boolean }>;
+  loadMembership(companyId: string, userId: string): Promise<{ membership: RequesterMembership | null; error?: boolean }>;
+  companyExists(companyId: string): Promise<{ exists: boolean; error?: boolean }>;
+};
+
+export type CompanyUserManagerDecision =
+  | { ok: true; requesterUserId: string; isGlobalAdmin: boolean }
+  | { ok: false; status: number; error: string };
+
+const COMPANY_USER_MANAGER_DENIED = "Only global admins or active company admins can manage company users.";
+
 /**
- * Resolve requester from JWT. Prefer service-role client for profile/membership reads when available
- * so permission checks stay reliable; fall back to the caller's scoped client.
+ * Who may manage a company's users (search the directory for it, add existing
+ * users, invite): an active global admin, or an ACTIVE user profile holding an
+ * ACTIVE admin membership in exactly this company. The company is always the
+ * one the route acts on, and the requester always comes from the verified
+ * token, never from the request body.
+ *
+ * - An inactive (or missing) profile is refused for every requester. This
+ *   matches decideProjectAccess/decideCompanyAccess in lib/project-access.ts.
+ *   Before this, only the global-admin path checked it, so a deactivated
+ *   company admin kept user-management authority.
+ * - A read failure (e.g. an invalid/unusable service key) is a server error
+ *   and never an authorization: it returns 500 and nothing proceeds.
+ * - Only a global admin learns whether a non-existent company id exists
+ *   (404). For everyone else, a membership is required, and it cannot exist
+ *   for a missing company (FK on delete cascade), so they get the same 403 as
+ *   any other company they don't administer.
+ *
+ * Pure given `reads`, so every branch is unit-tested without Supabase
+ * (admin-api.test.ts).
+ */
+export async function decideCompanyUserManager(
+  args: { accessToken: string; companyId: string },
+  reads: CompanyUserManagerReads,
+): Promise<CompanyUserManagerDecision> {
+  const { accessToken, companyId } = args;
+  if (!accessToken) {
+    return { ok: false, status: 401, error: "Missing authorization token." };
+  }
+  if (!companyId) {
+    return { ok: false, status: 400, error: "Company is required." };
+  }
+
+  const requester = await reads.verifyAccessToken(accessToken);
+  if (!requester) {
+    return { ok: false, status: 401, error: "Unauthorized requester." };
+  }
+
+  const { profile, error: profileError } = await reads.loadProfile(requester.userId);
+  if (profileError) {
+    return { ok: false, status: 500, error: "Failed to validate requester permissions." };
+  }
+  if (!profile) {
+    return { ok: false, status: 403, error: "Requester profile not found." };
+  }
+  if (profile.is_active === false) {
+    return { ok: false, status: 403, error: "This user account is not active." };
+  }
+
+  if (profile.global_role === "admin") {
+    const { exists, error: companyError } = await reads.companyExists(companyId);
+    if (companyError) {
+      return { ok: false, status: 500, error: "Failed to validate the requested company." };
+    }
+    if (!exists) {
+      return { ok: false, status: 404, error: "Company not found." };
+    }
+    return { ok: true, requesterUserId: requester.userId, isGlobalAdmin: true };
+  }
+
+  const { membership, error: membershipError } = await reads.loadMembership(companyId, requester.userId);
+  if (membershipError) {
+    return { ok: false, status: 500, error: "Failed to validate requester permissions." };
+  }
+  if (!membership || membership.role !== "admin" || membership.is_active !== true) {
+    return { ok: false, status: 403, error: COMPANY_USER_MANAGER_DENIED };
+  }
+  return { ok: true, requesterUserId: requester.userId, isGlobalAdmin: false };
+}
+
+/** Real reads for decideCompanyUserManager: token verification with the anon key, everything else with the service client. */
+export function createCompanyUserManagerReads(env: SupabaseServerEnv, serviceClient: SupabaseClient): CompanyUserManagerReads {
+  const anonClient = createClient(env.url, env.anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return {
+    async verifyAccessToken(accessToken) {
+      const {
+        data: { user },
+        error,
+      } = await anonClient.auth.getUser(accessToken);
+      return error || !user ? null : { userId: user.id };
+    },
+    async loadProfile(userId) {
+      const { data, error } = await serviceClient
+        .from("user_profiles")
+        .select("id, global_role, is_active")
+        .eq("id", userId)
+        .maybeSingle<RequesterProfile>();
+      if (error) return { profile: null, error: true };
+      return { profile: data ?? null };
+    },
+    async loadMembership(companyId, userId) {
+      const { data, error } = await serviceClient
+        .from("company_memberships")
+        .select("role, is_active")
+        .eq("company_id", companyId)
+        .eq("user_id", userId)
+        .maybeSingle<RequesterMembership>();
+      if (error) return { membership: null, error: true };
+      return { membership: data ?? null };
+    },
+    async companyExists(companyId) {
+      const { data, error } = await serviceClient.from("companies").select("id").eq("id", companyId).maybeSingle<{ id: string }>();
+      if (error) return { exists: false, error: true };
+      return { exists: !!data };
+    },
+  };
+}
+
+/**
+ * Authorizes a company-user management request (search, add-existing,
+ * invite). FAIL CLOSED: it requires the service-role key and never falls back
+ * to the caller's own client. The routes it guards read and write across the
+ * whole user directory by design, which must never silently run with
+ * different credentials. Previously a missing key substituted
+ * createUserScopedClient(), which would quietly return partial data or wrong
+ * 404s once RLS is enabled. The returned `dataClient` is always the service
+ * client.
  */
 export async function authorizeCompanyUserManager(args: {
   env: SupabaseServerEnv;
@@ -137,58 +267,19 @@ export async function authorizeCompanyUserManager(args: {
       error: `Server is missing required configuration: ${env.missingPublic.join(", ")}.`,
     };
   }
+  const privileged = requirePrivilegedServiceClient(env);
+  if (!privileged.ok) return privileged;
 
-  const anonClient = createClient(env.url, env.anonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  const {
-    data: { user: requesterUser },
-    error: requesterAuthError,
-  } = await anonClient.auth.getUser(accessToken);
-  if (requesterAuthError || !requesterUser) {
-    return { ok: false, status: 401, error: "Unauthorized requester." };
-  }
-
-  const serviceClient = createServiceRoleClient(env);
-  const dataClient = serviceClient || createUserScopedClient(env, accessToken);
-
-  const { data: requesterProfile, error: requesterProfileError } = await dataClient
-    .from("user_profiles")
-    .select("id, global_role, is_active")
-    .eq("id", requesterUser.id)
-    .maybeSingle<RequesterProfile>();
-  if (requesterProfileError || !requesterProfile) {
-    return { ok: false, status: 403, error: "Requester profile not found." };
-  }
-
-  const isGlobalAdmin =
-    requesterProfile.global_role === "admin" && requesterProfile.is_active !== false;
-  if (!isGlobalAdmin) {
-    const { data: requesterMembership, error: requesterMembershipError } = await dataClient
-      .from("company_memberships")
-      .select("role, is_active")
-      .eq("company_id", companyId)
-      .eq("user_id", requesterUser.id)
-      .maybeSingle<RequesterMembership>();
-    if (requesterMembershipError) {
-      return { ok: false, status: 403, error: "Failed to validate requester permissions." };
-    }
-    const isActiveCompanyAdmin =
-      !!requesterMembership && requesterMembership.role === "admin" && requesterMembership.is_active;
-    if (!isActiveCompanyAdmin) {
-      return {
-        ok: false,
-        status: 403,
-        error: "Only global admins or active company admins can manage company users.",
-      };
-    }
-  }
-
+  const decision = await decideCompanyUserManager(
+    { accessToken, companyId },
+    createCompanyUserManagerReads(env, privileged.serviceClient),
+  );
+  if (!decision.ok) return decision;
   return {
     ok: true,
-    requesterUserId: requesterUser.id,
-    dataClient,
-    isGlobalAdmin,
+    requesterUserId: decision.requesterUserId,
+    dataClient: privileged.serviceClient,
+    isGlobalAdmin: decision.isGlobalAdmin,
   };
 }
 
