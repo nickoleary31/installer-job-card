@@ -2,15 +2,27 @@
 -- DRAFT — RLS Hardening for Installer Sheetz V1
 --   revision 2: adversarial review (baseline commit 7707650)
 --   revision 3: reconciled with the FINAL Phase 2H commit 3359107 and the
---               product decisions Q1-Q8 / B1-B2 (see audit §0 and §12)
+--               product decisions Q1-Q8 / B1-B2 (commit b635f72)
+--   revision 4: re-baselined on origin/main 5ded8e7 (PR #28) and mobile
+--               36938d1 (Checkpoints 1+2). Adds RLS for customers,
+--               customer_accounts, customer_site_files; Q9 content freeze;
+--               WITHDRAWS the expenses policies (Expenses is a separate
+--               workstream). See docs/RLS_Revision4_Rebaseline.md.
 -- STATUS: NOT APPLIED. NOT part of supabase/migrations/ on purpose, so
 -- `supabase db push` / `db diff` / CI cannot pick it up by accident.
 --
+-- !! This repo commits supabase/.temp/project-ref = uboutcndhvygmwfjztla
+-- !! (PRODUCTION). Never run Supabase CLI commands from this worktree.
+-- !! Use an explicit V1 Dev connection proven by 00_v1dev_preflight_readonly.sql.
+--
 -- APPLY ORDER (V1 Dev only, each step gated on the previous one's checks):
+--   0. 00_v1dev_preflight_readonly.sql (read-only; proves the target is V1
+--      Dev and captures the pre-state for rollback)
 --   1. supabase/migrations/20260921120000_job_card_submissions_technician_submit.sql
 --      (Phase 2H; Section 0 below refuses to run without its columns)
 --   2. THIS FILE (table RLS)                       -> web + Android regression
 --   3. 0002_job_card_photos_storage_policies.sql   -> storage regression
+--      (only after the Q10 signed-upload check passes)
 --   4. repair data until 0003's preflight passes, then
 --      0003_enforce_active_profiles.sql (Q1)       -> regression
 --   5. VALIDATE the Section 11 FKs once Section 0 reports zero mismatches.
@@ -24,10 +36,13 @@
 -- follow-through of the decisions explained there. Section numbers in the
 -- doc's "revision 2 changes" list map onto the sections below.
 --
--- SCOPE: user_profiles, company_memberships, companies, projects,
---   project_assignments, expenses, job_card_submissions, job_card_drafts.
--- Storage policies, customers, customer_accounts, customer_site_files,
--- company_form_products and zoho_fsm_* are NOT touched (see audit §8).
+-- SCOPE (revision 4): user_profiles, company_memberships, companies, projects,
+--   project_assignments, job_card_submissions, job_card_drafts, customers,
+--   customer_accounts, customer_site_files.
+-- NOT touched: public.expenses (owned by the separate Expenses workstream,
+-- which builds its policies on the helpers in Section 1 — see Section 8),
+-- storage (0002), company_form_products (existing RLS kept) and zoho_fsm_*
+-- (existing service-role-only RLS kept).
 --
 -- Designed to run as ONE transaction (the Supabase CLI wraps each migration
 -- file in one). Do not run it statement-by-statement.
@@ -85,8 +100,9 @@ do $$
 declare
   v_submissions bigint;
   v_drafts bigint;
-  v_orphan_expenses bigint;
-  v_null_created_by bigint;
+  v_site_file_company bigint;
+  v_site_file_customer bigint;
+  v_project_customer_company bigint;
   v_members_without_profile bigint;
   v_assignees_without_profile bigint;
   v_inactive_profiles_with_access bigint;
@@ -120,18 +136,27 @@ begin
   join public.projects p on p.id = d.project_id
   where p.company_id <> d.company_id;
 
-  -- expenses.project_id has no FK today; orphans become invisible under RLS.
-  select count(*) into v_orphan_expenses
-  from public.expenses e
-  where not exists (select 1 from public.projects p where p.id = e.project_id);
+  select count(*) into v_site_file_company
+  from public.customer_site_files f
+  join public.projects p on p.id = f.project_id
+  where p.company_id <> f.company_id;
 
-  -- created_by is nullable; such rows become admin-only for UPDATE/DELETE.
-  select count(*) into v_null_created_by
-  from public.expenses e
-  where e.created_by is null;
+  select count(*) into v_site_file_customer
+  from public.customer_site_files f
+  join public.projects p on p.id = f.project_id
+  where f.customer_id is not null
+    and f.customer_id is distinct from p.customer_id;
 
-  raise notice 'rls-hardening preflight: job_card_submissions company/project mismatches=%, job_card_drafts mismatches=%, orphan expenses=%, expenses with null created_by=%',
-    v_submissions, v_drafts, v_orphan_expenses, v_null_created_by;
+  -- Projects linked to a customer (site) of a different company. RLS never
+  -- lets such a link grant customer access (can_access_customer requires the
+  -- same company), but the data should be cleaned up.
+  select count(*) into v_project_customer_company
+  from public.projects p
+  join public.customers c on c.id = p.customer_id
+  where c.company_id <> p.company_id;
+
+  raise notice 'rls-hardening preflight: company/project mismatches — job_card_submissions=%, job_card_drafts=%, customer_site_files=%; customer_site_files customer mismatches=%; projects linked to another company''s customer=%',
+    v_submissions, v_drafts, v_site_file_company, v_site_file_customer, v_project_customer_company;
 end
 $$;
 
@@ -303,7 +328,7 @@ as $$
 $$;
 
 comment on function public.can_admin_project(uuid) is
-  'Global admin, or active admin of the project''s company. Gates assignment management and expense review.';
+  'Global admin, or active admin of the project''s company. Gates assignment management; also part of the shared contract for the Expenses workstream.';
 
 revoke all on function public.can_admin_project(uuid) from public, anon;
 grant execute on function public.can_admin_project(uuid) to authenticated;
@@ -339,14 +364,103 @@ revoke all on function public.can_view_member_profile(uuid) from public, anon;
 grant execute on function public.can_view_member_profile(uuid) to authenticated;
 
 
+-- Revision 4: customer (site) helpers.
+--
+-- Customer visibility mirrors the customers pages at 36938d1: global admins
+-- and active admins of the customer's company see every company customer; a
+-- technician sees a customer only when it is linked (projects.customer_id)
+-- to a project IN THE SAME COMPANY that the technician can access. The
+-- same-company condition stops a cross-company project->customer link (see
+-- Section 0 counts) from ever granting access.
+create or replace function public.can_access_customer(p_customer_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.customers c
+    where c.id = p_customer_id
+      and (
+        public.is_global_admin()
+        or public.is_active_company_admin(c.company_id)
+        or exists (
+          select 1
+          from public.projects p
+          where p.customer_id = c.id
+            and p.company_id = c.company_id
+            and public.can_access_project(p.id)
+        )
+      )
+  );
+$$;
+
+comment on function public.can_access_customer(uuid) is
+  'Global admin; active admin of the customer''s company; or caller can access a same-company project linked to this customer.';
+
+revoke all on function public.can_access_customer(uuid) from public, anon;
+grant execute on function public.can_access_customer(uuid) to authenticated;
+
+
+-- Caller-scoped like project_company_id(): the company of a customer the
+-- caller can access, else NULL. Used by the projects INSERT consistency check.
+create or replace function public.customer_company_id(p_customer_id uuid)
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select c.company_id
+  from public.customers c
+  where c.id = p_customer_id
+    and public.can_access_customer(c.id);
+$$;
+
+comment on function public.customer_company_id(uuid) is
+  'company_id of a customer the caller can access, else NULL (not a cross-tenant oracle).';
+
+revoke all on function public.customer_company_id(uuid) from public, anon;
+grant execute on function public.customer_company_id(uuid) to authenticated;
+
+
+-- Caller-scoped: the customer (site) of a project the caller can read, else
+-- NULL. Used by customer_site_files and the customer-site-files storage
+-- policy (0002) to keep file metadata/paths consistent with the project.
+create or replace function public.project_customer_id(p_project_id uuid)
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.customer_id
+  from public.projects p
+  where p.id = p_project_id
+    and (
+      public.is_global_admin()
+      or public.has_active_company_membership(p.company_id)
+    );
+$$;
+
+comment on function public.project_customer_id(uuid) is
+  'customer_id of a project the caller can read (global admin or active member of its company), else NULL.';
+
+revoke all on function public.project_customer_id(uuid) from public, anon;
+grant execute on function public.project_customer_id(uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- SECTION 2: Guard-trigger convention
 --
--- The BEFORE triggers in Sections 3, 6, 7 and 8 are SECURITY INVOKER (the
--- default) on purpose: inside an invoker trigger, current_user is the role
--- that issued the statement. (Revision 1's expense guard was SECURITY
--- DEFINER; there current_user is the owner, and its auth.uid()-only check
--- would also have rejected legitimate service-role and SQL-editor writes.)
+-- The BEFORE triggers in Sections 3, 6, 7, 9, 10, 10A and 10C are SECURITY
+-- INVOKER (the default) on purpose: inside an invoker trigger, current_user
+-- is the role that issued the statement. (Revision 1's expense guard was
+-- SECURITY DEFINER; there current_user is the owner, and its auth.uid()-only
+-- check would also have rejected legitimate service-role and SQL-editor
+-- writes.)
 --
 -- Each guard returns immediately for trusted backend roles:
 --   service_role   — server routes using SUPABASE_SERVICE_ROLE_KEY (their
@@ -357,8 +471,11 @@ grant execute on function public.can_view_member_profile(uuid) to authenticated;
 --
 -- Exception (Section 9): job_card_submissions_guard_write protects data
 -- integrity, not authorization, so on UPDATE it also binds service_role. Only
--- the maintenance roles (postgres, supabase_admin) skip it. The Section 8
--- needs_review/review_reason derivation likewise applies to every role.
+-- the maintenance roles (postgres, supabase_admin) skip it.
+--
+-- Service-role key naming: main reads SUPABASE_SERVICE_ROLE_KEY; mobile
+-- (36938d1) reads SUPABASE_SECRET_KEY first. Both authenticate as the
+-- Postgres role service_role, which is what these checks see.
 --
 -- Caveat for future work: a SECURITY DEFINER function owned by postgres that
 -- writes these tables would run with current_user = postgres and bypass the
@@ -523,14 +640,21 @@ create policy projects_select
 
 -- INSERT: global admin or active admin of that company
 -- (app/companies/[companyId]/projects/page.tsx canManageCompanyData).
+-- Revision 4: a linked customer (site) must belong to the same company.
+-- Before this, an admin could link their project to another company's site
+-- (customers had no RLS, so it leaked nothing new; now it would be a way
+-- around customers RLS through the projects -> customers embed).
 drop policy if exists projects_insert on public.projects;
 create policy projects_insert
   on public.projects
   for insert
   to authenticated
   with check (
-    (select public.is_global_admin())
-    or public.is_active_company_admin(company_id)
+    (
+      (select public.is_global_admin())
+      or public.is_active_company_admin(company_id)
+    )
+    and (customer_id is null or public.customer_company_id(customer_id) = company_id)
   );
 
 -- UPDATE / DELETE: none. No client code updates or deletes projects; the
@@ -718,202 +842,35 @@ create trigger trg_project_assignments_guard_update
 
 
 -- ----------------------------------------------------------------------------
--- SECTION 8: expenses
--- ----------------------------------------------------------------------------
-
-alter table public.expenses enable row level security;
-
--- expenses has no company_id column; all company scoping goes through the
--- project helpers.
-
-drop policy if exists expenses_select on public.expenses;
-create policy expenses_select
-  on public.expenses
-  for select
-  to authenticated
-  using (
-    (select public.is_global_admin())
-    or public.can_access_project(project_id)
-  );
-
--- INSERT: anyone with project access, attributed to themselves.
--- created_by is client-supplied today (userContext.userId), and this is what
--- stops spoofing it. The review fields are handled by the guard below:
--- revision 1 guarded UPDATE only, so a technician could INSERT an expense
--- already carrying review_status = 'approved' plus any reviewed_by/at.
-drop policy if exists expenses_insert on public.expenses;
-create policy expenses_insert
-  on public.expenses
-  for insert
-  to authenticated
-  with check (
-    created_by = (select auth.uid())
-    and public.can_access_project(project_id)
-  );
-
--- UPDATE: project admin (any expense in scope, including review), or the
--- creator while they still have project access. Which columns and
--- transitions each side may change is enforced by the guard below.
-drop policy if exists expenses_update on public.expenses;
-create policy expenses_update
-  on public.expenses
-  for update
-  to authenticated
-  using (
-    public.can_admin_project(project_id)
-    or (created_by = (select auth.uid()) and public.can_access_project(project_id))
-  )
-  with check (
-    public.can_admin_project(project_id)
-    or (created_by = (select auth.uid()) and public.can_access_project(project_id))
-  );
-
--- DELETE: same actors (delete button in components/ProjectDetailScreen.tsx,
--- which Phase 2H renders for both the web project page and mobile;
--- canEditExpense = admin || created_by === me).
-drop policy if exists expenses_delete on public.expenses;
-create policy expenses_delete
-  on public.expenses
-  for delete
-  to authenticated
-  using (
-    public.can_admin_project(project_id)
-    or (created_by = (select auth.uid()) and public.can_access_project(project_id))
-  );
-
--- Guard: one BEFORE INSERT OR UPDATE trigger (not separate triggers) so the
--- whole review state machine lives in one place.
+-- SECTION 8: expenses — WITHDRAWN from the shared package (revision 4)
 --
--- ALL roles (a data rule, not an authorization rule — Q8):
---   * needs_review and review_reason are DERIVED, never taken from input:
---       needs_review  = no receipt AND lost_receipt AND review still pending
---       review_reason = 'Lost receipt' when no receipt AND lost_receipt
---     This reproduces exactly what every client write already sends
---     (ProjectDetailScreen insert/edit, and needs_review=false on review), so
---     no client change is needed. Residual: an expense with no receipt that
---     is NOT marked lost is not flagged — same as today's app rule.
+-- public.expenses is owned by the separate Expenses workstream
+-- (C:\dev\tkp-expenses), which has its own draft SQL waiting on this shared
+-- contract.
+-- Revisions 2-3 carried expenses policies plus a review-state guard; they are
+-- removed here so the shared package does not define an Expenses-specific
+-- authorization model. This file therefore neither enables RLS on expenses
+-- nor creates any policy, trigger or index on it.
 --
--- API callers only (service_role / postgres / supabase_admin skip the rest):
--- INSERT (everyone, admins included):
---   * created_by must be the caller (explicit error; the RLS WITH CHECK also
---     enforces it). A NULL creator is therefore impossible for user writes.
---   * review state must be pristine: review_status 'pending' (or omitted ->
---     column default), reviewed_by NULL, reviewed_at NULL. Reviews are always
---     a later UPDATE by a project admin. This closes INSERT self-approval.
---   * created_at is stamped server-side (now()). The expense report uses it
---     as the expense date, so a client-supplied value could be backdated. Web
---     and mobile never send it.
+-- SHARED CONTRACT the Expenses policies can build on (all in Section 1,
+-- SECURITY DEFINER, search_path = '', EXECUTE for authenticated only):
+--   can_access_project(project_id)  global admin | active company admin of the
+--                                   project's company | active member with an
+--                                   active assignment on the project
+--   can_admin_project(project_id)   global admin | active company admin of the
+--                                   project's company
+--   project_company_id(project_id)  caller-scoped project -> company
+--   is_active_user()                (0003) caller has an active profile
+-- Findings handed to the Expenses workstream (docs/RLS_Revision4_Rebaseline.md
+-- §H): INSERT-time self-approval, approve-then-edit, reviewer spoofing,
+-- created_by/project_id reassignment, Q2 (no self-review, NULL creators
+-- reviewable), Q8 (derived needs_review), receipt_url SSRF in expense-report.
 --
--- UPDATE:
---   * id, project_id, created_by, created_at are immutable. This stops
---     re-parenting an expense to another project and re-attributing it.
---   * updates by a non-admin, or by the expense's own creator even when they
---     are an admin (Q2), must leave the review state pristine. The
---     shared edit flow (ProjectDetailScreen) already resets to
---     ('pending', NULL, NULL) on every edit ("any edit invalidates a prior
---     review"), and the post-insert receipt_url update happens while the row
---     is still pristine. This also closes approval-then-edit: amending
---     amount/category on an already-approved expense while keeping the
---     approval.
---   * admin setting a review decision: review_status must be
---     'approved'|'rejected', reviewed_by must be the caller (no attributing a
---     review to someone else), and reviewed_at is stamped server-side. The
---     reviewer can never be the creator (Q2: no self-review for anyone,
---     including global admins). Legacy rows with created_by NULL may be
---     reviewed by any authorized reviewer. Any admin may reset a review to
---     pristine.
-create or replace function public.expenses_guard_write()
-returns trigger
-language plpgsql
-set search_path = ''
-as $$
-declare
-  v_no_receipt boolean;
-  v_pristine boolean;
-begin
-  v_no_receipt := nullif(btrim(new.receipt_url), '') is null
-                  and coalesce(new.lost_receipt, false);
-  new.needs_review := v_no_receipt and coalesce(new.review_status, 'pending') = 'pending';
-  new.review_reason := case when v_no_receipt then 'Lost receipt' end;
-
-  if current_user in ('service_role', 'postgres', 'supabase_admin') then
-    return new;
-  end if;
-
-  v_pristine := coalesce(new.review_status, 'pending') = 'pending'
-                and new.reviewed_by is null
-                and new.reviewed_at is null;
-
-  if tg_op = 'INSERT' then
-    if new.created_by is distinct from auth.uid() then
-      raise exception 'expenses: created_by must be the signed-in user'
-        using errcode = '42501';
-    end if;
-    if not v_pristine then
-      raise exception 'expenses: review_status/reviewed_by/reviewed_at cannot be set on insert'
-        using errcode = '42501';
-    end if;
-    new.created_at := now();
-    return new;
-  end if;
-
-  -- UPDATE
-  if new.id is distinct from old.id
-     or new.project_id is distinct from old.project_id
-     or new.created_by is distinct from old.created_by
-     or new.created_at is distinct from old.created_at then
-    raise exception 'expenses: id, project_id, created_by and created_at are immutable'
-      using errcode = '42501';
-  end if;
-
-  -- Non-reviewers: anyone who is not a project admin, AND the expense's own
-  -- creator even when they are an admin (Q2). Their updates must leave the
-  -- review pristine. That blocks both self-approval and editing one's own
-  -- already-approved expense while keeping the approval.
-  if not public.can_admin_project(new.project_id)
-     or (new.created_by is not null and new.created_by = auth.uid()) then
-    if not v_pristine then
-      raise exception 'expenses: a review can only be recorded by a global or company admin who did not create this expense; the creator''s edits must reset review to pending'
-        using errcode = '42501';
-    end if;
-    return new;
-  end if;
-
-  -- Project admin. Only a transition into a non-pristine review state needs
-  -- checking; leaving the review untouched or resetting it is fine.
-  if not v_pristine
-     and (new.review_status is distinct from old.review_status
-          or new.reviewed_by is distinct from old.reviewed_by
-          or new.reviewed_at is distinct from old.reviewed_at) then
-    if new.review_status is null or new.review_status not in ('approved', 'rejected') then
-      raise exception 'expenses: review_status must be pending, approved or rejected'
-        using errcode = '22023';
-    end if;
-    if new.reviewed_by is distinct from auth.uid() then
-      raise exception 'expenses: reviewed_by must be the reviewing user'
-        using errcode = '42501';
-    end if;
-    new.reviewed_at := now();
-  end if;
-
-  return new;
-end;
-$$;
-
--- Revision 1 leftovers (never applied anywhere; dropped so a re-run converges).
-drop trigger if exists trg_expenses_guard_review_columns on public.expenses;
-drop function if exists public.expenses_guard_review_columns();
-
-drop trigger if exists trg_expenses_guard_write on public.expenses;
-create trigger trg_expenses_guard_write
-  before insert or update on public.expenses
-  for each row
-  execute function public.expenses_guard_write();
-
--- Index: every expenses read filters on project_id (project page, expense
--- report, policy predicate); nothing indexes it today.
-create index if not exists idx_expenses_project_created_at
-  on public.expenses (project_id, created_at desc);
+-- Until those policies land, public.expenses stays WITHOUT RLS (cross-tenant
+-- readable/writable by any signed-in user). Production must not ship this
+-- package without the Expenses package, or an explicit decision otherwise.
+-- Receipts in storage (job-card-photos expenses/{projectId}/...) stay
+-- supported by 0002 with a project-scope rule only.
 
 
 -- ----------------------------------------------------------------------------
@@ -997,10 +954,14 @@ create policy job_card_submissions_update
 -- identity/hash that the native "same hash -> idempotent, different hash ->
 -- terminal 409" reconciliation relies on.
 --
--- Deliberately NOT frozen: payload. The web edit-submitted-job-card flow
--- revises payload in place (and re-triggers Zoho auto-publish). Whether a
--- revision should be allowed on a hash-bearing (native) submission is open
--- question Q9 in the audit.
+-- Revision 4 (Q9 decided): once submission_snapshot_hash is set, the hashed
+-- content is immutable too. payload, customer and unit_number cannot change
+-- for any non-maintenance role, service_role included. Corrections to a
+-- native (hash-bearing) submission need an explicit amendment/revision path,
+-- which does not exist yet. Until it does, the web edit-submitted flow
+-- (persistSubmittedJobCard's UPDATE) is rejected with 42501 for native
+-- submissions. Web-created submissions (hash NULL) stay revisable as today.
+-- Email-history columns stay writable (email history, service role).
 create or replace function public.job_card_submissions_guard_write()
 returns trigger
 language plpgsql
@@ -1028,6 +989,14 @@ begin
      or new.technician_submitted_at is distinct from old.technician_submitted_at
      or new.submission_snapshot_hash is distinct from old.submission_snapshot_hash then
     raise exception 'job_card_submissions: submission identity and snapshot fields are immutable'
+      using errcode = '42501';
+  end if;
+
+  if old.submission_snapshot_hash is not null
+     and (new.payload is distinct from old.payload
+          or new.customer is distinct from old.customer
+          or new.unit_number is distinct from old.unit_number) then
+    raise exception 'job_card_submissions: the content of a snapshot-hashed submission is immutable; use an amendment/revision path'
       using errcode = '42501';
   end if;
 
@@ -1087,8 +1056,9 @@ create policy job_card_drafts_update
     and company_id = public.project_company_id(project_id)
   );
 
--- DELETE: app/page.tsx deletes the draft by submission_id after a successful
--- submit.
+-- DELETE: the web submit path (persistSubmittedJobCard, app/page.tsx on
+-- main; components/NewSubmissionForm.tsx on mobile) deletes the draft by
+-- submission_id after a successful submit.
 drop policy if exists job_card_drafts_delete on public.job_card_drafts;
 create policy job_card_drafts_delete
   on public.job_card_drafts
@@ -1098,6 +1068,239 @@ create policy job_card_drafts_delete
     (select public.is_global_admin())
     or public.can_access_project(project_id)
   );
+
+-- Revision 4: identity guard for API callers. The draft upsert re-sends
+-- submission_id unchanged (ON CONFLICT (submission_id)), and company_id/
+-- project_id may legitimately move between two accessible projects (both
+-- USING and WITH CHECK apply). But a draft must never be renamed onto
+-- another submission_id, e.g. a pending native id (see audit Q11).
+create or replace function public.job_card_drafts_guard_update()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user in ('service_role', 'postgres', 'supabase_admin') then
+    return new;
+  end if;
+
+  if new.id is distinct from old.id
+     or new.submission_id is distinct from old.submission_id
+     or new.created_at is distinct from old.created_at then
+    raise exception 'job_card_drafts: id, submission_id and created_at are immutable'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_job_card_drafts_guard_update on public.job_card_drafts;
+create trigger trg_job_card_drafts_guard_update
+  before update on public.job_card_drafts
+  for each row
+  execute function public.job_card_drafts_guard_update();
+
+
+-- ----------------------------------------------------------------------------
+-- SECTION 10A (revision 4): customers — sites, including wifi_password
+--
+-- Access at 36938d1 (same client code on main):
+--   read   customers pages, projects page picker, project detail embed
+--          (projects -> customers), NewSubmissionForm autofill, the expense
+--          report embed. Technicians are limited client-side to customers
+--          linked to their assigned projects.
+--   insert customers/new (company admin), projects page inline "new site"
+--          (canManageCompanyData).
+--   update customers/[id]/edit. Admins send the full form
+--          (toCustomerUpdatePayload); technicians send ONLY wifi_ssid +
+--          wifi_password.
+--   delete none.
+--   service role: Zoho FSM sync creates/updates sites (bypasses RLS/guard).
+-- ----------------------------------------------------------------------------
+
+alter table public.customers enable row level security;
+
+drop policy if exists customers_select on public.customers;
+create policy customers_select
+  on public.customers
+  for select
+  to authenticated
+  using (
+    (select public.is_global_admin())
+    or public.can_access_customer(id)
+  );
+
+drop policy if exists customers_insert on public.customers;
+create policy customers_insert
+  on public.customers
+  for insert
+  to authenticated
+  with check (
+    (select public.is_global_admin())
+    or public.is_active_company_admin(company_id)
+  );
+
+-- UPDATE: anyone who can read the customer may attempt an update; the guard
+-- limits a non-admin (technician) to the two Wi-Fi columns.
+drop policy if exists customers_update on public.customers;
+create policy customers_update
+  on public.customers
+  for update
+  to authenticated
+  using (
+    (select public.is_global_admin())
+    or public.can_access_customer(id)
+  )
+  with check (
+    (select public.is_global_admin())
+    or public.can_access_customer(id)
+  );
+
+-- DELETE: none.
+
+-- Guard (API roles):
+--   INSERT: the Zoho linkage columns (customer_account_id,
+--           zoho_service_address_id, end_customer_name) are set only by the
+--           Zoho sync (service role).
+--   UPDATE: id, company_id, created_at and the Zoho linkage columns are
+--           immutable. A caller who is not a global admin or active admin of
+--           the customer's company may change ONLY wifi_ssid, wifi_password
+--           and updated_at. The comparison is on the whole row image (jsonb),
+--           so a column added later (e.g. by the dashboard) is protected by
+--           default.
+create or replace function public.customers_guard_write()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user in ('service_role', 'postgres', 'supabase_admin') then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    if new.customer_account_id is not null
+       or new.zoho_service_address_id is not null
+       or new.end_customer_name is not null then
+      raise exception 'customers: Zoho linkage columns are set only by the Zoho FSM sync'
+        using errcode = '42501';
+    end if;
+    return new;
+  end if;
+
+  if new.id is distinct from old.id
+     or new.company_id is distinct from old.company_id
+     or new.created_at is distinct from old.created_at
+     or new.customer_account_id is distinct from old.customer_account_id
+     or new.zoho_service_address_id is distinct from old.zoho_service_address_id
+     or new.end_customer_name is distinct from old.end_customer_name then
+    raise exception 'customers: id, company_id, created_at and Zoho linkage columns are immutable'
+      using errcode = '42501';
+  end if;
+
+  if not (public.is_global_admin() or public.is_active_company_admin(old.company_id))
+     and (to_jsonb(new) - 'wifi_ssid' - 'wifi_password' - 'updated_at')
+         is distinct from (to_jsonb(old) - 'wifi_ssid' - 'wifi_password' - 'updated_at') then
+    raise exception 'customers: technicians may change only wifi_ssid and wifi_password'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_customers_guard_write on public.customers;
+create trigger trg_customers_guard_write
+  before insert or update on public.customers
+  for each row
+  execute function public.customers_guard_write();
+
+
+-- ----------------------------------------------------------------------------
+-- SECTION 10B (revision 4): customer_accounts — dealer / customer account
+--
+-- Access: read-only for clients (name on ActiveProjectsScreen and
+-- ProjectDetailScreen). Written only by the Zoho FSM sync (service role).
+-- Visibility mirrors projects: global admin or any active company member.
+-- ----------------------------------------------------------------------------
+
+alter table public.customer_accounts enable row level security;
+
+drop policy if exists customer_accounts_select on public.customer_accounts;
+create policy customer_accounts_select
+  on public.customer_accounts
+  for select
+  to authenticated
+  using (
+    (select public.is_global_admin())
+    or public.has_active_company_membership(company_id)
+  );
+
+-- INSERT / UPDATE / DELETE: none for API roles.
+
+
+-- ----------------------------------------------------------------------------
+-- SECTION 10C (revision 4): customer_site_files — PPD JSON / product-file metadata
+--
+-- Access at 36938d1: technicians and admins insert a row after uploading a
+-- file to the customer-site-files bucket (lib/ppd-json-storage.ts,
+-- lib/product-files/storage.ts, NewSubmissionForm), and read rows by
+-- project_id / customer_id / submission_id. No client updates or deletes.
+-- Rows point at storage paths. Reading the file itself goes through the
+-- storage policy (0002), which re-checks project access on the path, so a
+-- forged storage_path in a row cannot expose another tenant's file.
+-- ----------------------------------------------------------------------------
+
+alter table public.customer_site_files enable row level security;
+
+drop policy if exists customer_site_files_select on public.customer_site_files;
+create policy customer_site_files_select
+  on public.customer_site_files
+  for select
+  to authenticated
+  using (
+    (select public.is_global_admin())
+    or public.can_access_project(project_id)
+  );
+
+drop policy if exists customer_site_files_insert on public.customer_site_files;
+create policy customer_site_files_insert
+  on public.customer_site_files
+  for insert
+  to authenticated
+  with check (
+    public.can_access_project(project_id)
+    and company_id = public.project_company_id(project_id)
+    and (customer_id is null or customer_id = public.project_customer_id(project_id))
+  );
+
+-- UPDATE / DELETE: none.
+
+-- Guard (API roles): uploaded_by and uploaded_at are stamped server-side.
+-- Clients send uploaded_by from getUser() or pass it through (it can be
+-- null), so it is overwritten rather than checked, which prevents spoofing
+-- the uploader without breaking any caller.
+create or replace function public.customer_site_files_guard_insert()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user in ('service_role', 'postgres', 'supabase_admin') then
+    return new;
+  end if;
+  new.uploaded_by := auth.uid();
+  new.uploaded_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_customer_site_files_guard_insert on public.customer_site_files;
+create trigger trg_customer_site_files_guard_insert
+  before insert on public.customer_site_files
+  for each row
+  execute function public.customer_site_files_guard_insert();
 
 
 -- ----------------------------------------------------------------------------
@@ -1117,6 +1320,7 @@ create policy job_card_drafts_delete
 -- SHARE UPDATE EXCLUSIVE lock):
 --   alter table public.job_card_submissions validate constraint job_card_submissions_project_company_fkey;
 --   alter table public.job_card_drafts      validate constraint job_card_drafts_project_company_fkey;
+--   alter table public.customer_site_files  validate constraint customer_site_files_project_company_fkey;
 -- Nothing updates projects.company_id today (the Zoho sync writes only
 -- project_name/customer_name/location), so the default NO ACTION is correct:
 -- a project that has submissions or drafts can no longer silently change
@@ -1143,8 +1347,23 @@ begin
       foreign key (project_id, company_id) references public.projects (id, company_id)
       not valid;
   end if;
+
+  -- Revision 4: same invariant for the site-file metadata.
+  if not exists (select 1 from pg_constraint where conname = 'customer_site_files_project_company_fkey') then
+    alter table public.customer_site_files
+      add constraint customer_site_files_project_company_fkey
+      foreign key (project_id, company_id) references public.projects (id, company_id)
+      not valid;
+  end if;
 end
 $$;
+
+-- Revision 4 index: can_access_customer() looks up projects by customer_id.
+-- The existing (company_id, customer_id) index cannot serve a customer_id-only
+-- probe.
+create index if not exists idx_projects_customer_id
+  on public.projects (customer_id)
+  where customer_id is not null;
 
 
 -- ----------------------------------------------------------------------------
@@ -1160,9 +1379,11 @@ revoke truncate on
   public.companies,
   public.projects,
   public.project_assignments,
-  public.expenses,
   public.job_card_submissions,
-  public.job_card_drafts
+  public.job_card_drafts,
+  public.customers,
+  public.customer_accounts,
+  public.customer_site_files
 from anon, authenticated;
 
 

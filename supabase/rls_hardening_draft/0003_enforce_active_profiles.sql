@@ -1,6 +1,6 @@
 -- ============================================================================
 -- DRAFT 0003 — Q1: an inactive or missing user_profiles row revokes ALL access
--- (revision 3, Phase 2H final 3359107)
+-- (revision 3, Phase 2H final 3359107; revision 4: main 5ded8e7 / mobile 36938d1)
 -- STATUS: NOT APPLIED. Outside supabase/migrations/ on purpose.
 -- Target when applied: Installer Sheetz V1 Dev (gewtjutfjrmhwmjlovly) only.
 --
@@ -15,14 +15,18 @@
 --   2. The preflight below passes (it aborts the whole file otherwise).
 --   3. A human has reviewed the NOTICE list of inactive profiles that still
 --      hold active memberships, and confirmed each one should lose access.
---   4. The matching APP change has shipped (audit §12, "Q1 app side"):
---      authorizeProjectAccess and authorizeCompanyUserManager must return 403
---      when the requester's profile is inactive or missing. Every Phase 2H
---      route (finalize, photo-upload-url, history) runs with the service role
---      and never sees these policies. Without that change, a deactivated
---      technician could still finalize through the native outbox. With it,
---      the outbox gets 403 -> authorization-blocked (re-claimable if the user
---      is reactivated), which is the contract's intended semantics.
+--   4. The matching APP change covers every service-role route. Service-role
+--      routes never see these policies. Status at revision 4:
+--        DONE  authorizeProjectAccess / decideProjectAccess / decideCompanyAccess
+--              refuse an inactive or missing profile for every requester
+--              (main 5ded8e7 PR #28 and mobile 36938d1), covering send-email,
+--              Zoho project routes, expense-report, auto-publish and the native
+--              finalize/photo-upload-url/history routes. The native outbox gets
+--              403 -> authorization-blocked (re-claimable after reactivation).
+--        OPEN  authorizeCompanyUserManager (company-users search, add-existing,
+--              invite) still checks is_active only for global admins. An
+--              inactive company admin can still manage company users through
+--              those server routes until it is fixed.
 --
 -- MECHANISM: one RESTRICTIVE policy per table (and one on storage.objects).
 -- PostgreSQL ANDs restrictive policies with the permissive ones from 0001,
@@ -138,11 +142,27 @@ create policy project_assignments_active_profile_required
   using ((select public.is_active_user()))
   with check ((select public.is_active_user()));
 
-drop policy if exists expenses_active_profile_required on public.expenses;
-create policy expenses_active_profile_required
-  on public.expenses as restrictive for all to authenticated
+-- Revision 4: the customer tables (RLS enabled by 0001 §10A-10C).
+drop policy if exists customers_active_profile_required on public.customers;
+create policy customers_active_profile_required
+  on public.customers as restrictive for all to authenticated
   using ((select public.is_active_user()))
   with check ((select public.is_active_user()));
+
+drop policy if exists customer_accounts_active_profile_required on public.customer_accounts;
+create policy customer_accounts_active_profile_required
+  on public.customer_accounts as restrictive for all to authenticated
+  using ((select public.is_active_user()))
+  with check ((select public.is_active_user()));
+
+drop policy if exists customer_site_files_active_profile_required on public.customer_site_files;
+create policy customer_site_files_active_profile_required
+  on public.customer_site_files as restrictive for all to authenticated
+  using ((select public.is_active_user()))
+  with check ((select public.is_active_user()));
+
+-- public.expenses: intentionally NOT covered here. It belongs to the Expenses
+-- workstream, which should AND public.is_active_user() into its own policies.
 
 drop policy if exists job_card_submissions_active_profile_required on public.job_card_submissions;
 create policy job_card_submissions_active_profile_required
@@ -173,11 +193,9 @@ create policy storage_objects_active_profile_required
 
 
 -- ----------------------------------------------------------------------------
--- NOT covered here (tracked in the audit): customers, customer_accounts,
--- customer_site_files have no RLS at all yet, so a deactivated user can still
--- reach them until those tables get their own RLS pass. Supabase Auth
--- sessions stay valid; for immediate lock-out also ban the auth user through
--- the admin API.
+-- NOT covered here: public.expenses (Expenses workstream; see above).
+-- Supabase Auth sessions stay valid; for immediate lock-out also ban the auth
+-- user through the admin API.
 --
 -- ROLLBACK:
 --   drop policy if exists user_profiles_active_profile_required on public.user_profiles;
@@ -185,7 +203,9 @@ create policy storage_objects_active_profile_required
 --   drop policy if exists projects_active_profile_required on public.projects;
 --   drop policy if exists company_memberships_active_profile_required on public.company_memberships;
 --   drop policy if exists project_assignments_active_profile_required on public.project_assignments;
---   drop policy if exists expenses_active_profile_required on public.expenses;
+--   drop policy if exists customers_active_profile_required on public.customers;
+--   drop policy if exists customer_accounts_active_profile_required on public.customer_accounts;
+--   drop policy if exists customer_site_files_active_profile_required on public.customer_site_files;
 --   drop policy if exists job_card_submissions_active_profile_required on public.job_card_submissions;
 --   drop policy if exists job_card_drafts_active_profile_required on public.job_card_drafts;
 --   drop policy if exists company_form_products_active_profile_required on public.company_form_products;

@@ -1,5 +1,17 @@
 # Installer Sheetz — RLS Hardening: Audit, Findings, Policy Matrix, Draft Migration, Test Plan
 
+> **Superseded by revision 4 — read [`RLS_Revision4_Rebaseline.md`](RLS_Revision4_Rebaseline.md)
+> first.** Revision 4 (re-baselined on `main` `5ded8e7` / mobile `36938d1`):
+> - withdraws the expenses policies (separate Expenses workstream);
+> - adds RLS for `customers`, `customer_accounts`, `customer_site_files`;
+> - rewrites `0002` for the native uploader path and `customer-site-files`;
+> - implements Q9;
+> - adds a read-only V1 Dev preflight.
+>
+> Stale here: A1 and A3 are fixed on `main` (PR #28); A2/A4 are fixed on mobile; the Q1 app-side
+> status and the R.6 rollback trigger list are updated there. This document remains the
+> revision 2–3 record.
+
 **Status: PREPARATION ONLY — revision 3 (reconciled with the final Phase 2H commit).** Nothing in
 this document or the companion draft SQL has been applied anywhere. No RLS was enabled, no
 migration was run, no Supabase project was touched, and no application code was changed.
